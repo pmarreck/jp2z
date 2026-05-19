@@ -1,0 +1,197 @@
+//! jp2z — cleanroom JPEG 2000 (T.800) decoder. Public API hub.
+//!
+//! Mirrors jpegz's public-API shape (DecodeOptions, FindingsSink,
+//! lenient mode, internal.* oracle namespace) so consumers can
+//! treat the two libraries uniformly and so jpegz's planned
+//! re-export shim at jp2z M6 is a 5-line file.
+//!
+//! Phase 1 (now): `decode` / `decodeWithOptions` delegate to the
+//! openjpeg wrapper at `ffi/openjpeg_wrapper.zig`. The wrapper
+//! handles both JP2 (file format) and J2K (raw codestream).
+//!
+//! Phase 2 (multi-month): each milestone adds a cleanroom path
+//! (codestream walker → tier-2 → tier-1 EBCOT → 5/3 wavelet →
+//! 9/7 wavelet → MCT) and shrinks the wrapper's runtime role.
+//!
+//! Phase 3 (cleanroom complete, M6): wrapper moves to
+//! `internal.openjpegDecode` for build-time oracle use only;
+//! runtime decode is pure Zig.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+// ── Re-exports from canonical core modules ──────────────────────
+const errors = @import("core/errors.zig");
+pub const DecodeError = errors.DecodeError;
+pub const Severity = errors.Severity;
+pub const Variant = errors.Variant;
+pub const FindingCode = errors.FindingCode;
+
+const core_types = @import("core/types.zig");
+pub const ColorSpace = core_types.ColorSpace;
+pub const PixelLayout = core_types.PixelLayout;
+pub const Image = core_types.Image;
+pub const ImageMetadata = core_types.ImageMetadata;
+
+/// Side-channel collector for spec-deviation findings emitted by
+/// the cleanroom decoder during lenient (tolerant) decode. Same
+/// shape as `jpegz.FindingsSink`. Caller-owned; pair with
+/// `decodeWithOptions(.. .findings_sink = &sink, .lenient = true)`
+/// to capture warnings.
+pub const FindingsSink = @import("decode/findings.zig").FindingsSink;
+
+pub const version: [:0]const u8 = "0.0.1";
+
+const last_error = @import("core/last_error.zig");
+
+pub fn lastErrorMessage() []const u8 {
+    return last_error.current();
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pixel-data types are re-exported above. See `core/types.zig`.
+// ─────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────
+// Validation
+// ─────────────────────────────────────────────────────────────────────
+
+pub const Finding = struct {
+    severity: Severity,
+    code: FindingCode,
+    offset: ?u64 = null,
+    detail: ?[]const u8 = null,
+};
+
+pub const ValidationReport = struct {
+    overall: Severity,
+    variant: Variant,
+    width: ?u32,
+    height: ?u32,
+    findings: std.ArrayList(Finding),
+
+    pub fn isOk(self: ValidationReport) bool {
+        return self.overall == .pass or self.overall == .info or self.overall == .warn;
+    }
+
+    pub fn deinit(self: *ValidationReport, allocator: Allocator) void {
+        for (self.findings.items) |f| {
+            if (f.detail) |d| allocator.free(d);
+        }
+        self.findings.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Decode
+// ─────────────────────────────────────────────────────────────────────
+
+pub const DecodeOptions = struct {
+    /// Number of threads jp2z may use for parallelizable decode steps.
+    /// Mirror of jpegz's threading convention. Phase 1 wrapper does
+    /// not yet plumb this through to `opj_codec_set_threads` — that
+    /// lands as a wrapper-side enhancement when a consumer asks.
+    threads: u8 = 1,
+
+    /// `false` (default) — strict decode; bitstream deviations
+    /// return `DecodeError`. `true` — tolerant decode (Phase 2:
+    /// recover partial images, emit findings into `findings_sink`).
+    /// In Phase 1 the openjpeg wrapper ignores this flag (openjpeg
+    /// has its own tolerance posture); kept on the API surface so
+    /// Phase 2 cleanroom doesn't need an ABI bump to honor it.
+    lenient: bool = false,
+
+    /// Optional collector for `Finding(.warn, ...)` / `(.info, ...)`
+    /// notes. Currently no-op until the cleanroom paths land.
+    findings_sink: ?*FindingsSink = null,
+};
+
+/// Decode a JP2 (file format) or J2K (raw codestream) buffer into
+/// a fully-realized `Image`. Default options (`threads = 1`).
+pub fn decode(allocator: Allocator, data: []const u8) DecodeError!Image {
+    return decodeWithOptions(allocator, data, .{});
+}
+
+/// Same as `decode` but accepts a `DecodeOptions`.
+pub fn decodeWithOptions(
+    allocator: Allocator,
+    data: []const u8,
+    options: DecodeOptions,
+) DecodeError!Image {
+    _ = options; // Phase 1: wrapper ignores all options
+    // Phase 1: delegate to openjpeg wrapper. Phase 2 will route
+    // each cleanroom path (codestream walker / tier-1 / etc.)
+    // ahead of the wrapper, surrounded by the same `try X(...)
+    // catch error.NotImplemented => {}` pattern jpegz uses.
+    last_error.clear();
+    return @import("ffi/openjpeg_wrapper.zig").decode(allocator, data) catch |err| {
+        last_error.set("jp2z.decode failed: {s}", .{@errorName(err)});
+        return err;
+    };
+}
+
+/// Validate a JP2/J2K bitstream and return a structured report.
+/// Phase 1: stub (returns PASS for now; cleanroom validator lands
+/// with M1 codestream walker). Mirrors jpegz's `jpeg2000.validate`
+/// stub posture.
+pub fn validate(
+    allocator: Allocator,
+    data: []const u8,
+) error{OutOfMemory}!ValidationReport {
+    _ = allocator;
+    _ = data;
+    return ValidationReport{
+        .overall = .pass,
+        .variant = .unknown,
+        .width = null,
+        .height = null,
+        .findings = .empty,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Internal namespace — diagnostic-only oracle entry points.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Test-only entry points. NOT part of the stable ABI. Mirrors
+/// jpegz's `internal.*` namespace pattern so future cleanroom-vs-
+/// oracle byte-perfect tests have a clear hook.
+pub const internal = struct {
+    /// Direct openjpeg decode — bypasses any future cleanroom
+    /// dispatcher. Used by tests to validate the cleanroom output
+    /// byte-for-byte against the wrapper.
+    pub fn openjpegDecode(allocator: Allocator, data: []const u8) DecodeError!Image {
+        return @import("ffi/openjpeg_wrapper.zig").decode(allocator, data);
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Force-link the C ABI module so its `export fn`s land in the static lib.
+// ─────────────────────────────────────────────────────────────────────
+
+comptime {
+    _ = @import("ffi/c_api.zig");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Inline tests
+// ─────────────────────────────────────────────────────────────────────
+
+test "version constant" {
+    try std.testing.expect(version.len > 0);
+}
+
+test "decode rejects garbage input" {
+    const garbage = "definitely not a JP2 file at all";
+    try std.testing.expectError(
+        error.InvalidJp2Codestream,
+        decode(std.testing.allocator, garbage),
+    );
+}
+
+test "validate stub returns PASS" {
+    var report = try validate(std.testing.allocator, "");
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(Severity.pass, report.overall);
+}

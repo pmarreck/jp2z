@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Cross-compile jp2z for all supported targets:
+#   aarch64-macos, aarch64-linux-musl, x86_64-linux-musl,
+#   aarch64-windows, x86_64-windows.
+#
+# Phase 1 caveat: cross-compilation requires openjpeg to be
+# available at the target's sysroot. The simplest path is to keep
+# openjpeg as a `nix flake build` dependency for native + Linux
+# targets and skip Windows cross until openjpeg is vendored or
+# replaced by the cleanroom (Phase 2 retires the dep anyway).
+set -u
+
+rc=0
+
+echo "==> native build (nix)"
+./build || rc=$?
+
+# TODO: wire cross-compilation here once openjpeg cross-build is sorted.
+# Mirror jpegz's `build_all` pattern: `nix develop -c zig build -Dtarget=...`
+# for each target, with openjpeg's library/include paths overridden per
+# target. The cleanroom (Phase 2) eliminates this complexity entirely.
+
+exit "$rc"

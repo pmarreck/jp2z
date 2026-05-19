@@ -1,0 +1,35 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Nix build result symlinks
+result
+result-*
+
+# macOS
+.DS_Store
+
+# Editor swap files
+*.swp
+*.swo
+
+# LLM inbox (inter-project messages)
+inbox/
+
+# Tooling indexes
+.codescan/
+.serena/
+.jj/
+
+# Non-committed scratch space
+scratch/
+
+# Vault-symlinked personal references (kept locally only)
+ZIG_RECENT_API_CHANGES.md
+ZIG_0.15_TO_0.16_MIGRATION.md
+jj_cheatsheet.md
+
+# AGENTS.md / CLAUDE.md are local agent briefings, not project assets
+AGENTS.md
+CLAUDE.md

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Build jp2z via nix-build (sandboxed, deterministic). Mirrors
+# jpegz's ./build.
+set -u
+nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default "$@"
+ls -la result/bin/ 2>/dev/null || true
+mkdir -p zig-out/bin
+cp -f result/bin/jp2z zig-out/bin/ 2>/dev/null || true
+echo "built: zig-out/bin/jp2z"

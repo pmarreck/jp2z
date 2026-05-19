@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run jp2z's full test suite via nix flake check. Mirrors jpegz's
+# ./test — single command, accumulates all subtest errors, returns
+# the rolled-up exit code.
+#
+# NEVER use `set -e` (errexit) here — it would mask test failures.
+# `set -u` (nounset) alone is fine.
+set -u
+
+rc=0
+
+echo "==> zig unit tests (nix flake check .#test)"
+if nix build .#checks.$(nix eval --raw --impure --expr 'builtins.currentSystem').test --no-link "$@"; then
+    echo "    ok"
+else
+    echo "    FAIL (zig unit tests (nix flake check .#test))"
+    rc=1
+fi
+
+echo "==> package builds (nix flake check .#build)"
+if nix build .#checks.$(nix eval --raw --impure --expr 'builtins.currentSystem').build --no-link "$@"; then
+    echo "    ok"
+else
+    echo "    FAIL (package builds (nix flake check .#build))"
+    rc=1
+fi
+
+if [ "$rc" -eq 0 ]; then
+    echo
+    echo "All checks passed."
+else
+    echo
+    echo "$rc check(s) failed."
+fi
+
+exit "$rc"
