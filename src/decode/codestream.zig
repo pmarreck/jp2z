@@ -291,10 +291,18 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8) Al
             return;
         }
 
-        // Recognise vs warn-on-unknown. Body parsing for COD/QCD/etc.
-        // arrives in subsequent M1 commits.
         if (!isKnownMainHeaderMarker(marker)) {
             try emit(report, allocator, .warn, .unknown_marker, pos - 2, null);
+        }
+
+        // Parse body for markers we have field-level validation for.
+        // `pos` points to the Lxxx field; body excluding Lxxx starts
+        // at pos+2 and ends at pos+lxxx.
+        const body = data[pos + 2 .. pos + lxxx];
+        switch (marker) {
+            @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
+            @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
+            else => {},
         }
 
         pos += lxxx;
@@ -371,6 +379,76 @@ fn walkTileParts(
         }
         try emit(report, allocator, .warn, .missing_eoi, next_pos, null);
         return;
+    }
+}
+
+/// Parse a COD (Coding Style Default) marker body. T.800 A.6.1:
+///
+///   Scod   u8   coding style flags (bit 0 = SOP, bit 1 = EPH, …)
+///   SGcod  5 bytes  (progression order, num_layers, MCT)
+///   SPcod  ≥5 bytes (decomp, cblkw, cblkh, cblksty, qmfbid, ...)
+///
+/// Minimum body length (excluding Lcod): 10 bytes.
+fn parseCodBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    if (body.len < 10) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    // SGcod
+    const prog_order = body[1];
+    if (prog_order > 4) {
+        try emit(report, allocator, .warn, .jp2_bad_progression_order, offset + 1, null);
+    }
+    const mct = body[4];
+    if (mct > 1) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null);
+    }
+    // SPcod
+    const decomp_levels = body[5];
+    if (decomp_levels > 32) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 5, null);
+    }
+    const cblkw_exp = body[6];
+    const cblkh_exp = body[7];
+    // Code-block dimension exponent: 0..8 maps to actual size 4..256.
+    if (cblkw_exp > 8 or cblkh_exp > 8) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 6, null);
+    }
+    // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
+    const qmfbid = body[9];
+    switch (qmfbid) {
+        0 => try emit(report, allocator, .info, .jp2_uses_9x7_wavelet, offset + 9, null),
+        1 => try emit(report, allocator, .info, .jp2_uses_5x3_wavelet, offset + 9, null),
+        else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 9, null),
+    }
+}
+
+/// Parse a QCD (Quantization Default) marker body. T.800 A.6.4:
+///
+///   Sqcd   u8   high 3 bits = guard bits (0..7),
+///               low 5 bits  = quantization style (0..2 valid)
+///   SPqcd  variable per quant style
+///
+/// Minimum body length (excluding Lqcd): 1 byte (Sqcd alone).
+fn parseQcdBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    if (body.len < 1) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    const sqcd = body[0];
+    const quant_style: u8 = sqcd & 0x1F;
+    if (quant_style > 2) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
     }
 }
 

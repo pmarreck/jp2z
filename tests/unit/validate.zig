@@ -52,8 +52,89 @@ test "validate: garbage bytes are FAIL with missing_soi finding" {
 test "validate: full c1_mono.j2c walks main header through SOT cleanly" {
     var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
     defer report.deinit(std.testing.allocator);
-    try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
-    try std.testing.expectEqual(@as(usize, 0), report.findings.items.len);
+    // The walker now emits info-level findings (e.g. "uses 5/3
+    // wavelet"), which bump `overall` from pass to info. Both
+    // pass and info qualify as "OK" — assert via isOk + that no
+    // warn/fail findings are present.
+    try std.testing.expect(report.isOk());
+    for (report.findings.items) |f| {
+        try std.testing.expect(f.severity != .warn and f.severity != .fail);
+    }
+}
+
+test "validate: COD body parse emits info jp2_uses_5x3_wavelet for c1_mono" {
+    var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
+    defer report.deinit(std.testing.allocator);
+    var saw_5x3 = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_uses_5x3_wavelet) saw_5x3 = true;
+    }
+    try std.testing.expect(saw_5x3);
+}
+
+test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wavelet" {
+    // SOC + SIZ (4x4 mono) + COD with qmfbid=0 (9/7) + QCD + SOT + EOC.
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        // SIZ — 4x4 mono 8-bit
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        // COD — Lcod=12, Scod=0, prog=0(LRCP), layers=1, MCT=0,
+        // decomp=1, cblkw=4, cblkh=4, cblksty=0, qmfbid=0 (9/7)
+        0xFF, 0x52, 0x00, 0x0C,
+        0x00, 0x00, 0x00, 0x01, 0x00,
+        0x01, 0x04, 0x04, 0x00, 0x00,
+        // QCD — Lqcd=3, Sqcd=0x22 (scalar derived + 2 guard bits). Lqcd
+        // includes its own 2 bytes, so body after Lqcd = 1 byte = Sqcd alone.
+        0xFF, 0x5C, 0x00, 0x03, 0x22,
+        // SOT
+        0xFF, 0x90, 0x00, 0x0A,
+        0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01,
+        // EOC
+        0xFF, 0xD9,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expect(report.isOk());
+    var saw_9x7 = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_uses_9x7_wavelet) saw_9x7 = true;
+    }
+    try std.testing.expect(saw_9x7);
+}
+
+test "validate: COD with invalid progression order (5) emits jp2_bad_progression_order" {
+    // Same as above but prog order = 5 (only 0..4 are valid).
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        // COD with bad prog order
+        0xFF, 0x52, 0x00, 0x0C,
+        0x00, 0x05, 0x00, 0x01, 0x00,
+        0x01, 0x04, 0x04, 0x00, 0x01,
+        // QCD
+        0xFF, 0x5C, 0x00, 0x04, 0x22,
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0xD9,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    var saw_bad_prog = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_bad_progression_order) saw_bad_prog = true;
+    }
+    try std.testing.expect(saw_bad_prog);
 }
 
 test "validate: truncated mid-COD fails with truncated_stream" {
@@ -124,12 +205,11 @@ test "validate: synthetic SOC+SIZ+SOT main header walks cleanly" {
 }
 
 test "validate: full c1_mono.j2c walks all the way to EOC" {
-    // After M1's tile-part walker lands, the walker should consume
-    // every tile-part (using Psot from each SOT to skip the
-    // entropy-coded body) and confirm the codestream ends with EOC.
+    // The walker consumes every tile-part (using Psot to skip the
+    // entropy-coded body) and confirms the codestream ends with EOC.
     var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
     defer report.deinit(std.testing.allocator);
-    try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
+    try std.testing.expect(report.isOk());
 
     // Spot-check the last 2 bytes of the fixture are EOC (FF D9) —
     // proves the input we expect the walker to reach is well-formed.
