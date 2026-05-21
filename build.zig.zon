@@ -11,5 +11,5 @@
         "cli",
         "tests",
     },
-    .fingerprint = 0x0000000000000000,
+    .fingerprint = 0x7c8e6c78c5c7b2c8,
 }

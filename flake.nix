@@ -47,7 +47,7 @@
           dontInstall = true;
         };
 
-        checks.${system} = {
+        checks = {
           build = self.packages.${system}.default;
           test = pkgs.stdenv.mkDerivation {
             pname = "${pname}-test";

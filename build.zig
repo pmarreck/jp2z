@@ -53,11 +53,15 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
     });
     cli_mod.addIncludePath(b.path("include"));
+    cli_mod.linkLibrary(lib);
+    // Static lib doesn't propagate system-library dependencies in Zig 0.16,
+    // so the executable's own module must also resolve libopenjp2.
+    cli_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
+    cli_mod.linkSystemLibrary("openjp2", .{});
     const cli = b.addExecutable(.{
         .name = "jp2z",
         .root_module = cli_mod,
     });
-    cli.linkLibrary(lib);
     b.installArtifact(cli);
 
     const run_cmd = b.addRunArtifact(cli);
@@ -135,11 +139,13 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c23", "-Wall", "-Wextra" },
     });
     cli_test_mod.addIncludePath(b.path("include"));
+    cli_test_mod.linkLibrary(lib);
+    cli_test_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
+    cli_test_mod.linkSystemLibrary("openjp2", .{});
     const cli_test = b.addExecutable(.{
         .name = "ffi_smoke",
         .root_module = cli_test_mod,
     });
-    cli_test.linkLibrary(lib);
     const run_cli_test = b.addRunArtifact(cli_test);
     test_step.dependOn(&run_cli_test.step);
 }
