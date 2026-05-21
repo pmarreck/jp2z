@@ -132,22 +132,15 @@ pub fn decodeWithOptions(
 }
 
 /// Validate a JP2/J2K bitstream and return a structured report.
-/// Phase 1: stub (returns PASS for now; cleanroom validator lands
-/// with M1 codestream walker). Mirrors jpegz's `jpeg2000.validate`
-/// stub posture.
+/// Phase 2 M1: cleanroom codestream walker — SOC + SIZ today; the
+/// rest of the main-header markers land per the M1 punch list.
+/// JP2 file format (box walker → embedded codestream) is a separate
+/// follow-on; today this only validates raw J2K codestreams.
 pub fn validate(
     allocator: Allocator,
     data: []const u8,
 ) error{OutOfMemory}!ValidationReport {
-    _ = allocator;
-    _ = data;
-    return ValidationReport{
-        .overall = .pass,
-        .variant = .unknown,
-        .width = null,
-        .height = null,
-        .findings = .empty,
-    };
+    return @import("decode/codestream.zig").validate(allocator, data);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -190,8 +183,10 @@ test "decode rejects garbage input" {
     );
 }
 
-test "validate stub returns PASS" {
+test "validate empty input fails with missing_soi" {
     var report = try validate(std.testing.allocator, "");
     defer report.deinit(std.testing.allocator);
-    try std.testing.expectEqual(Severity.pass, report.overall);
+    try std.testing.expectEqual(Severity.fail, report.overall);
+    try std.testing.expectEqual(@as(usize, 1), report.findings.items.len);
+    try std.testing.expectEqual(FindingCode.missing_soi, report.findings.items[0].code);
 }

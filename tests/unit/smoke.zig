@@ -23,10 +23,12 @@ test "jp2z.decode rejects non-JP2 input" {
     );
 }
 
-test "jp2z.validate stub returns PASS" {
+test "jp2z.validate of empty input fails with missing_soi" {
     var report = try jp2z.validate(std.testing.allocator, "");
     defer report.deinit(std.testing.allocator);
-    try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
+    try std.testing.expectEqual(jp2z.Severity.fail, report.overall);
+    try std.testing.expectEqual(@as(usize, 1), report.findings.items.len);
+    try std.testing.expectEqual(jp2z.FindingCode.missing_soi, report.findings.items[0].code);
 }
 
 test "FindingsSink: create + emit + count" {

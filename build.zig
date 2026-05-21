@@ -149,4 +149,37 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_test = b.addRunArtifact(cli_test);
     test_step.dependOn(&run_cli_test.step);
+
+    // (6) End-to-end CLI test — spawns the actual `jp2z` binary
+    //     against vendored conformance fixtures, validates the
+    //     PPM/PGM stdout, and byte-compares the pixel body against
+    //     opj_decompress (when present on $PATH; gracefully skipped
+    //     otherwise so the test still runs in minimal environments).
+    const e2e_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    e2e_mod.addCSourceFile(.{
+        .file = b.path("tests/cli/e2e.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+    });
+    const e2e_exe = b.addExecutable(.{
+        .name = "cli_e2e",
+        .root_module = e2e_mod,
+    });
+
+    // Grayscale fixture: c1_mono.j2c → P5/PGM 303x179.
+    const run_e2e_mono = b.addRunArtifact(e2e_exe);
+    run_e2e_mono.addArtifactArg(cli); // resolves to zig-out/bin/jp2z
+    run_e2e_mono.addFileArg(b.path("tests/unit/fixtures/conformance/c1_mono.j2c"));
+    run_e2e_mono.addArgs(&.{ "pgm", "303", "179" });
+    test_step.dependOn(&run_e2e_mono.step);
+
+    // RGB fixture: d1_colr.j2c → P6/PPM 256x149.
+    const run_e2e_rgb = b.addRunArtifact(e2e_exe);
+    run_e2e_rgb.addArtifactArg(cli);
+    run_e2e_rgb.addFileArg(b.path("tests/unit/fixtures/conformance/d1_colr.j2c"));
+    run_e2e_rgb.addArgs(&.{ "ppm", "256", "149" });
+    test_step.dependOn(&run_e2e_rgb.step);
 }
