@@ -49,13 +49,22 @@ pub const Marker = enum(u16) {
     _,
 };
 
-/// Walk a J2K codestream and produce a ValidationReport. M1 scope:
-/// walks the main header from SOC through every marker to the first
-/// SOT (start of tile-part) or EOC. Parses SIZ for width/height,
-/// recognises every known main-header marker (T.800 Table A.2), and
-/// emits a `warn`-level finding for any 0xFFxx marker code we don't
-/// recognise. Marker *bodies* are skipped (M2+ parses them); we
-/// only validate length-field consistency here.
+/// JP2 box type codes (T.800 Annex I — Table I.2). 4-byte ASCII
+/// packed big-endian into a u32 for cheap matching.
+const BoxType = struct {
+    const sig: u32 = 0x6A502020; // 'jP  '  — JPEG 2000 Signature box
+    const ftyp: u32 = 0x66747970; // 'ftyp' — File Type box
+    const jp2h: u32 = 0x6A703268; // 'jp2h' — JP2 Header box (container)
+    const ihdr: u32 = 0x69686472; // 'ihdr' — Image Header box (in jp2h)
+    const colr: u32 = 0x636F6C72; // 'colr' — Colour Specification box
+    const jp2c: u32 = 0x6A703263; // 'jp2c' — Contiguous Codestream box
+};
+
+/// Validate any JP2 file or J2K raw codestream and return a
+/// structured report. Dispatches on magic bytes:
+///   - `00 00 00 0C jP  ` → JP2 file format (Annex I box walker)
+///   - `FF 4F`            → raw J2K codestream (Annex A marker walker)
+///   - anything else      → fail with `missing_soi`
 pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!ValidationReport {
     var report = ValidationReport{
         .overall = .pass,
@@ -66,45 +75,191 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
     };
     errdefer report.deinit(allocator);
 
-    // SOC magic check. T.800 A.4.1: every codestream MUST begin with SOC.
-    if (data.len < 2 or data[0] != 0xFF or data[1] != 0x4F) {
-        try emit(&report, allocator, .fail, .missing_soi, 0, null);
+    // JP2 file format: starts with 12-byte signature box.
+    if (looksLikeJp2(data)) {
+        try walkJp2(&report, allocator, data);
         return report;
     }
-    report.variant = .j2k_codestream;
+
+    // J2K raw codestream: SOC magic.
+    if (data.len >= 2 and data[0] == 0xFF and data[1] == 0x4F) {
+        try walkJ2k(&report, allocator, data);
+        return report;
+    }
+
+    try emit(&report, allocator, .fail, .missing_soi, 0, null);
+    return report;
+}
+
+/// Magic-bytes sniff for JP2. T.800 Annex I.5.1: every JP2 file
+/// MUST begin with the 12-byte JPEG 2000 Signature box:
+///   `00 00 00 0C  jP    0D 0A 87 0A`
+/// The trailing 4 bytes are a file-integrity sanity check (CR-LF
+/// → DOS-mode mangle → 0xFF byte → LF → 0x0A).
+fn looksLikeJp2(data: []const u8) bool {
+    if (data.len < 12) return false;
+    const lbox = std.mem.readInt(u32, data[0..4], .big);
+    const tbox = std.mem.readInt(u32, data[4..8], .big);
+    return lbox == 12 and tbox == BoxType.sig;
+}
+
+/// Walk a JP2 file's box hierarchy. Validates the required-box set
+/// (signature → ftyp → jp2h → jp2c), pulls width/height from the
+/// `ihdr` sub-box inside `jp2h`, and recursively validates the
+/// embedded codestream inside `jp2c` via the J2K walker.
+fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8) Allocator.Error!void {
+    report.variant = .jp2_file;
+
+    // Verify the signature box. looksLikeJp2 already checked LBox
+    // + TBox; here we also check the 4-byte DBox payload.
+    if (data[8] != 0x0D or data[9] != 0x0A or data[10] != 0x87 or data[11] != 0x0A) {
+        try emit(report, allocator, .fail, .jp2_invalid_signature, 8, null);
+        return;
+    }
+
+    var pos: usize = 12;
+    var saw_ftyp = false;
+    var saw_jp2h = false;
+    var saw_jp2c = false;
+
+    while (pos < data.len) {
+        if (data.len < pos + 8) {
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
+        }
+        const lbox = std.mem.readInt(u32, data[pos..][0..4], .big);
+        const tbox = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
+
+        var box_total: usize = undefined;
+        var body_offset: usize = 8;
+        if (lbox == 0) {
+            // Box extends to end of file.
+            box_total = data.len - pos;
+        } else if (lbox == 1) {
+            // Extended length: 8-byte XLBox at pos+8.
+            if (data.len < pos + 16) {
+                try emit(report, allocator, .fail, .truncated_stream, pos, null);
+                return;
+            }
+            const xlbox = std.mem.readInt(u64, data[pos + 8 ..][0..8], .big);
+            if (xlbox > std.math.maxInt(usize)) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 8, null);
+                return;
+            }
+            box_total = @intCast(xlbox);
+            body_offset = 16;
+        } else if (lbox >= 8) {
+            box_total = lbox;
+        } else {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, null);
+            return;
+        }
+        if (box_total < body_offset or @as(u64, pos) + box_total > data.len) {
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
+        }
+
+        const body = data[pos + body_offset .. pos + box_total];
+
+        switch (tbox) {
+            BoxType.ftyp => saw_ftyp = true,
+            BoxType.jp2h => {
+                saw_jp2h = true;
+                parseJp2HeaderBox(report, body);
+            },
+            BoxType.jp2c => {
+                saw_jp2c = true;
+                try walkJ2k(report, allocator, body);
+            },
+            else => {}, // unknown / optional boxes — ignore for M1
+        }
+
+        pos += box_total;
+    }
+
+    if (!saw_ftyp) try emit(report, allocator, .fail, .jp2_invalid_signature, null, null);
+    if (!saw_jp2h) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
+    if (!saw_jp2c) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
+}
+
+/// Walk the sub-boxes inside a `jp2h` container, looking for `ihdr`
+/// (Image Header — T.800 Annex I.5.3) to pull width/height. Other
+/// sub-boxes (colr, pclr, cmap, cdef, ...) are ignored for M1.
+fn parseJp2HeaderBox(report: *ValidationReport, body: []const u8) void {
+    var pos: usize = 0;
+    while (pos + 8 <= body.len) {
+        const lbox = std.mem.readInt(u32, body[pos..][0..4], .big);
+        const tbox = std.mem.readInt(u32, body[pos + 4 ..][0..4], .big);
+        const box_total: usize = if (lbox == 0)
+            body.len - pos
+        else if (lbox >= 8)
+            lbox
+        else
+            return; // malformed — caller doesn't enforce here
+        if (@as(u64, pos) + box_total > body.len) return;
+
+        if (tbox == BoxType.ihdr and box_total >= 8 + 14) {
+            const ihdr_body = body[pos + 8 .. pos + box_total];
+            // ihdr layout: HEIGHT(u32) WIDTH(u32) NC(u16) BPC(u8) C(u8) ...
+            const height = std.mem.readInt(u32, ihdr_body[0..4], .big);
+            const width = std.mem.readInt(u32, ihdr_body[4..8], .big);
+            report.height = height;
+            report.width = width;
+        }
+
+        pos += box_total;
+    }
+}
+
+/// Walk a J2K raw codestream. M1 scope: walks the main header from
+/// SOC through every marker to the first SOT (start of tile-part)
+/// or EOC. Parses SIZ for width/height, recognises every known
+/// main-header marker (T.800 Table A.2), and emits a `warn`-level
+/// finding for any 0xFFxx marker code we don't recognise. Marker
+/// *bodies* are skipped (M2+ parses them); we only validate
+/// length-field consistency here.
+fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8) Allocator.Error!void {
+    // SOC magic check. T.800 A.4.1: every codestream MUST begin with SOC.
+    if (data.len < 2 or data[0] != 0xFF or data[1] != 0x4F) {
+        try emit(report, allocator, .fail, .missing_soi, 0, null);
+        return;
+    }
+    // Inside a JP2 wrapper this assignment is a no-op (already set
+    // to .jp2_file by walkJp2); for raw J2K it's the entry point.
+    if (report.variant == .unknown) report.variant = .j2k_codestream;
 
     // Next marker must be SIZ (T.800 A.4.1). Length-prefixed marker.
     if (data.len < 4) {
-        try emit(&report, allocator, .fail, .truncated_stream, 2, null);
-        return report;
+        try emit(report, allocator, .fail, .truncated_stream, 2, null);
+        return;
     }
     if (data[2] != 0xFF or data[3] != 0x51) {
-        try emit(&report, allocator, .fail, .bad_marker_length, 2, null);
-        return report;
+        try emit(report, allocator, .fail, .bad_marker_length, 2, null);
+        return;
     }
 
     // SIZ length + bounds check, then parse the body.
     if (data.len < 6) {
-        try emit(&report, allocator, .fail, .truncated_stream, 4, null);
-        return report;
+        try emit(report, allocator, .fail, .truncated_stream, 4, null);
+        return;
     }
     const lsiz = std.mem.readInt(u16, data[4..6], .big);
     if (lsiz < 41 or data.len < 4 + lsiz) {
-        try emit(&report, allocator, .fail, .bad_marker_length, 4, null);
-        return report;
+        try emit(report, allocator, .fail, .bad_marker_length, 4, null);
+        return;
     }
-    parseSizBody(&report, data[4 .. 4 + lsiz]);
+    parseSizBody(report, data[4 .. 4 + lsiz]);
 
     // Walk the remaining main-header markers up to SOT/SOD/EOC.
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
-            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
-            return report;
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
         }
         if (data[pos] != 0xFF) {
-            try emit(&report, allocator, .fail, .bad_marker_length, pos, null);
-            return report;
+            try emit(report, allocator, .fail, .bad_marker_length, pos, null);
+            return;
         }
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[pos + 1]);
 
@@ -113,13 +268,13 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
             @intFromEnum(Marker.sot) => {
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
-                try walkTileParts(&report, allocator, data, pos);
-                return report;
+                try walkTileParts(report, allocator, data, pos);
+                return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
                 // SOD/EOC at the top level (no SOT) — spec-deviant
                 // but already structurally validated above.
-                return report;
+                return;
             },
             else => {},
         }
@@ -127,19 +282,19 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
         // Every other top-level marker is length-prefixed.
         pos += 2;
         if (data.len < pos + 2) {
-            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
-            return report;
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
         }
         const lxxx = std.mem.readInt(u16, data[pos..][0..2], .big);
         if (lxxx < 2 or data.len < pos + lxxx) {
-            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
-            return report;
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
         }
 
         // Recognise vs warn-on-unknown. Body parsing for COD/QCD/etc.
         // arrives in subsequent M1 commits.
         if (!isKnownMainHeaderMarker(marker)) {
-            try emit(&report, allocator, .warn, .unknown_marker, pos - 2, null);
+            try emit(report, allocator, .warn, .unknown_marker, pos - 2, null);
         }
 
         pos += lxxx;

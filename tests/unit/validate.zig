@@ -9,6 +9,8 @@ const jp2z = @import("jp2z");
 
 const c1_mono_j2c = @embedFile("fixtures/conformance/c1_mono.j2c");
 const d1_colr_j2c = @embedFile("fixtures/conformance/d1_colr.j2c");
+const file1_jp2 = @embedFile("fixtures/conformance/file1.jp2");
+const file9_jp2 = @embedFile("fixtures/conformance/file9.jp2");
 
 test "validate: detects J2K codestream variant via SOC magic" {
     var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
@@ -154,6 +156,36 @@ test "validate: codestream truncated before EOC emits missing_eoi" {
         if (f.code == .missing_eoi) saw_missing_eoi = true;
     }
     try std.testing.expect(saw_missing_eoi);
+}
+
+test "validate: JP2 file1.jp2 (768x512 RGB) detected as jp2_file variant" {
+    var report = try jp2z.validate(std.testing.allocator, file1_jp2);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Variant.jp2_file, report.variant);
+    try std.testing.expectEqual(@as(?u32, 768), report.width);
+    try std.testing.expectEqual(@as(?u32, 512), report.height);
+    try std.testing.expect(report.isOk());
+}
+
+test "validate: JP2 file9.jp2 (palette-indexed, 768x512) variant + dims" {
+    var report = try jp2z.validate(std.testing.allocator, file9_jp2);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Variant.jp2_file, report.variant);
+    try std.testing.expectEqual(@as(?u32, 768), report.width);
+    try std.testing.expectEqual(@as(?u32, 512), report.height);
+    try std.testing.expect(report.isOk());
+}
+
+test "validate: bytes claiming to be JP2 but missing signature → fail" {
+    // Looks like a JP2 length-prefix (LBox=12) but TBox isn't 'jP  '.
+    const bad = [_]u8{
+        0x00, 0x00, 0x00, 0x0C, // LBox = 12
+        0x58, 0x58, 0x58, 0x58, // TBox = "XXXX" (not 'jP  ')
+        0x0D, 0x0A, 0x87, 0x0A,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &bad);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, report.overall);
 }
 
 test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
