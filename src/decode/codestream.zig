@@ -110,10 +110,17 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
 
         // Delimiting markers — main header ends.
         switch (marker) {
-            @intFromEnum(Marker.sot),
-            @intFromEnum(Marker.sod),
-            @intFromEnum(Marker.eoc),
-            => return report,
+            @intFromEnum(Marker.sot) => {
+                // Hand off to the tile-part walker — it consumes
+                // every tile-part via Psot and confirms EOC at end.
+                try walkTileParts(&report, allocator, data, pos);
+                return report;
+            },
+            @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
+                // SOD/EOC at the top level (no SOT) — spec-deviant
+                // but already structurally validated above.
+                return report;
+            },
             else => {},
         }
 
@@ -136,6 +143,79 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
         }
 
         pos += lxxx;
+    }
+}
+
+/// Walk every tile-part from the given SOT marker offset forward,
+/// confirming the codestream terminates with EOC. Uses Psot (from
+/// each SOT) to skip the tile-part body without parsing its
+/// entropy-coded packet data — that's M3 EBCOT's job.
+///
+/// T.800 A.4.2 / Table A.5:
+///   SOT segment = FF 90 | Lsot(u16=10) | Isot(u16) | Psot(u32) |
+///                 TPsot(u8) | TNsot(u8)
+///   Psot = byte distance from this SOT to the byte after the last
+///          byte of this tile-part (i.e. to the next SOT or EOC).
+///          Psot = 0 means "tile-part extends to EOC".
+fn walkTileParts(
+    report: *ValidationReport,
+    allocator: Allocator,
+    data: []const u8,
+    start: usize,
+) Allocator.Error!void {
+    var pos: usize = start;
+    while (true) {
+        // Verify SOT marker at pos.
+        if (data.len < pos + 12) {
+            try emit(report, allocator, .fail, .truncated_stream, pos, null);
+            return;
+        }
+        if (data[pos] != 0xFF or data[pos + 1] != 0x90) {
+            try emit(report, allocator, .fail, .bad_marker_length, pos, null);
+            return;
+        }
+        const lsot = std.mem.readInt(u16, data[pos + 2 ..][0..2], .big);
+        if (lsot != 10) {
+            try emit(report, allocator, .fail, .bad_marker_length, pos + 2, null);
+            return;
+        }
+        const psot = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
+
+        // Determine where this tile-part ends.
+        const next_pos: usize = if (psot == 0)
+            // Tile-part extends to EOC. We expect EOC as the very
+            // last 2 bytes of `data`; the walker doesn't need to
+            // scan the entropy-coded packet body for it.
+            if (data.len >= 2 and data[data.len - 2] == 0xFF and data[data.len - 1] == 0xD9)
+                data.len - 2
+            else {
+                try emit(report, allocator, .warn, .missing_eoi, pos, null);
+                return;
+            }
+        else if (@as(u64, pos) + psot > data.len) {
+            try emit(report, allocator, .fail, .truncated_stream, pos + 4, null);
+            return;
+        } else pos + psot;
+
+        // What's at next_pos? Should be FF 90 (next tile-part) or
+        // FF D9 (EOC). Anything else = warn.
+        if (data.len < next_pos + 2) {
+            try emit(report, allocator, .warn, .missing_eoi, next_pos, null);
+            return;
+        }
+        if (data[next_pos] == 0xFF and data[next_pos + 1] == 0xD9) {
+            // EOC. Tail check: there should be nothing AFTER it.
+            if (next_pos + 2 != data.len) {
+                try emit(report, allocator, .warn, .truncated_stream, next_pos + 2, null);
+            }
+            return;
+        }
+        if (data[next_pos] == 0xFF and data[next_pos + 1] == 0x90) {
+            pos = next_pos;
+            continue;
+        }
+        try emit(report, allocator, .warn, .missing_eoi, next_pos, null);
+        return;
     }
 }
 

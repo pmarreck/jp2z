@@ -106,16 +106,54 @@ test "validate: synthetic SOC+SIZ+SOT main header walks cleanly" {
         0xFF, 0x90,
         // Lsot = 10 (mandatory marker length per T.800 A.4.2)
         0x00, 0x0A,
-        // Isot = 0, Psot = 0, TPsot = 0, TNsot = 1
+        // Isot = 0, Psot = 0 (tile-part extends to EOC),
+        // TPsot = 0, TNsot = 1
         0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
+        // EOC
+        0xFF, 0xD9,
     };
     var report = try jp2z.validate(std.testing.allocator, &stream);
     defer report.deinit(std.testing.allocator);
     try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
     try std.testing.expectEqual(@as(?u32, 4), report.width);
     try std.testing.expectEqual(@as(?u32, 4), report.height);
+}
+
+test "validate: full c1_mono.j2c walks all the way to EOC" {
+    // After M1's tile-part walker lands, the walker should consume
+    // every tile-part (using Psot from each SOT to skip the
+    // entropy-coded body) and confirm the codestream ends with EOC.
+    var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
+
+    // Spot-check the last 2 bytes of the fixture are EOC (FF D9) —
+    // proves the input we expect the walker to reach is well-formed.
+    const tail = c1_mono_j2c[c1_mono_j2c.len - 2 ..];
+    try std.testing.expectEqual(@as(u8, 0xFF), tail[0]);
+    try std.testing.expectEqual(@as(u8, 0xD9), tail[1]);
+
+    // The walker should *not* surface a missing_eoi finding for this
+    // fixture (it has a proper EOC at the end).
+    for (report.findings.items) |f| {
+        try std.testing.expect(f.code != .missing_eoi);
+    }
+}
+
+test "validate: codestream truncated before EOC emits missing_eoi" {
+    // Drop the last 2 bytes (the EOC marker). Walker should consume
+    // every tile-part and then find no EOC at end-of-data → warn
+    // missing_eoi (warn, not fail — partial decode is still useful).
+    const no_eoc = c1_mono_j2c[0 .. c1_mono_j2c.len - 2];
+    var report = try jp2z.validate(std.testing.allocator, no_eoc);
+    defer report.deinit(std.testing.allocator);
+    var saw_missing_eoi = false;
+    for (report.findings.items) |f| {
+        if (f.code == .missing_eoi) saw_missing_eoi = true;
+    }
+    try std.testing.expect(saw_missing_eoi);
 }
 
 test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
@@ -141,6 +179,8 @@ test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
         0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
+        // EOC
+        0xFF, 0xD9,
     };
     var report = try jp2z.validate(std.testing.allocator, &stream);
     defer report.deinit(std.testing.allocator);
