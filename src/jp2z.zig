@@ -63,12 +63,21 @@ pub const Finding = struct {
     detail: ?[]const u8 = null,
 };
 
+pub const ProgressionOrder = @import("decode/codestream.zig").ProgressionOrder;
+pub const WaveletFilter = @import("decode/codestream.zig").WaveletFilter;
+pub const CodingParams = @import("decode/codestream.zig").CodingParams;
+
 pub const ValidationReport = struct {
     overall: Severity,
     variant: Variant,
     width: ?u32,
     height: ?u32,
     findings: std.ArrayList(Finding),
+    /// Populated when the walker successfully parses SIZ + COD.
+    /// `null` if the codestream didn't get that far. Tier-2 packet
+    /// walking (M2+) keys off this; consumers can also use it for
+    /// codec-feature introspection (wavelet filter, MCT, etc.).
+    coding_params: ?CodingParams = null,
 
     pub fn isOk(self: ValidationReport) bool {
         return self.overall == .pass or self.overall == .info or self.overall == .warn;
@@ -156,6 +165,16 @@ pub const internal = struct {
     /// byte-for-byte against the wrapper.
     pub fn openjpegDecode(allocator: Allocator, data: []const u8) DecodeError!Image {
         return @import("ffi/openjpeg_wrapper.zig").decode(allocator, data);
+    }
+
+    /// Run the cleanroom walker against `data` and pull out the
+    /// `CodingParams` (SIZ + COD config). `null` if the walker
+    /// didn't reach far enough — i.e. the codestream is missing
+    /// SOC, SIZ, or COD, or stops short before parseCodBody runs.
+    pub fn inspect(allocator: Allocator, data: []const u8) error{OutOfMemory}!?CodingParams {
+        var report = try validate(allocator, data);
+        defer report.deinit(allocator);
+        return report.coding_params;
     }
 };
 

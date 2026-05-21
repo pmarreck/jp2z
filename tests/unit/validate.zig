@@ -117,6 +117,40 @@ test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wa
 // fixtures/malformed/) puts the malformation right next to the
 // expected finding — easier to read, harder to drift.
 
+// ── M2 prep: CodingParams extracted via internal.inspect() ─────────
+//
+// The tier-2 packet walker (next M2 commits) needs SIZ + COD config
+// in a single value. inspect() returns it; tests pin exact values
+// against the vendored conformance fixtures.
+
+test "inspect: c1_mono.j2c CodingParams matches opj_dump-observed values" {
+    const cp = (try jp2z.internal.inspect(std.testing.allocator, c1_mono_j2c)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(jp2z.ProgressionOrder.lrcp, cp.progression_order);
+    try std.testing.expectEqual(@as(u16, 10), cp.num_layers);
+    try std.testing.expectEqual(@as(u16, 1), cp.num_components);
+    try std.testing.expectEqual(@as(u8, 5), cp.num_decomp_levels);
+    try std.testing.expectEqual(@as(u8, 4), cp.cblk_width_exp);
+    try std.testing.expectEqual(@as(u8, 4), cp.cblk_height_exp);
+    try std.testing.expectEqual(jp2z.WaveletFilter.reversible_5x3, cp.wavelet);
+    try std.testing.expectEqual(false, cp.mct);
+}
+
+test "inspect: d1_colr.j2c CodingParams (3 components, PCRL, MCT)" {
+    const cp = (try jp2z.internal.inspect(std.testing.allocator, d1_colr_j2c)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(jp2z.ProgressionOrder.pcrl, cp.progression_order);
+    try std.testing.expectEqual(@as(u16, 4), cp.num_layers);
+    try std.testing.expectEqual(@as(u16, 3), cp.num_components);
+    try std.testing.expectEqual(jp2z.WaveletFilter.reversible_5x3, cp.wavelet);
+    try std.testing.expectEqual(true, cp.mct);
+}
+
+test "inspect: returns null for garbage input" {
+    const cp = try jp2z.internal.inspect(std.testing.allocator, "garbage");
+    try std.testing.expectEqual(@as(?jp2z.CodingParams, null), cp);
+}
+
 test "validate: SOC only (no SIZ) emits truncated_stream" {
     const stream = [_]u8{ 0xFF, 0x4F };
     var report = try jp2z.validate(std.testing.allocator, &stream);

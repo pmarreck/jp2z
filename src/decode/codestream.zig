@@ -23,6 +23,42 @@ const FindingCode = errors.FindingCode;
 const Finding = jp2z.Finding;
 const ValidationReport = jp2z.ValidationReport;
 
+/// Tier-2 progression order (T.800 A.6.1, byte 1 of SGcod).
+pub const ProgressionOrder = enum(u8) {
+    lrcp = 0, // Layer-Resolution-Component-Precinct
+    rlcp = 1, // Resolution-Layer-Component-Precinct
+    rpcl = 2, // Resolution-Precinct-Component-Layer
+    pcrl = 3, // Precinct-Component-Resolution-Layer
+    cprl = 4, // Component-Precinct-Resolution-Layer
+};
+
+/// Wavelet transform (T.800 A.6.1, SPcod qmfbid byte).
+pub const WaveletFilter = enum(u8) {
+    irreversible_9x7 = 0, // lossy
+    reversible_5x3 = 1, // lossless
+};
+
+/// Snapshot of the codec parameters needed to drive tier-2 packet
+/// walking. Populated during the main-header walk:
+///   - `num_components` from SIZ (Csiz)
+///   - everything else from COD (SGcod + SPcod)
+///
+/// `null` on the report means "not enough of the main header was
+/// parsed for these to be meaningful." Once the walker reaches
+/// parseSizBody it's populated with defaults that parseCodBody
+/// then overwrites.
+pub const CodingParams = struct {
+    progression_order: ProgressionOrder = .lrcp,
+    num_layers: u16 = 0,
+    num_components: u16 = 0,
+    num_decomp_levels: u8 = 0,
+    /// Actual code-block width  = 2^(cblk_width_exp + 2).
+    cblk_width_exp: u8 = 0,
+    cblk_height_exp: u8 = 0,
+    wavelet: WaveletFilter = .reversible_5x3,
+    mct: bool = false,
+};
+
 /// Two-byte marker codes (T.800 Table A.2). Listed here as we wire
 /// them; not exhaustive yet.
 pub const Marker = enum(u16) {
@@ -402,12 +438,13 @@ fn parseCodBody(
         return;
     }
     // SGcod
-    const prog_order = body[1];
-    if (prog_order > 4) {
+    const prog_order_raw = body[1];
+    if (prog_order_raw > 4) {
         try emit(report, allocator, .warn, .jp2_bad_progression_order, offset + 1, null);
     }
-    const mct = body[4];
-    if (mct > 1) {
+    const num_layers = std.mem.readInt(u16, body[2..4], .big);
+    const mct_raw = body[4];
+    if (mct_raw > 1) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null);
     }
     // SPcod
@@ -427,6 +464,17 @@ fn parseCodBody(
         0 => try emit(report, allocator, .info, .jp2_uses_9x7_wavelet, offset + 9, null),
         1 => try emit(report, allocator, .info, .jp2_uses_5x3_wavelet, offset + 9, null),
         else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 9, null),
+    }
+
+    // Update CodingParams (which parseSizBody seeded with num_components).
+    if (report.coding_params) |*cp| {
+        if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
+        cp.num_layers = num_layers;
+        cp.num_decomp_levels = decomp_levels;
+        cp.cblk_width_exp = cblkw_exp;
+        cp.cblk_height_exp = cblkh_exp;
+        if (qmfbid <= 1) cp.wavelet = @enumFromInt(qmfbid);
+        cp.mct = mct_raw == 1;
     }
 }
 
@@ -495,10 +543,14 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     const ysiz = std.mem.readInt(u32, body[8..12], .big);
     const xosiz = std.mem.readInt(u32, body[12..16], .big);
     const yosiz = std.mem.readInt(u32, body[16..20], .big);
+    const csiz = std.mem.readInt(u16, body[36..38], .big);
 
     if (xsiz <= xosiz or ysiz <= yosiz) return; // leave width/height null
     report.width = xsiz - xosiz;
     report.height = ysiz - yosiz;
+    // Seed CodingParams with the SIZ-derived field. Remaining
+    // fields default until parseCodBody overwrites them.
+    report.coding_params = .{ .num_components = csiz };
 }
 
 fn emit(
