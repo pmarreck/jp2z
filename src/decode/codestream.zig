@@ -50,8 +50,12 @@ pub const Marker = enum(u16) {
 };
 
 /// Walk a J2K codestream and produce a ValidationReport. M1 scope:
-/// SOC + SIZ for now; remaining main-header markers land per the M1
-/// punch list.
+/// walks the main header from SOC through every marker to the first
+/// SOT (start of tile-part) or EOC. Parses SIZ for width/height,
+/// recognises every known main-header marker (T.800 Table A.2), and
+/// emits a `warn`-level finding for any 0xFFxx marker code we don't
+/// recognise. Marker *bodies* are skipped (M2+ parses them); we
+/// only validate length-field consistency here.
 pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!ValidationReport {
     var report = ValidationReport{
         .overall = .pass,
@@ -78,43 +82,106 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
         try emit(&report, allocator, .fail, .bad_marker_length, 2, null);
         return report;
     }
-    parseSiz(&report, allocator, data[4..]) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-    };
 
-    return report;
+    // SIZ length + bounds check, then parse the body.
+    if (data.len < 6) {
+        try emit(&report, allocator, .fail, .truncated_stream, 4, null);
+        return report;
+    }
+    const lsiz = std.mem.readInt(u16, data[4..6], .big);
+    if (lsiz < 41 or data.len < 4 + lsiz) {
+        try emit(&report, allocator, .fail, .bad_marker_length, 4, null);
+        return report;
+    }
+    parseSizBody(&report, data[4 .. 4 + lsiz]);
+
+    // Walk the remaining main-header markers up to SOT/SOD/EOC.
+    var pos: usize = 4 + lsiz;
+    while (true) {
+        if (data.len < pos + 2) {
+            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
+            return report;
+        }
+        if (data[pos] != 0xFF) {
+            try emit(&report, allocator, .fail, .bad_marker_length, pos, null);
+            return report;
+        }
+        const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[pos + 1]);
+
+        // Delimiting markers — main header ends.
+        switch (marker) {
+            @intFromEnum(Marker.sot),
+            @intFromEnum(Marker.sod),
+            @intFromEnum(Marker.eoc),
+            => return report,
+            else => {},
+        }
+
+        // Every other top-level marker is length-prefixed.
+        pos += 2;
+        if (data.len < pos + 2) {
+            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
+            return report;
+        }
+        const lxxx = std.mem.readInt(u16, data[pos..][0..2], .big);
+        if (lxxx < 2 or data.len < pos + lxxx) {
+            try emit(&report, allocator, .fail, .truncated_stream, pos, null);
+            return report;
+        }
+
+        // Recognise vs warn-on-unknown. Body parsing for COD/QCD/etc.
+        // arrives in subsequent M1 commits.
+        if (!isKnownMainHeaderMarker(marker)) {
+            try emit(&report, allocator, .warn, .unknown_marker, pos - 2, null);
+        }
+
+        pos += lxxx;
+    }
 }
 
-/// Parse the SIZ marker body (everything after the `FF 51` marker code).
-/// Layout per T.800 A.5.1:
-///   Lsiz   u16  marker length (incl. these 2 bytes)
-///   Rsiz   u16  capabilities (Part 1 = 0)
-///   Xsiz   u32  reference grid width
-///   Ysiz   u32  reference grid height
-///   XOsiz  u32  image origin X
-///   YOsiz  u32  image origin Y
-///   ...
-fn parseSiz(report: *ValidationReport, allocator: Allocator, body: []const u8) Allocator.Error!void {
-    if (body.len < 2) {
-        try emit(report, allocator, .fail, .truncated_stream, null, null);
-        return;
-    }
-    const lsiz = std.mem.readInt(u16, body[0..2], .big);
-    // Minimum SIZ body is 38 bytes (no components yet) + 2 per-component
-    // triplet × Csiz components. Lsiz includes its own 2 bytes.
-    if (lsiz < 41 or body.len < lsiz) {
-        try emit(report, allocator, .fail, .bad_marker_length, null, null);
-        return;
-    }
+fn isKnownMainHeaderMarker(marker: u16) bool {
+    return switch (marker) {
+        @intFromEnum(Marker.siz),
+        @intFromEnum(Marker.cod),
+        @intFromEnum(Marker.coc),
+        @intFromEnum(Marker.qcd),
+        @intFromEnum(Marker.qcc),
+        @intFromEnum(Marker.rgn),
+        @intFromEnum(Marker.poc),
+        @intFromEnum(Marker.tlm),
+        @intFromEnum(Marker.plm),
+        @intFromEnum(Marker.ppm),
+        @intFromEnum(Marker.crg),
+        @intFromEnum(Marker.com),
+        => true,
+        else => false,
+    };
+}
+
+/// Parse the SIZ marker body (the slice from Lsiz through the last
+/// per-component descriptor). Caller has already verified
+/// `body.len >= Lsiz` and `Lsiz >= 41`.
+///
+/// T.800 A.5.1 layout (offsets relative to body):
+///   0  Lsiz   u16
+///   2  Rsiz   u16  capabilities (Part 1 = 0)
+///   4  Xsiz   u32  reference grid width
+///   8  Ysiz   u32  reference grid height
+///   12 XOsiz  u32  image origin X
+///   16 YOsiz  u32  image origin Y
+///   20 XTsiz  u32  tile width
+///   24 YTsiz  u32  tile height
+///   28 XTOsiz u32  tile origin X
+///   32 YTOsiz u32  tile origin Y
+///   36 Csiz   u16  component count
+///   38 ...    3·Csiz bytes of component descriptors
+fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     const xsiz = std.mem.readInt(u32, body[4..8], .big);
     const ysiz = std.mem.readInt(u32, body[8..12], .big);
     const xosiz = std.mem.readInt(u32, body[12..16], .big);
     const yosiz = std.mem.readInt(u32, body[16..20], .big);
 
-    if (xsiz <= xosiz or ysiz <= yosiz) {
-        try emit(report, allocator, .fail, .bad_marker_length, null, null);
-        return;
-    }
+    if (xsiz <= xosiz or ysiz <= yosiz) return; // leave width/height null
     report.width = xsiz - xosiz;
     report.height = ysiz - yosiz;
 }
@@ -141,7 +208,7 @@ fn emit(
     }
 }
 
-test "parseSiz: 41-byte minimum SIZ yields width/height" {
+test "parseSizBody: 41-byte minimum SIZ yields width/height" {
     // Hand-built minimal SIZ body (matches c1_mono.j2c bytes 4..45).
     // Lsiz=0x29, Rsiz=0, Xsiz=303, Ysiz=179, all origins 0,
     // tile=303x179 (one tile), Csiz=1, Ssiz=0x07, XRsiz=1, YRsiz=1.
@@ -167,7 +234,7 @@ test "parseSiz: 41-byte minimum SIZ yields width/height" {
         .findings = .empty,
     };
     defer report.deinit(std.testing.allocator);
-    try parseSiz(&report, std.testing.allocator, &body);
+    parseSizBody(&report, &body);
     try std.testing.expectEqual(@as(?u32, 303), report.width);
     try std.testing.expectEqual(@as(?u32, 179), report.height);
 }
