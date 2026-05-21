@@ -26,9 +26,14 @@ wrapper moves to `jp2z.internal.openjpegDecode` for byte-perfect
 oracle tests.
 
 ### M1 — codestream walker + minimal headers
-- [ ] SOC / SOT / SIZ / COD / QCD / SOD / EOC marker parse
-- [ ] `validate(...)` cleanroom (structural integrity, no decode-through yet)
-- [ ] Fixtures: known-good and known-bad codestreams
+- [x] SOC / SIZ / SOT / SOD / EOC parse (structural)
+- [x] Walk all main-header markers (COD/QCD/COC/QCC/RGN/POC/TLM/PLM/PPM/CRG/COM) — length validation, body skip
+- [x] Tile-part walk via Psot through to EOC
+- [x] JP2 file-format box walker (Annex I) — ihdr → width/height, dispatch jp2c to J2K walker
+- [x] `validate(...)` cleanroom (structural integrity, no decode-through)
+- [x] Known-good fixtures: 8 vendored ISO 15444-4 + full corpus via openjpeg-data flake input
+- [ ] COD/QCD body field-level validation (prog. order, wavelet filter, decomp. levels) — optional refinement
+- [ ] Known-bad fixtures (truncations, bad markers, garbage fields) — defensive coverage
 
 ### M2 — tier-2 (packet headers)
 - [ ] Progression order: LRCP / RLCP / RPCL / PCRL / CPRL
@@ -65,4 +70,6 @@ oracle tests.
 
 ## Completed
 
-- (nothing yet — see commits)
+- Phase 1 wrapper backend + decode tests against vendored conformance fixtures
+- Phase 1 C CLI binary + end-to-end test with byte-perfect oracle comparison vs opj_decompress
+- Phase 2 M1 (core scope): cleanroom codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
