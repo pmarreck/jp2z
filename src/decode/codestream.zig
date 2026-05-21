@@ -342,7 +342,9 @@ fn walkTileParts(
             try emit(report, allocator, .fail, .bad_marker_length, pos + 2, null);
             return;
         }
-        const psot = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
+        // SOT layout: marker(2) | Lsot(2) | Isot(2) | Psot(4) | TPsot(1) | TNsot(1)
+        // Psot sits at pos+6, NOT pos+4 (Isot is in between).
+        const psot = std.mem.readInt(u32, data[pos + 6 ..][0..4], .big);
 
         // Determine where this tile-part ends.
         const next_pos: usize = if (psot == 0)

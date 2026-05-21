@@ -109,6 +109,147 @@ test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wa
     try std.testing.expect(saw_9x7);
 }
 
+// ── Known-bad fixture coverage ─────────────────────────────────────
+//
+// Each test below hand-crafts a malformed J2K codestream that
+// exercises a specific structural error path in the walker. Keeping
+// the bytes inline (vs. vendoring binary fixtures under
+// fixtures/malformed/) puts the malformation right next to the
+// expected finding — easier to read, harder to drift.
+
+test "validate: SOC only (no SIZ) emits truncated_stream" {
+    const stream = [_]u8{ 0xFF, 0x4F };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, report.overall);
+    var saw = false;
+    for (report.findings.items) |f| {
+        if (f.code == .truncated_stream) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "validate: SOC followed by non-SIZ marker emits bad_marker_length" {
+    // SOC then a marker code that isn't SIZ (FF52 = COD).
+    const stream = [_]u8{ 0xFF, 0x4F, 0xFF, 0x52, 0x00, 0x04 };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, report.overall);
+    var saw = false;
+    for (report.findings.items) |f| {
+        if (f.code == .bad_marker_length) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "validate: Lsiz too small (< 41) emits bad_marker_length" {
+    // SIZ with Lsiz=20 — below the 41-byte minimum (no per-component
+    // descriptors fit).
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x14, // Lsiz = 20 (invalid)
+        0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, report.overall);
+    var saw = false;
+    for (report.findings.items) |f| {
+        if (f.code == .bad_marker_length) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "validate: SIZ with Xsiz <= XOsiz leaves width/height null (degenerate image)" {
+    // Lsiz valid; Xsiz=XOsiz=0 → image is 0-wide. parseSizBody bails
+    // without setting width/height. No fail-level finding emitted
+    // (the marker is structurally fine; semantically degenerate is
+    // a decode-time problem, not a walker problem).
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, // Xsiz = 0
+        0x00, 0x00, 0x00, 0x00, // Ysiz = 0
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01,
+        0x07, 0x01, 0x01,
+        // No SOT or EOC after — walker's next iteration will see EOF.
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u32, null), report.width);
+    try std.testing.expectEqual(@as(?u32, null), report.height);
+}
+
+test "validate: stuffing-pattern marker (0xFF 0x00) treated as unknown_marker" {
+    // 0xFF 0x00 is the in-data stuffing pattern (used to escape FF
+    // inside entropy-coded segments) — not a real top-level marker
+    // code. Provided as a structurally well-formed (Lxxx=2, no body)
+    // marker so the walker steps past it and emits the unknown_marker
+    // finding rather than a truncated_stream fail.
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        // 0xFF00 marker, Lxxx=2 (no body)
+        0xFF, 0x00, 0x00, 0x02,
+        // SOT
+        0xFF, 0x90, 0x00, 0x0A,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        // EOC
+        0xFF, 0xD9,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    var saw = false;
+    for (report.findings.items) |f| {
+        if (f.code == .unknown_marker) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "validate: trailing garbage after EOC emits truncated_stream warning" {
+    // A valid SOC..SOT..EOC stream with 4 extra junk bytes appended
+    // after EOC. Psot is set so the walker lands directly on EOC,
+    // then sees data.len > next_pos+2 → warn truncated_stream.
+    // Psot = 12 (SOT marker code + Lsot through TNsot = 12 bytes
+    // total, no body since this is a header-only synthetic).
+    const stream = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        // SOT with Psot=12
+        0xFF, 0x90, 0x00, 0x0A,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x01,
+        // EOC
+        0xFF, 0xD9,
+        // 4 bytes of garbage past EOC
+        0xDE, 0xAD, 0xBE, 0xEF,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    var saw = false;
+    for (report.findings.items) |f| {
+        if (f.code == .truncated_stream and f.severity == .warn) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
 test "validate: COD with invalid progression order (5) emits jp2_bad_progression_order" {
     // Same as above but prog order = 5 (only 0..4 are valid).
     const stream = [_]u8{
