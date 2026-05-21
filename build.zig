@@ -106,6 +106,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/unit/decode.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true, // for std.c.getenv in the corpus test
     });
     decode_mod.addImport("jp2z", jp2z_mod);
     const decode_tests = b.addTest(.{

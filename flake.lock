@@ -34,10 +34,28 @@
         "type": "github"
       }
     },
+    "openjpeg-data": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1731511539,
+        "narHash": "sha256-ckZHCZV5UJicVUoi/mZDwvCJneXC3X+NA8Byp6GLE0w=",
+        "owner": "uclouvain",
+        "repo": "openjpeg-data",
+        "rev": "39524bd3a601d90ed8e0177559400d23945f96a9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "uclouvain",
+        "repo": "openjpeg-data",
+        "rev": "39524bd3a601d90ed8e0177559400d23945f96a9",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "openjpeg-data": "openjpeg-data"
       }
     },
     "systems": {

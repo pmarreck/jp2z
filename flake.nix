@@ -4,9 +4,20 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    # ITU-T T.803 / ISO 15444-4 conformance bitstreams + regression
+    # corpus, pinned to a known-good commit. Used as the Phase 2
+    # cleanroom oracle (byte-perfect compare vs openjpeg over the
+    # full ~1,200-file suite). Exposed to tests via $OPENJPEG_DATA.
+    # We vendor a tiny ~1MB subset directly in tests/unit/fixtures/
+    # for fast offline iteration; this input is the broad corpus.
+    openjpeg-data = {
+      url = "github:uclouvain/openjpeg-data/39524bd3a601d90ed8e0177559400d23945f96a9";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, openjpeg-data }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -59,6 +70,7 @@
             dontFixup = true;
             buildPhase = ''
               export HOME=$TMPDIR
+              export OPENJPEG_DATA=${openjpeg-data}
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
               timeout 600 zig build test ${pkgs.lib.concatStringsSep " " zigBuildFlags} \
                 || { echo "Tests failed"; exit 1; }
@@ -77,6 +89,7 @@
             echo "jp2z devShell — zig ${zigPkg.version}, openjpeg ${openjpegLib.version} (Phase 1 backend)"
             export OPENJPEG_INCLUDE=${openjpegDev}/include/openjpeg-2.5
             export OPENJPEG_LIB=${openjpegLib}/lib
+            export OPENJPEG_DATA=${openjpeg-data}
           '';
         };
       });
