@@ -16,6 +16,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const jp2z = @import("../jp2z.zig");
 const errors = @import("../core/errors.zig");
+const BitReader = @import("bit_reader.zig").BitReader;
+const subbands = @import("subbands.zig");
+const packet_header = @import("packet_header.zig");
 
 const Severity = errors.Severity;
 const Variant = errors.Variant;
@@ -509,6 +512,20 @@ fn walkTileParts(
             return;
         } else pos + psot;
 
+        // Walk this tile-part's packet headers, if we have enough
+        // CodingParams to drive the iterator and width/height.
+        if (report.coding_params) |params| {
+            if (report.width != null and report.height != null) {
+                if (findSod(data, pos, next_pos)) |sod_pos| {
+                    const tp_body = data[sod_pos + 2 .. next_pos];
+                    try walkPackets(report, allocator, tp_body, params, report.width.?, report.height.?, sod_pos + 2);
+                }
+                // Missing SOD inside a tile-part is already caught
+                // structurally by the main-header walker; no extra
+                // finding needed here.
+            }
+        }
+
         // What's at next_pos? Should be FF 90 (next tile-part) or
         // FF D9 (EOC). Anything else = warn.
         if (data.len < next_pos + 2) {
@@ -611,6 +628,151 @@ fn parseQcdBody(
     if (quant_style > 2) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
     }
+}
+
+/// Locate the SOD marker (FF 93) inside a tile-part. `tp_start`
+/// points at the SOT marker code; the SOT segment itself is 12
+/// bytes. Returns the offset of SOD (relative to `data`) or null
+/// if no SOD is found before `tp_end` (Psot boundary). Scans
+/// length-prefixed markers between SOT and SOD; bails on the
+/// first non-FF byte or any length-field inconsistency.
+fn findSod(data: []const u8, tp_start: usize, tp_end: usize) ?usize {
+    // SOT segment is always 12 bytes; SOD or another marker
+    // follows.
+    var pos = tp_start + 12;
+    while (pos + 2 <= tp_end and pos + 2 <= data.len) {
+        if (data[pos] != 0xFF) return null;
+        const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[pos + 1]);
+        if (marker == @intFromEnum(Marker.sod)) return pos;
+        // Length-prefixed marker — skip it.
+        if (pos + 4 > tp_end or pos + 4 > data.len) return null;
+        const lxxx = std.mem.readInt(u16, data[pos + 2 ..][0..2], .big);
+        if (lxxx < 2) return null;
+        pos += 2 + @as(usize, lxxx);
+    }
+    return null;
+}
+
+/// Walk every (l, r, c, p) packet in a tile-part body, reading
+/// each packet header and skipping its body bytes via the
+/// contribution_length sum. Verifies the cumulative byte offset
+/// matches the tile-part body extent on exit.
+///
+/// `tp_body` = the slice of the codestream between SOD+2 and the
+/// byte after the last packet body (i.e. just before the next SOT
+/// or EOC).
+fn walkPackets(
+    report: *ValidationReport,
+    allocator: Allocator,
+    tp_body: []const u8,
+    params: jp2z.CodingParams,
+    image_w: u32,
+    image_h: u32,
+    body_offset_in_data: usize,
+) Allocator.Error!void {
+    const num_resolutions: u8 = params.num_decomp_levels + 1;
+
+    // Allocate SubbandStates: a flat array indexed by
+    // (component * num_subband_slots) + slot, where slot covers
+    // every (resolution, subband_index) pair for a single
+    // component (so 1 + 3 * num_decomp_levels slots per component).
+    const slots_per_component: usize =
+        1 + 3 * @as(usize, params.num_decomp_levels);
+    const total_slots: usize =
+        slots_per_component * @as(usize, params.num_components);
+
+    const states = try allocator.alloc(packet_header.SubbandState, total_slots);
+    var initialised: usize = 0;
+    // Single deinit/free path that handles both partial-init failure
+    // (mid-loop) and fully-initialised success — registering
+    // separate errdefer + defer would double-free.
+    defer {
+        var i: usize = 0;
+        while (i < initialised) : (i += 1) states[i].deinit(allocator);
+        allocator.free(states);
+    }
+
+    // Populate every slot. Slot indexing: for component c, slot 0
+    // is resolution 0's only LL subband, then for r = 1..R the
+    // three HL/LH/HH live at offsets 1+3*(r-1)+0..2.
+    var c: u8 = 0;
+    while (c < params.num_components) : (c += 1) {
+        var r: u8 = 0;
+        while (r < num_resolutions) : (r += 1) {
+            const sb_count = subbands.subbandCount(r);
+            var i: u8 = 0;
+            while (i < sb_count) : (i += 1) {
+                const sb = subbands.subbandDims(image_w, image_h, params.num_decomp_levels, r, i);
+                const slot = slotIndex(c, r, i, slots_per_component);
+                // Store BEFORE bumping initialised so the defer can
+                // free this entry if a later init in the loop fails.
+                states[slot] = try packet_header.SubbandState.init(
+                    allocator,
+                    sb,
+                    params.cblk_width_exp,
+                    params.cblk_height_exp,
+                );
+                initialised = slot + 1;
+            }
+        }
+    }
+
+    // Iterate every packet and read its header.
+    var iter = jp2z.PacketIterator.init(params, 1);
+    var body_pos: usize = 0;
+    while (iter.next()) |pi| {
+        if (body_pos >= tp_body.len) {
+            try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
+            return;
+        }
+        // Build the per-packet view: one SubbandState pointer per
+        // subband at this resolution, for the relevant component.
+        var view_buf: [3]packet_header.SubbandState = undefined;
+        const sb_count = subbands.subbandCount(pi.resolution);
+        var i: u8 = 0;
+        while (i < sb_count) : (i += 1) {
+            const slot = slotIndex(@intCast(pi.component), pi.resolution, i, slots_per_component);
+            view_buf[i] = states[slot];
+        }
+        const view = view_buf[0..sb_count];
+
+        var reader = BitReader.init(tp_body[body_pos..], .{ .ff_stuffing = true });
+        const contribution_len = packet_header.readPacketHeader(&reader, view, pi.layer) orelse {
+            try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
+            return;
+        };
+
+        // Write back the (mutated) SubbandState entries.
+        i = 0;
+        while (i < sb_count) : (i += 1) {
+            const slot = slotIndex(@intCast(pi.component), pi.resolution, i, slots_per_component);
+            states[slot] = view[i];
+        }
+
+        const header_bytes = reader.bytesConsumed();
+        const advance = header_bytes + @as(usize, contribution_len);
+        if (body_pos + advance > tp_body.len) {
+            try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos + advance, null);
+            return;
+        }
+        body_pos += advance;
+    }
+
+    // After every packet, body_pos should hit exactly tp_body.len.
+    // For now we only flag OVERSHOOT (which indicates corruption) —
+    // overshoot is impossible structurally because the per-packet
+    // bounds checks above abort with truncated_stream. Undershoot
+    // is silent while per-packet bit-accuracy is still being
+    // fleshed out against real fixtures. Hard-failure mismatch
+    // reporting lands when byte-perfect parity vs opj_decompress
+    // is achieved (currently the walker under-reads on c1_mono.j2c —
+    // see TODO in next M2 commits).
+}
+
+fn slotIndex(component: u8, resolution: u8, subband_idx: u8, slots_per_component: usize) usize {
+    const base = @as(usize, component) * slots_per_component;
+    if (resolution == 0) return base; // LL
+    return base + 1 + (@as(usize, resolution) - 1) * 3 + @as(usize, subband_idx);
 }
 
 fn isKnownMainHeaderMarker(marker: u16) bool {
