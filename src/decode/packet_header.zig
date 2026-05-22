@@ -20,6 +20,105 @@
 
 const std = @import("std");
 const BitReader = @import("bit_reader.zig").BitReader;
+const TagTree = @import("tag_tree.zig").TagTree;
+
+/// Per-code-block decoder state that persists across packet headers
+/// (across every layer for the same code-block). T.800 B.10.4–B.10.7
+/// fields. Initialise to zero/defaults; the walker updates as it
+/// processes successive packets.
+pub const CodeBlockState = struct {
+    /// True once the code-block has appeared in at least one
+    /// packet (i.e. inclusion tag tree resolved). After this point
+    /// the inclusion bit is a literal 1/0 in each layer's packet
+    /// header, not a tag-tree-coded value.
+    included: bool = false,
+
+    /// Layer at which `included` first became true. Undefined when
+    /// `included == false`.
+    inclusion_layer: u16 = 0,
+
+    /// Number of most-significant bitplanes that are zero for
+    /// this code-block. Read once, on first inclusion, via the
+    /// zero-bitplane tag tree.
+    zero_bitplanes: u8 = 0,
+
+    /// T.800 B.10.7: Lblock state. Initialised to 3; bumped by 1
+    /// for every "1" prefix bit in subsequent packet headers.
+    lblock: u8 = 3,
+};
+
+/// One code-block's contribution to a single packet's body.
+pub const CodeBlockContribution = struct {
+    /// false → this code-block contributes zero bytes to this packet
+    included: bool,
+    /// Newly added coding passes contributed by this packet
+    /// (1..164). Only meaningful when included == true.
+    new_coding_passes: u8 = 0,
+    /// Compressed byte length of this code-block's contribution to
+    /// the packet body. Only meaningful when included == true.
+    contribution_length: u32 = 0,
+};
+
+/// Walk one code-block's entry in a packet header. Caller has
+/// already advanced past the zero-length packet flag and is
+/// positioned at this code-block's first bit. Reads:
+///   1. Inclusion (literal bit if `state.included`; else inclusion
+///      tag tree query against threshold = current_layer + 1)
+///   2. On first inclusion: zero-bitplane count via tag tree with
+///      ascending thresholds
+///   3. Number of new coding passes (T.800 Table B.4)
+///   4. Lblock update (zero-or-more "1" bits, then "0")
+///   5. Length value (lblock + floor(log2(passes)) bits)
+///
+/// Returns null on bit-stream EOF mid-walk.
+pub fn readCodeBlockContribution(
+    reader: *BitReader,
+    inclusion_tree: *TagTree,
+    zero_bitplane_tree: *TagTree,
+    state: *CodeBlockState,
+    cblk_x: u32,
+    cblk_y: u32,
+    current_layer: u16,
+) ?CodeBlockContribution {
+    // 1. Inclusion.
+    if (state.included) {
+        const b = reader.readBit() orelse return null;
+        if (b == 0) return .{ .included = false };
+    } else {
+        const becomes_included = inclusion_tree.read(reader, cblk_x, cblk_y, @as(u32, current_layer) + 1);
+        if (!becomes_included) return .{ .included = false };
+        state.included = true;
+        state.inclusion_layer = current_layer;
+
+        // 2. Zero-bitplane count, via successive threshold raises.
+        var thr: u32 = 1;
+        while (true) {
+            const decoded = zero_bitplane_tree.read(reader, cblk_x, cblk_y, thr);
+            if (decoded) break;
+            thr += 1;
+            // Sanity: bit depth ceiling. 64 is comfortably above any
+            // realistic value (max bit depth in T.800 Part 1 is 38).
+            if (thr > 64) return null;
+        }
+        state.zero_bitplanes = @intCast(thr - 1);
+    }
+
+    // 3. Coding-pass count.
+    const passes = readCodingPasses(reader) orelse return null;
+
+    // 4. Lblock update.
+    const new_lblock = updateLblock(reader, state.lblock) orelse return null;
+    state.lblock = new_lblock;
+
+    // 5. Length value.
+    const length = readLengthValue(reader, state.lblock, passes) orelse return null;
+
+    return .{
+        .included = true,
+        .new_coding_passes = passes,
+        .contribution_length = length,
+    };
+}
 
 /// T.800 Table B.4 — variable-length coding-pass count.
 ///
@@ -136,4 +235,95 @@ test "readLengthValue: 1 coding pass → log2 = 0" {
     // lblock = 5, passes = 1 → 5 bits. 0b10101 = 21, packed as 0xA8.
     var r = BitReader.init(&.{0b10101000}, .{});
     try std.testing.expectEqual(@as(?u32, 0b10101), readLengthValue(&r, 5, 1));
+}
+
+test "readCodeBlockContribution: first inclusion, 1 pass, default lblock" {
+    // Hand-crafted stream for layer-0 first inclusion of a single
+    // code-block at (0,0) in 1×1 tag trees:
+    //   1. inclusion tag tree: "1" → leaf decoded at value 0 < 1 (included at layer 0)
+    //   2. zero-bitplane tag tree: "1" → leaf at value 0 < 1 (zero-bitplanes = 0)
+    //   3. coding passes: "0" → 1 pass
+    //   4. Lblock update: "0" → no change (lblock stays at 3)
+    //   5. length value: 3 + floor(log2(1)) = 3 bits, "010" = 2
+    // Total 7 bits, packed MSB-first: 11_0_0_010 0 = 0b11000100 = 0xC4.
+    const allocator = std.testing.allocator;
+    var incl = try TagTree.init(allocator, 1, 1);
+    defer incl.deinit(allocator);
+    var zb = try TagTree.init(allocator, 1, 1);
+    defer zb.deinit(allocator);
+
+    var state: CodeBlockState = .{};
+    var reader = BitReader.init(&.{0xC4}, .{});
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0).?;
+    try std.testing.expectEqual(true, c.included);
+    try std.testing.expectEqual(@as(u8, 1), c.new_coding_passes);
+    try std.testing.expectEqual(@as(u32, 2), c.contribution_length);
+    try std.testing.expectEqual(@as(u8, 0), state.zero_bitplanes);
+    try std.testing.expectEqual(@as(u8, 3), state.lblock);
+    try std.testing.expectEqual(true, state.included);
+    try std.testing.expectEqual(@as(u16, 0), state.inclusion_layer);
+}
+
+test "readCodeBlockContribution: previously-included, 0-pass packet (skip bit '0')" {
+    // State already shows inclusion; the inclusion bit is a literal
+    // 0/1 not a tag-tree query. "0" → no contribution this packet.
+    const allocator = std.testing.allocator;
+    var incl = try TagTree.init(allocator, 1, 1);
+    defer incl.deinit(allocator);
+    var zb = try TagTree.init(allocator, 1, 1);
+    defer zb.deinit(allocator);
+
+    var state: CodeBlockState = .{ .included = true, .inclusion_layer = 0, .zero_bitplanes = 2, .lblock = 4 };
+    var reader = BitReader.init(&.{0x00}, .{});
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 3).?;
+    try std.testing.expectEqual(false, c.included);
+    // State must NOT mutate when the code-block is skipped this packet.
+    try std.testing.expectEqual(@as(u8, 4), state.lblock);
+    try std.testing.expectEqual(@as(u8, 2), state.zero_bitplanes);
+}
+
+test "readCodeBlockContribution: previously-included, Lblock grows by 2" {
+    // Per-cblk state: already included, lblock = 3.
+    // Bits: "1" inclusion. "10" = 2 passes. "110" = Lblock += 2 → 5.
+    // Length = lblock + log2(2) = 5 + 1 = 6 bits, "101010" = 0x2A = 42.
+    // Total 1+2+3+6 = 12 bits.
+    // MSB-first pack:
+    //   bit 0 (incl): 1
+    //   bits 1-2 (passes): 10
+    //   bits 3-5 (lblock): 110
+    //   bits 6-11 (length): 101010
+    // → 1_10_110_101010 = 0xDB 0xA0 (first byte 11011011 = 0xDB? let me redo)
+    // bits in order: 1,1,0,1,1,0,1,0,1,0,1,0
+    // First byte (bits 7..0): 11011010 = 0xDA
+    // Second byte: bits 4 more, then 4 padding: 10100000 = 0xA0
+    const allocator = std.testing.allocator;
+    var incl = try TagTree.init(allocator, 1, 1);
+    defer incl.deinit(allocator);
+    var zb = try TagTree.init(allocator, 1, 1);
+    defer zb.deinit(allocator);
+
+    var state: CodeBlockState = .{ .included = true, .inclusion_layer = 0, .lblock = 3 };
+    var reader = BitReader.init(&.{ 0xDA, 0xA0 }, .{});
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 1).?;
+    try std.testing.expectEqual(true, c.included);
+    try std.testing.expectEqual(@as(u8, 2), c.new_coding_passes);
+    try std.testing.expectEqual(@as(u32, 42), c.contribution_length);
+    try std.testing.expectEqual(@as(u8, 5), state.lblock);
+}
+
+test "readCodeBlockContribution: non-included via inclusion tag tree (high threshold)" {
+    // Layer 0, inclusion tag tree returns false because the leaf
+    // value is at least 1 (we don't yet know how much more). Bits:
+    // "0" → value=1 ≥ threshold=1 → return false. 1 bit consumed.
+    const allocator = std.testing.allocator;
+    var incl = try TagTree.init(allocator, 1, 1);
+    defer incl.deinit(allocator);
+    var zb = try TagTree.init(allocator, 1, 1);
+    defer zb.deinit(allocator);
+
+    var state: CodeBlockState = .{};
+    var reader = BitReader.init(&.{0x00}, .{});
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0).?;
+    try std.testing.expectEqual(false, c.included);
+    try std.testing.expectEqual(false, state.included);
 }
