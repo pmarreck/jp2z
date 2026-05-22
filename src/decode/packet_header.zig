@@ -21,6 +21,8 @@
 const std = @import("std");
 const BitReader = @import("bit_reader.zig").BitReader;
 const TagTree = @import("tag_tree.zig").TagTree;
+const CodingParams = @import("codestream.zig").CodingParams;
+const subbands = @import("subbands.zig");
 
 /// Per-code-block decoder state that persists across packet headers
 /// (across every layer for the same code-block). T.800 B.10.4–B.10.7
@@ -118,6 +120,147 @@ pub fn readCodeBlockContribution(
         .new_coding_passes = passes,
         .contribution_length = length,
     };
+}
+
+/// A single subband's per-precinct decode state — the persistent
+/// tag trees for inclusion + zero-bitplane signaling, plus the
+/// flat array of code-block states (row-major, grid.height ×
+/// grid.width). Owner of the heap memory; deinit frees it all.
+pub const SubbandState = struct {
+    inclusion_tree: TagTree,
+    zero_bitplane_tree: TagTree,
+    blocks: []CodeBlockState, // flat, row-major
+    grid_w: u32,
+    grid_h: u32,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        sb: subbands.SubbandInfo,
+        cblk_w_exp: u8,
+        cblk_h_exp: u8,
+    ) std.mem.Allocator.Error!SubbandState {
+        const grid = subbands.codeBlockGrid(sb, cblk_w_exp, cblk_h_exp);
+        const blocks = try allocator.alloc(CodeBlockState, @as(usize, grid.width) * @as(usize, grid.height));
+        @memset(blocks, .{});
+        errdefer allocator.free(blocks);
+
+        // Tag tree dims = code-block grid dims (one leaf per cblk).
+        var incl = try TagTree.init(allocator, grid.width, grid.height);
+        errdefer incl.deinit(allocator);
+        const zb = try TagTree.init(allocator, grid.width, grid.height);
+        return .{
+            .inclusion_tree = incl,
+            .zero_bitplane_tree = zb,
+            .blocks = blocks,
+            .grid_w = grid.width,
+            .grid_h = grid.height,
+        };
+    }
+
+    pub fn deinit(self: *SubbandState, allocator: std.mem.Allocator) void {
+        self.inclusion_tree.deinit(allocator);
+        self.zero_bitplane_tree.deinit(allocator);
+        allocator.free(self.blocks);
+        self.* = undefined;
+    }
+};
+
+/// Walk one full packet header. Caller has positioned the reader
+/// at the byte-aligned start of the header. Reads:
+///   1. Zero-length-packet flag (1 bit). If 0, byte-align and return 0.
+///   2. For each subband at this resolution (1 LL at r=0; or 3
+///      HL/LH/HH at r>=1): iterate the precinct's code-block grid
+///      in row-major order, calling readCodeBlockContribution.
+///   3. Byte-align to next byte boundary.
+///
+/// `subband_states` must have length subbandCount(resolution) and
+/// the entries must match the subband order (HL=0, LH=1, HH=2 at
+/// resolutions >= 1).
+///
+/// Returns the total body byte count this packet contributes
+/// (sum of per-code-block contribution_length), or null on EOF.
+pub fn readPacketHeader(
+    reader: *BitReader,
+    subband_states: []SubbandState,
+    current_layer: u16,
+) ?u32 {
+    const flag = reader.readBit() orelse return null;
+    if (flag == 0) {
+        reader.alignToByte();
+        return 0;
+    }
+
+    var total_length: u32 = 0;
+    for (subband_states) |*sbs| {
+        var y: u32 = 0;
+        while (y < sbs.grid_h) : (y += 1) {
+            var x: u32 = 0;
+            while (x < sbs.grid_w) : (x += 1) {
+                const idx = @as(usize, y) * @as(usize, sbs.grid_w) + @as(usize, x);
+                const c = readCodeBlockContribution(
+                    reader,
+                    &sbs.inclusion_tree,
+                    &sbs.zero_bitplane_tree,
+                    &sbs.blocks[idx],
+                    x,
+                    y,
+                    current_layer,
+                ) orelse return null;
+                if (c.included) total_length += c.contribution_length;
+            }
+        }
+    }
+    reader.alignToByte();
+    return total_length;
+}
+
+test "readPacketHeader: empty packet flag '0' followed by alignment" {
+    const allocator = std.testing.allocator;
+    var sb_state = try SubbandState.init(
+        allocator,
+        .{ .kind = .ll, .width = 10, .height = 6 },
+        4,
+        4,
+    );
+    defer sb_state.deinit(allocator);
+
+    // Single bit '0' for empty packet, then 7 padding bits.
+    var reader = BitReader.init(&.{0x00}, .{});
+    var states = [_]SubbandState{sb_state};
+    const len = readPacketHeader(&reader, &states, 0).?;
+    try std.testing.expectEqual(@as(u32, 0), len);
+    // After byte-align, full byte consumed.
+    try std.testing.expectEqual(@as(usize, 1), reader.bytesConsumed());
+}
+
+test "readPacketHeader: r=0, 1×1 cblk, first inclusion at layer 0" {
+    const allocator = std.testing.allocator;
+    var sb_state = try SubbandState.init(
+        allocator,
+        .{ .kind = .ll, .width = 10, .height = 6 },
+        4,
+        4,
+    );
+    defer sb_state.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 1), sb_state.grid_w);
+    try std.testing.expectEqual(@as(u32, 1), sb_state.grid_h);
+
+    // Header stream: zero-length flag '1' + code-block contribution
+    // bits from the earlier per-cblk test. Bits in order:
+    //   '1' (non-empty)
+    //   '1' (inclusion tag tree decoded)
+    //   '1' (zero-bitplane tag tree at threshold 1)
+    //   '0' (coding passes = 1)
+    //   '0' (Lblock unchanged)
+    //   '010' (3-bit length = 2)
+    // Total 8 bits → 0b11100010 = 0xE2. byte-align is a no-op
+    // since we land exactly on the boundary.
+    var states = [_]SubbandState{sb_state};
+    var reader = BitReader.init(&.{0xE2}, .{});
+    const len = readPacketHeader(&reader, &states, 0).?;
+    try std.testing.expectEqual(@as(u32, 2), len);
+    try std.testing.expectEqual(true, states[0].blocks[0].included);
+    try std.testing.expectEqual(@as(u8, 0), states[0].blocks[0].zero_bitplanes);
 }
 
 /// T.800 Table B.4 — variable-length coding-pass count.
