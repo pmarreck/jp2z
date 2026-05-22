@@ -47,7 +47,37 @@ pub const CodeBlockState = struct {
     /// T.800 B.10.7: Lblock state. Initialised to 3; bumped by 1
     /// for every "1" prefix bit in subsequent packet headers.
     lblock: u8 = 3,
+
+    /// Maxpasses limit of the *current* coding-pass segment.
+    /// Persists across packets — when a packet's new passes
+    /// straddle a segment boundary, both segments get length
+    /// reads. Initialised by `initFirstSegment` on first inclusion.
+    seg_max_passes: u32 = 109,
+
+    /// Coding passes already assigned to the current segment from
+    /// previous packets. Once this reaches `seg_max_passes`, the
+    /// next packet's contributions roll over to a new segment with
+    /// a fresh `seg_max_passes` (per cblksty rules).
+    seg_passes_so_far: u32 = 0,
 };
+
+/// Compute the `maxpasses` allotment for a new segment.
+/// T.800 A.6.1 + opj_t2_init_seg:
+///   - TERMALL (bit 2): each segment is exactly 1 pass
+///   - LAZY (bit 0): first segment = 10; subsequent segments
+///     alternate 2 / 1 based on the previous segment's allotment
+///     (2 if prev was 1 or 10; else 1)
+///   - neither: a single segment of 109 passes (effectively
+///     unlimited for one code-block in T.800 Part 1, where the
+///     theoretical max is (Mb-1)*3 + 1 with Mb ≤ 37 = 109)
+fn maxPassesForSegment(cblksty: u8, is_first_segment: bool, prev_max: u32) u32 {
+    if (cblksty & 0x04 != 0) return 1; // TERMALL
+    if (cblksty & 0x01 != 0) {
+        if (is_first_segment) return 10;
+        return if (prev_max == 1 or prev_max == 10) 2 else 1;
+    }
+    return 109;
+}
 
 /// One code-block's contribution to a single packet's body.
 pub const CodeBlockContribution = struct {
@@ -81,6 +111,7 @@ pub fn readCodeBlockContribution(
     cblk_x: u32,
     cblk_y: u32,
     current_layer: u16,
+    cblksty: u8,
 ) ?CodeBlockContribution {
     // 1. Inclusion.
     if (state.included) {
@@ -103,22 +134,52 @@ pub fn readCodeBlockContribution(
             if (thr > 64) return null;
         }
         state.zero_bitplanes = @intCast(thr - 1);
+
+        // First inclusion → initialise segment 0.
+        state.seg_max_passes = maxPassesForSegment(cblksty, true, 0);
+        state.seg_passes_so_far = 0;
     }
 
-    // 3. Coding-pass count.
-    const passes = readCodingPasses(reader) orelse return null;
+    // 3. Coding-pass count for this packet.
+    const total_new_passes = readCodingPasses(reader) orelse return null;
 
     // 4. Lblock update.
     const new_lblock = updateLblock(reader, state.lblock) orelse return null;
     state.lblock = new_lblock;
 
-    // 5. Length value.
-    const length = readLengthValue(reader, state.lblock, passes) orelse return null;
+    // 5. Per-segment length reads. T.800 B.10.7 with cblksty-aware
+    //    segmentation: this packet's `total_new_passes` may span
+    //    multiple segments, each with its own length value.
+    var remaining: u32 = total_new_passes;
+    var total_length: u32 = 0;
+    while (remaining > 0) {
+        const room_in_seg: u32 = state.seg_max_passes - state.seg_passes_so_far;
+        const seg_passes: u32 = @min(room_in_seg, remaining);
+
+        const log2_seg: u8 = if (seg_passes <= 1)
+            0
+        else
+            @intCast(31 - @clz(seg_passes));
+        const bit_count: u8 = state.lblock + log2_seg;
+        if (bit_count > 32) return null; // pathological — guard against overflow
+
+        const seg_length = reader.readBits(@intCast(bit_count)) orelse return null;
+        total_length +%= seg_length;
+
+        state.seg_passes_so_far += seg_passes;
+        remaining -= seg_passes;
+
+        if (remaining > 0) {
+            const prev_max = state.seg_max_passes;
+            state.seg_max_passes = maxPassesForSegment(cblksty, false, prev_max);
+            state.seg_passes_so_far = 0;
+        }
+    }
 
     return .{
         .included = true,
-        .new_coding_passes = passes,
-        .contribution_length = length,
+        .new_coding_passes = @intCast(@min(total_new_passes, std.math.maxInt(u8))),
+        .contribution_length = total_length,
     };
 }
 
@@ -183,6 +244,7 @@ pub fn readPacketHeader(
     reader: *BitReader,
     subband_states: []SubbandState,
     current_layer: u16,
+    cblksty: u8,
 ) ?u32 {
     const flag = reader.readBit() orelse return null;
     if (flag == 0) {
@@ -205,6 +267,7 @@ pub fn readPacketHeader(
                     x,
                     y,
                     current_layer,
+                    cblksty,
                 ) orelse return null;
                 if (c.included) total_length += c.contribution_length;
             }
@@ -227,7 +290,7 @@ test "readPacketHeader: empty packet flag '0' followed by alignment" {
     // Single bit '0' for empty packet, then 7 padding bits.
     var reader = BitReader.init(&.{0x00}, .{});
     var states = [_]SubbandState{sb_state};
-    const len = readPacketHeader(&reader, &states, 0).?;
+    const len = readPacketHeader(&reader, &states, 0, 0).?;
     try std.testing.expectEqual(@as(u32, 0), len);
     // After byte-align, full byte consumed.
     try std.testing.expectEqual(@as(usize, 1), reader.bytesConsumed());
@@ -257,7 +320,7 @@ test "readPacketHeader: r=0, 1×1 cblk, first inclusion at layer 0" {
     // since we land exactly on the boundary.
     var states = [_]SubbandState{sb_state};
     var reader = BitReader.init(&.{0xE2}, .{});
-    const len = readPacketHeader(&reader, &states, 0).?;
+    const len = readPacketHeader(&reader, &states, 0, 0).?;
     try std.testing.expectEqual(@as(u32, 2), len);
     try std.testing.expectEqual(true, states[0].blocks[0].included);
     try std.testing.expectEqual(@as(u8, 0), states[0].blocks[0].zero_bitplanes);
@@ -397,7 +460,7 @@ test "readCodeBlockContribution: first inclusion, 1 pass, default lblock" {
 
     var state: CodeBlockState = .{};
     var reader = BitReader.init(&.{0xC4}, .{});
-    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0).?;
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0, 0).?;
     try std.testing.expectEqual(true, c.included);
     try std.testing.expectEqual(@as(u8, 1), c.new_coding_passes);
     try std.testing.expectEqual(@as(u32, 2), c.contribution_length);
@@ -418,7 +481,7 @@ test "readCodeBlockContribution: previously-included, 0-pass packet (skip bit '0
 
     var state: CodeBlockState = .{ .included = true, .inclusion_layer = 0, .zero_bitplanes = 2, .lblock = 4 };
     var reader = BitReader.init(&.{0x00}, .{});
-    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 3).?;
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 3, 0).?;
     try std.testing.expectEqual(false, c.included);
     // State must NOT mutate when the code-block is skipped this packet.
     try std.testing.expectEqual(@as(u8, 4), state.lblock);
@@ -447,7 +510,7 @@ test "readCodeBlockContribution: previously-included, Lblock grows by 2" {
 
     var state: CodeBlockState = .{ .included = true, .inclusion_layer = 0, .lblock = 3 };
     var reader = BitReader.init(&.{ 0xDA, 0xA0 }, .{});
-    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 1).?;
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 1, 0).?;
     try std.testing.expectEqual(true, c.included);
     try std.testing.expectEqual(@as(u8, 2), c.new_coding_passes);
     try std.testing.expectEqual(@as(u32, 42), c.contribution_length);
@@ -466,7 +529,7 @@ test "readCodeBlockContribution: non-included via inclusion tag tree (high thres
 
     var state: CodeBlockState = .{};
     var reader = BitReader.init(&.{0x00}, .{});
-    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0).?;
+    const c = readCodeBlockContribution(&reader, &incl, &zb, &state, 0, 0, 0, 0).?;
     try std.testing.expectEqual(false, c.included);
     try std.testing.expectEqual(false, state.included);
 }

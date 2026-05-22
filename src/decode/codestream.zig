@@ -60,6 +60,18 @@ pub const CodingParams = struct {
     cblk_height_exp: u8 = 0,
     wavelet: WaveletFilter = .reversible_5x3,
     mct: bool = false,
+    /// T.800 A.6.1 Table A.19. Bitfield:
+    ///   bit 0 LAZY    — selective arithmetic-coding bypass
+    ///   bit 1 RESET   — reset MQ context probabilities
+    ///   bit 2 TERMALL — terminate after each coding pass
+    ///   bit 3 VSC     — vertically-caused contexts
+    ///   bit 4 PTERM   — predictable termination
+    ///   bit 5 SEGSYM  — segmentation symbols
+    /// Affects packet-header per-cblk segment splitting: with
+    /// LAZY, the first 10 coding passes form segment 0; raw and
+    /// arithmetic passes thereafter alternate into 1- and 2-pass
+    /// segments, each with its own length value.
+    cblksty: u8 = 0,
 };
 
 /// One emission of the tier-2 packet iterator. Identifies which
@@ -586,6 +598,7 @@ fn parseCodBody(
     if (cblkw_exp > 8 or cblkh_exp > 8) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 6, null);
     }
+    const cblksty = body[8];
     // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
     const qmfbid = body[9];
     switch (qmfbid) {
@@ -603,6 +616,7 @@ fn parseCodBody(
         cp.cblk_height_exp = cblkh_exp;
         if (qmfbid <= 1) cp.wavelet = @enumFromInt(qmfbid);
         cp.mct = mct_raw == 1;
+        cp.cblksty = cblksty;
     }
 }
 
@@ -737,7 +751,7 @@ fn walkPackets(
         const view = view_buf[0..sb_count];
 
         var reader = BitReader.init(tp_body[body_pos..], .{ .ff_stuffing = true });
-        const contribution_len = packet_header.readPacketHeader(&reader, view, pi.layer) orelse {
+        const contribution_len = packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty) orelse {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
             return;
         };
@@ -761,11 +775,12 @@ fn walkPackets(
     // After every packet, body_pos should hit exactly tp_body.len.
     // Overshoot is structurally impossible (bounds checks above
     // abort with truncated_stream); undershoot is currently silent
-    // because the per-packet bit-accuracy of the walker isn't yet
-    // byte-perfect against real fixtures (c1_mono.j2c reads 2,969
-    // of 33,496 body bytes; file1.jp2 reads 100%). Strict
-    // length-match validation lands once parity vs opj_decompress
-    // is achieved.
+    // while the walker is approaching byte-perfect parity vs
+    // opj_decompress. Current status (post segment-aware reads):
+    //   c1_mono.j2c   →  27,720 / 33,496  body bytes  (82.76%)
+    //   d1_colr.j2c   →   5,896 / 59,956                (9.83%)
+    //   file1.jp2     → 649,299 / 649,299                (100%)
+    //   file9.jp2     → 299,221 / 299,221                (100%)
 }
 
 fn slotIndex(component: u8, resolution: u8, subband_idx: u8, slots_per_component: usize) usize {
