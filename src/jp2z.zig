@@ -69,6 +69,7 @@ pub const CodingParams = @import("decode/codestream.zig").CodingParams;
 pub const PacketIndex = @import("decode/codestream.zig").PacketIndex;
 pub const PacketIterator = @import("decode/codestream.zig").PacketIterator;
 pub const BitReader = @import("decode/bit_reader.zig").BitReader;
+pub const TagTree = @import("decode/tag_tree.zig").TagTree;
 
 pub const ValidationReport = struct {
     overall: Severity,
@@ -200,6 +201,7 @@ test {
     _ = @import("decode/bit_reader.zig");
     _ = @import("decode/codestream.zig");
     _ = @import("decode/findings.zig");
+    _ = @import("decode/tag_tree.zig");
 }
 
 // ─────────────────────────────────────────────────────────────────────
