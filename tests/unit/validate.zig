@@ -151,6 +151,109 @@ test "inspect: returns null for garbage input" {
     try std.testing.expectEqual(@as(?jp2z.CodingParams, null), cp);
 }
 
+// ── M2: (L, R, C, P) packet iterator ────────────────────────────────
+//
+// Given a CodingParams (and the per-resolution precinct count, which
+// is 1 for default-precinct single-tile streams), the iterator yields
+// the (layer, resolution, component, precinct) tuples in the order
+// dictated by the progression-order field. Five progression orders;
+// each is a different nesting of the four inner loops.
+
+test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
+    // CodingParams: LRCP, 10 layers, 1 component, 5 decomp → 6 res levels, 1 precinct.
+    const params: jp2z.CodingParams = .{
+        .progression_order = .lrcp,
+        .num_layers = 10,
+        .num_components = 1,
+        .num_decomp_levels = 5, // → 6 resolution levels (0..5)
+    };
+    var iter = jp2z.PacketIterator.init(params, 1);
+    try std.testing.expectEqual(@as(usize, 60), iter.total());
+
+    var count: usize = 0;
+    // Verify LRCP iteration: outer loop layer, then resolution.
+    var expected_layer: u16 = 0;
+    var expected_res: u8 = 0;
+    while (iter.next()) |p| {
+        try std.testing.expectEqual(expected_layer, p.layer);
+        try std.testing.expectEqual(expected_res, p.resolution);
+        try std.testing.expectEqual(@as(u16, 0), p.component);
+        try std.testing.expectEqual(@as(u32, 0), p.precinct);
+        count += 1;
+        expected_res += 1;
+        if (expected_res == 6) {
+            expected_res = 0;
+            expected_layer += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 60), count);
+}
+
+test "packet iterator: d1_colr PCRL produces 72 packets (1×3×6×4 = 72)" {
+    // CodingParams: PCRL, 4 layers, 3 components, 5 decomp → 6 res, 1 precinct.
+    const params: jp2z.CodingParams = .{
+        .progression_order = .pcrl,
+        .num_layers = 4,
+        .num_components = 3,
+        .num_decomp_levels = 5,
+    };
+    var iter = jp2z.PacketIterator.init(params, 1);
+    try std.testing.expectEqual(@as(usize, 72), iter.total());
+
+    // Confirm first packet is (l=0,r=0,c=0,p=0) and 4th packet is
+    // (l=0,r=0,c=0,p=… wait, PCRL puts layer innermost.
+    // PCRL nesting: precinct (outer) → component → resolution → layer (inner).
+    // With 1 precinct, the precinct dim is degenerate. So we expect:
+    //   (l=0,c=0,r=0,p=0), (l=1,c=0,r=0,p=0), (l=2,c=0,r=0,p=0),
+    //   (l=3,c=0,r=0,p=0), (l=0,c=0,r=1,p=0), ...
+    const first = iter.next().?;
+    try std.testing.expectEqual(@as(u16, 0), first.layer);
+    try std.testing.expectEqual(@as(u8, 0), first.resolution);
+    try std.testing.expectEqual(@as(u16, 0), first.component);
+    const second = iter.next().?;
+    try std.testing.expectEqual(@as(u16, 1), second.layer); // layer ticks fastest
+    const fifth = blk: {
+        _ = iter.next().?; // l=2
+        _ = iter.next().?; // l=3
+        break :blk iter.next().?;
+    };
+    try std.testing.expectEqual(@as(u16, 0), fifth.layer);
+    try std.testing.expectEqual(@as(u8, 1), fifth.resolution);
+    try std.testing.expectEqual(@as(u16, 0), fifth.component);
+}
+
+test "packet iterator: every progression order covers exactly the full Cartesian product" {
+    const params: jp2z.CodingParams = .{
+        .num_layers = 2,
+        .num_components = 2,
+        .num_decomp_levels = 2, // → 3 res levels
+    };
+    const expected_total: usize = 2 * 2 * 3 * 1;
+    inline for (.{ .lrcp, .rlcp, .rpcl, .pcrl, .cprl }) |po| {
+        var iter = jp2z.PacketIterator.init(.{
+            .progression_order = po,
+            .num_layers = params.num_layers,
+            .num_components = params.num_components,
+            .num_decomp_levels = params.num_decomp_levels,
+        }, 1);
+        try std.testing.expectEqual(expected_total, iter.total());
+        var count: usize = 0;
+        // Bitset of seen (l,r,c,p) tuples — packs into a u32 for this small case.
+        var seen: u32 = 0;
+        while (iter.next()) |p| {
+            const bit_idx: u5 = @intCast(
+                (@as(u32, p.layer) * 3 + @as(u32, p.resolution)) * 2 + @as(u32, p.component),
+            );
+            const mask = @as(u32, 1) << bit_idx;
+            try std.testing.expect(seen & mask == 0); // no duplicates
+            seen |= mask;
+            count += 1;
+        }
+        try std.testing.expectEqual(expected_total, count);
+        try std.testing.expectEqual(@as(u32, (1 << @as(u5, @intCast(expected_total))) - 1), seen);
+    }
+}
+
 test "validate: SOC only (no SIZ) emits truncated_stream" {
     const stream = [_]u8{ 0xFF, 0x4F };
     var report = try jp2z.validate(std.testing.allocator, &stream);

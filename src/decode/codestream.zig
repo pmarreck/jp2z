@@ -59,6 +59,117 @@ pub const CodingParams = struct {
     mct: bool = false,
 };
 
+/// One emission of the tier-2 packet iterator. Identifies which
+/// (layer, resolution, component, precinct) tuple's packet should
+/// be processed next, in the order dictated by the progression-order
+/// field of `CodingParams`. T.800 B.12 specifies the iteration
+/// semantics; we materialise it here as a pull-based iterator so
+/// the validator (and eventually the decoder) can stream through
+/// packets without allocating an enumeration up-front.
+pub const PacketIndex = struct {
+    layer: u16,
+    resolution: u8,
+    component: u16,
+    precinct: u32,
+};
+
+/// Cursor over the Cartesian product (layers × resolutions ×
+/// components × precincts), traversed in the nesting order
+/// specified by `progression_order`. M2 simplification: caller
+/// passes a single `precincts_per_resolution` value (typical for
+/// default-precinct single-tile streams); per-resolution precinct
+/// counts arrive in a follow-on once we parse non-default precinct
+/// sizes from COD.
+pub const PacketIterator = struct {
+    params: CodingParams,
+    precincts_per_resolution: u32,
+
+    layer: u16 = 0,
+    resolution: u8 = 0,
+    component: u16 = 0,
+    precinct: u32 = 0,
+    done: bool = false,
+
+    pub fn init(params: CodingParams, precincts_per_resolution: u32) PacketIterator {
+        const num_resolutions: u8 = params.num_decomp_levels + 1;
+        const exhausted = params.num_layers == 0 or
+            num_resolutions == 0 or
+            params.num_components == 0 or
+            precincts_per_resolution == 0;
+        return .{
+            .params = params,
+            .precincts_per_resolution = precincts_per_resolution,
+            .done = exhausted,
+        };
+    }
+
+    pub fn total(self: PacketIterator) usize {
+        const num_resolutions: usize = @as(usize, self.params.num_decomp_levels) + 1;
+        return @as(usize, self.params.num_layers) *
+            num_resolutions *
+            @as(usize, self.params.num_components) *
+            @as(usize, self.precincts_per_resolution);
+    }
+
+    pub fn next(self: *PacketIterator) ?PacketIndex {
+        if (self.done) return null;
+        const result: PacketIndex = .{
+            .layer = self.layer,
+            .resolution = self.resolution,
+            .component = self.component,
+            .precinct = self.precinct,
+        };
+        self.advance();
+        return result;
+    }
+
+    /// Carry-style increment in the nesting dictated by progression
+    /// order. Innermost (fastest-changing) dimension is the leftmost
+    /// letter of the order; outermost (slowest) is the rightmost.
+    fn advance(self: *PacketIterator) void {
+        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
+        const dims: [4]Dim = switch (self.params.progression_order) {
+            .lrcp => .{ .layer, .resolution, .component, .precinct },
+            .rlcp => .{ .resolution, .layer, .component, .precinct },
+            .rpcl => .{ .resolution, .precinct, .component, .layer },
+            .pcrl => .{ .precinct, .component, .resolution, .layer },
+            .cprl => .{ .component, .precinct, .resolution, .layer },
+        };
+        // dims is ordered outer→inner; we increment from inner→outer.
+        var i: usize = dims.len;
+        while (i > 0) {
+            i -= 1;
+            const dim = dims[i];
+            switch (dim) {
+                .layer => {
+                    self.layer += 1;
+                    if (self.layer < self.params.num_layers) return;
+                    self.layer = 0;
+                },
+                .resolution => {
+                    self.resolution += 1;
+                    if (self.resolution < num_resolutions) return;
+                    self.resolution = 0;
+                },
+                .component => {
+                    self.component += 1;
+                    if (self.component < self.params.num_components) return;
+                    self.component = 0;
+                },
+                .precinct => {
+                    self.precinct += 1;
+                    if (self.precinct < self.precincts_per_resolution) return;
+                    self.precinct = 0;
+                },
+            }
+        }
+        // Walked off all four dimensions — we're done.
+        self.done = true;
+    }
+
+    const Dim = enum { layer, resolution, component, precinct };
+};
+
 /// Two-byte marker codes (T.800 Table A.2). Listed here as we wire
 /// them; not exhaustive yet.
 pub const Marker = enum(u16) {
