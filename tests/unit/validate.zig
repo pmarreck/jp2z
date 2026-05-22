@@ -62,6 +62,63 @@ test "validate: full c1_mono.j2c walks main header through SOT cleanly" {
     }
 }
 
+test "validate: c1_mono.j2c → BYTE-PERFECT packet-walk to tile-part end" {
+    var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
+    defer report.deinit(std.testing.allocator);
+    var saw_walked_to_end = false;
+    var saw_under_read = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_packets_walked_to_end) saw_walked_to_end = true;
+        if (f.code == .jp2_packets_under_read) saw_under_read = true;
+    }
+    try std.testing.expect(saw_walked_to_end);
+    try std.testing.expect(!saw_under_read);
+}
+
+test "validate: file1.jp2 → BYTE-PERFECT packet-walk" {
+    var report = try jp2z.validate(std.testing.allocator, file1_jp2);
+    defer report.deinit(std.testing.allocator);
+    var saw_walked_to_end = false;
+    var saw_under_read = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_packets_walked_to_end) saw_walked_to_end = true;
+        if (f.code == .jp2_packets_under_read) saw_under_read = true;
+    }
+    try std.testing.expect(saw_walked_to_end);
+    try std.testing.expect(!saw_under_read);
+}
+
+test "validate: file9.jp2 → BYTE-PERFECT packet-walk" {
+    var report = try jp2z.validate(std.testing.allocator, file9_jp2);
+    defer report.deinit(std.testing.allocator);
+    var saw_walked_to_end = false;
+    var saw_under_read = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_packets_walked_to_end) saw_walked_to_end = true;
+        if (f.code == .jp2_packets_under_read) saw_under_read = true;
+    }
+    try std.testing.expect(saw_walked_to_end);
+    try std.testing.expect(!saw_under_read);
+}
+
+test "validate: d1_colr.j2c → under-read warn (known limitation: PCRL + user precincts)" {
+    // PCRL ordering + Scod bit 0 = user-defined precincts means the
+    // PacketIterator needs precinct-count-per-resolution + PCRL-
+    // specific iteration (precinct outer). Until both land, d1_colr
+    // surfaces an under-read warning. This test pins the current
+    // state so we'll notice when the fix lands and can flip the
+    // assertion to "walked_to_end."
+    var report = try jp2z.validate(std.testing.allocator, d1_colr_j2c);
+    defer report.deinit(std.testing.allocator);
+    var saw_under_read = false;
+    for (report.findings.items) |f| {
+        if (f.code == .jp2_packets_under_read) saw_under_read = true;
+    }
+    try std.testing.expect(saw_under_read);
+    // isOk() still true — warn is recoverable.
+    try std.testing.expect(report.isOk());
+}
+
 test "validate: COD body parse emits info jp2_uses_5x3_wavelet for c1_mono" {
     var report = try jp2z.validate(std.testing.allocator, c1_mono_j2c);
     defer report.deinit(std.testing.allocator);

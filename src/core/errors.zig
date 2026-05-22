@@ -65,4 +65,8 @@ pub const FindingCode = enum(u32) {
     // ── Informational (200..249) — match jpegz numbering ─────────
     jp2_uses_9x7_wavelet     = 207,
     jp2_uses_5x3_wavelet     = 208,
+    jp2_packets_walked_to_end = 209,  // walker consumed every byte of every tile-part body
+
+    // ── Tier-2 / packet integrity (250..299) ─────────────────────
+    jp2_packets_under_read   = 250,  // walker stopped before tp_body.len — possible per-cblk decode bug
 };
