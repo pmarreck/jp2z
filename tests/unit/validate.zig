@@ -208,6 +208,28 @@ test "inspect: returns null for garbage input" {
     try std.testing.expectEqual(@as(?jp2z.CodingParams, null), cp);
 }
 
+test "inspect: c1_mono.j2c uses default precincts (PPx=PPy=15 across all resolutions)" {
+    const cp = (try jp2z.internal.inspect(std.testing.allocator, c1_mono_j2c)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 0), cp.scod & 0x01); // default precincts
+    var r: usize = 0;
+    while (r <= cp.num_decomp_levels) : (r += 1) {
+        try std.testing.expectEqual(@as(u4, 15), cp.precinct_sizes[r].x_exp);
+        try std.testing.expectEqual(@as(u4, 15), cp.precinct_sizes[r].y_exp);
+    }
+}
+
+test "inspect: d1_colr.j2c uses user-defined 64x64 precincts at every resolution" {
+    const cp = (try jp2z.internal.inspect(std.testing.allocator, d1_colr_j2c)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 1), cp.scod & 0x01); // user-defined precincts
+    var r: usize = 0;
+    while (r <= cp.num_decomp_levels) : (r += 1) {
+        try std.testing.expectEqual(@as(u4, 6), cp.precinct_sizes[r].x_exp); // 2^6 = 64
+        try std.testing.expectEqual(@as(u4, 6), cp.precinct_sizes[r].y_exp);
+    }
+}
+
 // ── M2: (L, R, C, P) packet iterator ────────────────────────────────
 //
 // Given a CodingParams (and the per-resolution precinct count, which

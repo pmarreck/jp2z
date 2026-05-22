@@ -50,6 +50,15 @@ pub const WaveletFilter = enum(u8) {
 /// parsed for these to be meaningful." Once the walker reaches
 /// parseSizBody it's populated with defaults that parseCodBody
 /// then overwrites.
+/// Precinct partition exponents at one resolution level.
+/// Real precinct dims = 2^x × 2^y on the resolution-r reference
+/// grid (or in the subband space for r ≥ 1, dimensions are
+/// 2^(x-1) × 2^(y-1) after the wavelet-induced halving).
+pub const PrecinctSize = packed struct(u8) {
+    x_exp: u4 = 15, // PPx — default 2^15 covers any practical image
+    y_exp: u4 = 15, // PPy
+};
+
 pub const CodingParams = struct {
     progression_order: ProgressionOrder = .lrcp,
     num_layers: u16 = 0,
@@ -72,6 +81,18 @@ pub const CodingParams = struct {
     /// arithmetic passes thereafter alternate into 1- and 2-pass
     /// segments, each with its own length value.
     cblksty: u8 = 0,
+    /// Scod (COD body byte 0). Bit 0 = user-defined precincts;
+    /// bit 1 = SOP markers; bit 2 = EPH markers. The other bits
+    /// are reserved per T.800.
+    scod: u8 = 0,
+    /// Precinct exponents per resolution (index = resolution r,
+    /// r ∈ [0, num_decomp_levels]). When Scod bit 0 = 0 (default
+    /// precincts), every slot stays at (15, 15) = 2^15 × 2^15
+    /// (effectively infinity vs any practical image, giving one
+    /// precinct per resolution per subband). When Scod bit 0 = 1
+    /// the values come from the COD body trailing bytes (one byte
+    /// per resolution: low nibble = PPx, high nibble = PPy).
+    precinct_sizes: [33]PrecinctSize = @splat(.{}),
 };
 
 /// One emission of the tier-2 packet iterator. Identifies which
@@ -607,6 +628,16 @@ fn parseCodBody(
         else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 9, null),
     }
 
+    const scod = body[0]; // Scod is COD body offset 0 — handy here too
+    // Precinct sizes (Scod bit 0 = 1 → user-defined; else default 2^15).
+    const num_resolutions: u8 = decomp_levels + 1;
+    const expects_user_precincts = (scod & 0x01) != 0;
+    const precinct_byte_offset: usize = 10; // Scod(1) + SGcod(5) + SPcod-fixed(4) = 10
+    const needed_precinct_bytes: usize = if (expects_user_precincts) @as(usize, num_resolutions) else 0;
+    if (body.len < precinct_byte_offset + needed_precinct_bytes) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + body.len, null);
+    }
+
     // Update CodingParams (which parseSizBody seeded with num_components).
     if (report.coding_params) |*cp| {
         if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
@@ -617,6 +648,17 @@ fn parseCodBody(
         if (qmfbid <= 1) cp.wavelet = @enumFromInt(qmfbid);
         cp.mct = mct_raw == 1;
         cp.cblksty = cblksty;
+        cp.scod = scod;
+        if (expects_user_precincts and body.len >= precinct_byte_offset + needed_precinct_bytes) {
+            var r: usize = 0;
+            while (r < @as(usize, num_resolutions) and r < cp.precinct_sizes.len) : (r += 1) {
+                const byte = body[precinct_byte_offset + r];
+                cp.precinct_sizes[r] = .{
+                    .x_exp = @intCast(byte & 0x0F),
+                    .y_exp = @intCast((byte >> 4) & 0x0F),
+                };
+            }
+        }
     }
 }
 

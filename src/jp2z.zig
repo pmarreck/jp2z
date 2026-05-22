@@ -66,6 +66,7 @@ pub const Finding = struct {
 pub const ProgressionOrder = @import("decode/codestream.zig").ProgressionOrder;
 pub const WaveletFilter = @import("decode/codestream.zig").WaveletFilter;
 pub const CodingParams = @import("decode/codestream.zig").CodingParams;
+pub const PrecinctSize = @import("decode/codestream.zig").PrecinctSize;
 pub const PacketIndex = @import("decode/codestream.zig").PacketIndex;
 pub const PacketIterator = @import("decode/codestream.zig").PacketIterator;
 pub const BitReader = @import("decode/bit_reader.zig").BitReader;
