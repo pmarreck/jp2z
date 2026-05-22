@@ -759,14 +759,13 @@ fn walkPackets(
     }
 
     // After every packet, body_pos should hit exactly tp_body.len.
-    // For now we only flag OVERSHOOT (which indicates corruption) —
-    // overshoot is impossible structurally because the per-packet
-    // bounds checks above abort with truncated_stream. Undershoot
-    // is silent while per-packet bit-accuracy is still being
-    // fleshed out against real fixtures. Hard-failure mismatch
-    // reporting lands when byte-perfect parity vs opj_decompress
-    // is achieved (currently the walker under-reads on c1_mono.j2c —
-    // see TODO in next M2 commits).
+    // Overshoot is structurally impossible (bounds checks above
+    // abort with truncated_stream); undershoot is currently silent
+    // because the per-packet bit-accuracy of the walker isn't yet
+    // byte-perfect against real fixtures (c1_mono.j2c reads 2,969
+    // of 33,496 body bytes; file1.jp2 reads 100%). Strict
+    // length-match validation lands once parity vs opj_decompress
+    // is achieved.
 }
 
 fn slotIndex(component: u8, resolution: u8, subband_idx: u8, slots_per_component: usize) usize {
