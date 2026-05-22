@@ -68,6 +68,7 @@ pub const WaveletFilter = @import("decode/codestream.zig").WaveletFilter;
 pub const CodingParams = @import("decode/codestream.zig").CodingParams;
 pub const PacketIndex = @import("decode/codestream.zig").PacketIndex;
 pub const PacketIterator = @import("decode/codestream.zig").PacketIterator;
+pub const BitReader = @import("decode/bit_reader.zig").BitReader;
 
 pub const ValidationReport = struct {
     overall: Severity,
@@ -186,6 +187,19 @@ pub const internal = struct {
 
 comptime {
     _ = @import("ffi/c_api.zig");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Force test discovery for modules that don't have a non-test
+// declaration referenced from this hub (Zig only pulls inline
+// tests from modules that are reached via @import + a referenced
+// decl; an unreferenced @import is dead code).
+// ─────────────────────────────────────────────────────────────────────
+
+test {
+    _ = @import("decode/bit_reader.zig");
+    _ = @import("decode/codestream.zig");
+    _ = @import("decode/findings.zig");
 }
 
 // ─────────────────────────────────────────────────────────────────────
