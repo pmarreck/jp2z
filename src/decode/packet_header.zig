@@ -150,9 +150,20 @@ pub fn readCodeBlockContribution(
     // 5. Per-segment length reads. T.800 B.10.7 with cblksty-aware
     //    segmentation: this packet's `total_new_passes` may span
     //    multiple segments, each with its own length value.
+    //    Critical edge case: the *previous* packet may have left
+    //    the current segment exactly full — advance to a fresh
+    //    segment BEFORE attempting any read so we never read a
+    //    length value for an empty segment.
     var remaining: u32 = total_new_passes;
     var total_length: u32 = 0;
     while (remaining > 0) {
+        if (state.seg_passes_so_far >= state.seg_max_passes) {
+            // Segment is full; roll over to a new one.
+            const prev_max = state.seg_max_passes;
+            state.seg_max_passes = maxPassesForSegment(cblksty, false, prev_max);
+            state.seg_passes_so_far = 0;
+        }
+
         const room_in_seg: u32 = state.seg_max_passes - state.seg_passes_so_far;
         const seg_passes: u32 = @min(room_in_seg, remaining);
 
@@ -168,12 +179,6 @@ pub fn readCodeBlockContribution(
 
         state.seg_passes_so_far += seg_passes;
         remaining -= seg_passes;
-
-        if (remaining > 0) {
-            const prev_max = state.seg_max_passes;
-            state.seg_max_passes = maxPassesForSegment(cblksty, false, prev_max);
-            state.seg_passes_so_far = 0;
-        }
     }
 
     return .{

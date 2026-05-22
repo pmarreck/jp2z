@@ -774,13 +774,14 @@ fn walkPackets(
 
     // After every packet, body_pos should hit exactly tp_body.len.
     // Overshoot is structurally impossible (bounds checks above
-    // abort with truncated_stream); undershoot is currently silent
-    // while the walker is approaching byte-perfect parity vs
-    // opj_decompress. Current status (post segment-aware reads):
-    //   c1_mono.j2c   →  27,720 / 33,496  body bytes  (82.76%)
+    // abort with truncated_stream). Current parity vs opj_decompress:
+    //   c1_mono.j2c   →  33,496 / 33,496  body bytes (BYTE-PERFECT)
     //   d1_colr.j2c   →   5,896 / 59,956                (9.83%)
-    //   file1.jp2     → 649,299 / 649,299                (100%)
-    //   file9.jp2     → 299,221 / 299,221                (100%)
+    //   file1.jp2     → 649,299 / 649,299           BYTE-PERFECT
+    //   file9.jp2     → 299,221 / 299,221           BYTE-PERFECT
+    // d1_colr's gap is user-defined precincts (Scod bit 0 set) —
+    // the iterator currently assumes 1 precinct per resolution; the
+    // explicit precinct sizes from COD trailing bytes need parsing.
 }
 
 fn slotIndex(component: u8, resolution: u8, subband_idx: u8, slots_per_component: usize) usize {
