@@ -202,6 +202,7 @@ test {
     _ = @import("decode/codestream.zig");
     _ = @import("decode/findings.zig");
     _ = @import("decode/packet_header.zig");
+    _ = @import("decode/subbands.zig");
     _ = @import("decode/tag_tree.zig");
 }
 
