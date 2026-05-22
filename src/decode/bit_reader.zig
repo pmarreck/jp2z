@@ -65,15 +65,39 @@ pub const BitReader = struct {
     }
 
     /// Discard any bits remaining in the current byte so the next
-    /// read starts on a byte boundary. Honors 0xFF-stuffing on the
-    /// boundary it lands on (the next byte's high bit will be the
-    /// stuff bit if the byte we just left was 0xFF).
+    /// read starts on a byte boundary.
+    ///
+    /// Honors the **packet-header end stuffing rule** (T.800 B.10.7
+    /// / OpenJPEG opj_bio_inalign): if the byte containing the last
+    /// consumed bit was `0xFF`, an entire additional stuff byte is
+    /// consumed past the alignment. This is distinct from the
+    /// in-stream 1-bit stuffing (which `ff_stuffing` handles for
+    /// readBit). Both rules can coexist on the same byte stream.
     pub fn alignToByte(self: *BitReader) void {
-        if (self.bit_pos == 0 or self.bit_pos == 8) return;
-        // Mark the current byte as consumed; the next readBit() will
-        // advance to data[byte_pos+1] and honor stuffing.
-        self.prev_was_ff = self.data[self.byte_pos] == 0xFF;
-        self.bit_pos = 8;
+        // Identify the byte containing the last consumed bit.
+        var last_byte_idx: ?usize = null;
+        if (self.bit_pos > 0 and self.bit_pos < 9) {
+            last_byte_idx = self.byte_pos;
+        } else if (self.byte_pos > 0) {
+            // bit_pos == 0 AND byte_pos > 0 → byte transition already
+            // happened (e.g. after stuffing-skip), last consumed byte
+            // is the previous one.
+            last_byte_idx = self.byte_pos - 1;
+        }
+
+        // Advance past the current byte if mid- or fully-consumed.
+        if (self.bit_pos > 0) {
+            self.byte_pos += 1;
+        }
+        self.bit_pos = 0;
+        self.prev_was_ff = false;
+
+        // End-of-header stuff-byte rule: a whole byte gets skipped.
+        if (last_byte_idx) |idx| {
+            if (idx < self.data.len and self.data[idx] == 0xFF) {
+                self.byte_pos += 1;
+            }
+        }
     }
 
     /// Bytes that have been fully consumed (i.e. excluding the

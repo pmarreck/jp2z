@@ -142,7 +142,11 @@ pub const TagTree = struct {
             if (child.value < parent.value) child.value = parent.value;
         }
 
-        // Top-down refinement from root toward the leaf.
+        // Top-down refinement from root toward the leaf. Walk every
+        // level unconditionally — OpenJPEG-compatible. An early
+        // return when value >= threshold would skip the state
+        // propagation to deeper levels and desync the bit stream on
+        // subsequent (higher-threshold) queries.
         var lvl: usize = num_levels;
         while (lvl > 0) {
             lvl -= 1;
@@ -157,29 +161,19 @@ pub const TagTree = struct {
                     node.decoded = true;
                 }
             }
-            if (node.value < threshold) {
-                // node was already decoded at a lower value — propagate
-                // to its descendants on this path on the next iter,
-                // but for the threshold check that's enough.
-            }
-            // If the node's value is still < threshold and we've
-            // decided to descend (decoded=true), push the parent
-            // value to the next child as a floor.
+            // Propagate this node's (now possibly raised) lower bound
+            // down to the immediate child on this path.
             if (lvl > 0) {
                 const child = &self.nodes[self.levels[lvl - 1].offset +
                     path_xy[lvl - 1].y * self.levels[lvl - 1].w + path_xy[lvl - 1].x];
                 if (child.value < node.value) child.value = node.value;
             }
-
-            if (node.value >= threshold) {
-                // We've established the value is ≥ threshold at this
-                // node, so the leaf's value is also ≥ threshold.
-                return false;
-            }
         }
 
-        // We descended all the way down; the leaf's value is < threshold.
-        return true;
+        // After full descent, the leaf node's value is its lower
+        // bound. Return whether it's strictly less than threshold.
+        const leaf = &self.nodes[path_xy[0].y * self.levels[0].w + path_xy[0].x];
+        return leaf.value < threshold;
     }
 };
 
