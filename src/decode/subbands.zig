@@ -99,6 +99,78 @@ pub fn codeBlockGrid(subband: SubbandInfo, cblk_w_exp: u8, cblk_h_exp: u8) GridS
     };
 }
 
+/// Number of precincts at resolution `r` for an image of size
+/// `image_w × image_h` with `num_decomp_levels` decompositions
+/// and precinct exponents `(ppx, ppy)`. T.800 B.6 (single tile,
+/// origin (0, 0)): numprecincts_x = ceil(trx1 / 2^PPx_r),
+/// numprecincts_y = ceil(try1 / 2^PPy_r). Returns (0, 0) on a
+/// degenerate (zero-extent) resolution.
+pub fn numPrecincts(
+    image_w: u32,
+    image_h: u32,
+    num_decomp_levels: u8,
+    r: u8,
+    ppx: u4,
+    ppy: u4,
+) GridSize {
+    const ext = resolutionExtent(image_w, image_h, num_decomp_levels, r);
+    if (ext.width == 0 or ext.height == 0) return .{ .width = 0, .height = 0 };
+    const px: u32 = @as(u32, 1) << @intCast(ppx);
+    const py: u32 = @as(u32, 1) << @intCast(ppy);
+    return .{
+        .width = ceilDivU32(ext.width, px),
+        .height = ceilDivU32(ext.height, py),
+    };
+}
+
+/// Stride (in reference-grid units) of one precinct at resolution
+/// `r`. Resolution-r data sits at scale 2^(R - r) of the reference
+/// grid, so a precinct of size 2^PPx_r on the resolution-r grid
+/// spans 2^(PPx_r + R - r) reference-grid units. Used by PCRL /
+/// CPRL outer iteration: the (x, y) loop steps by the *minimum*
+/// stride across all (resolution, component) pairs, then asks
+/// each (r, c) "is (x, y) on a precinct boundary for me?".
+pub fn referenceGridStride(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4) GridSize {
+    std.debug.assert(r <= num_decomp_levels);
+    const x_shift: u5 = @intCast(@as(u8, ppx) + num_decomp_levels - r);
+    const y_shift: u5 = @intCast(@as(u8, ppy) + num_decomp_levels - r);
+    return .{
+        .width = @as(u32, 1) << x_shift,
+        .height = @as(u32, 1) << y_shift,
+    };
+}
+
+/// Precinct index at resolution `r` containing reference-grid
+/// position `(x, y)`. Row-major (precinct.y * precincts_at_r.width
+/// + precinct.x). Caller guarantees (x, y) is within the resolution-r
+/// extent. Useful for PCRL/CPRL: at each outer-loop (x, y), call
+/// this for each (r, c) to learn which precinct to emit packets for.
+pub fn precinctIndexAt(
+    image_w: u32,
+    image_h: u32,
+    num_decomp_levels: u8,
+    r: u8,
+    ppx: u4,
+    ppy: u4,
+    x: u32,
+    y: u32,
+) u32 {
+    const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
+    const pwidth = numPrecincts(image_w, image_h, num_decomp_levels, r, ppx, ppy).width;
+    const px = x / stride.width;
+    const py = y / stride.height;
+    return py * pwidth + px;
+}
+
+/// Is reference-grid `(x, y)` aligned to a precinct boundary at
+/// resolution `r`? Used by PCRL/CPRL outer iteration to avoid
+/// re-emitting the same (r, precinct) for adjacent reference-grid
+/// positions (only the precinct's TOP-LEFT corner triggers).
+pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u32, y: u32) bool {
+    const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
+    return (x % stride.width == 0) and (y % stride.height == 0);
+}
+
 /// Total code-blocks across every resolution and subband (single
 /// component, single precinct per subband). Useful as a sanity
 /// metric for "what does it take to walk one (component, layer)
@@ -202,6 +274,79 @@ test "codeBlockGrid: 64x64 code-blocks against various subbands" {
     const g_big = codeBlockGrid(.{ .kind = .hl, .width = 151, .height = 90 }, 4, 4);
     try std.testing.expectEqual(@as(u32, 3), g_big.width);
     try std.testing.expectEqual(@as(u32, 2), g_big.height);
+}
+
+test "numPrecincts: c1_mono.j2c (default 2^15 precincts) — every resolution has 1×1" {
+    // c1_mono image 303×179, num_decomp_levels=5, all precincts (15, 15).
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        const grid = numPrecincts(303, 179, 5, r, 15, 15);
+        try std.testing.expectEqual(@as(u32, 1), grid.width);
+        try std.testing.expectEqual(@as(u32, 1), grid.height);
+    }
+}
+
+test "numPrecincts: d1_colr.j2c (64×64 precincts) — r=5: 4×3, r=4: 2×2, r≤3: 1×1" {
+    // d1_colr image 256×149, num_decomp_levels=5, all precincts (6, 6) = 64×64.
+    const r5 = numPrecincts(256, 149, 5, 5, 6, 6);
+    try std.testing.expectEqual(@as(u32, 4), r5.width);
+    try std.testing.expectEqual(@as(u32, 3), r5.height);
+
+    const r4 = numPrecincts(256, 149, 5, 4, 6, 6);
+    try std.testing.expectEqual(@as(u32, 2), r4.width);
+    try std.testing.expectEqual(@as(u32, 2), r4.height);
+
+    const r3 = numPrecincts(256, 149, 5, 3, 6, 6);
+    try std.testing.expectEqual(@as(u32, 1), r3.width);
+    try std.testing.expectEqual(@as(u32, 1), r3.height);
+
+    const r0 = numPrecincts(256, 149, 5, 0, 6, 6);
+    try std.testing.expectEqual(@as(u32, 1), r0.width);
+    try std.testing.expectEqual(@as(u32, 1), r0.height);
+}
+
+test "referenceGridStride: d1_colr 64x64 precincts at every res — stride doubles each level coarser" {
+    // num_decomp_levels=5, ppx=ppy=6. Strides: r=5→64, r=4→128, ..., r=0→2048.
+    try std.testing.expectEqual(@as(u32, 64), referenceGridStride(5, 5, 6, 6).width);
+    try std.testing.expectEqual(@as(u32, 128), referenceGridStride(5, 4, 6, 6).width);
+    try std.testing.expectEqual(@as(u32, 256), referenceGridStride(5, 3, 6, 6).width);
+    try std.testing.expectEqual(@as(u32, 2048), referenceGridStride(5, 0, 6, 6).width);
+}
+
+test "precinctIndexAt: d1_colr 256x149, r=5 — finest-resolution positions map row-major" {
+    // d1_colr r=5: 4×3 = 12 precincts. Stride 64.
+    // (0,0)→0, (64,0)→1, (128,0)→2, (192,0)→3
+    // (0,64)→4, (64,64)→5, ..., (192,64)→7
+    // (0,128)→8, (64,128)→9, ..., (192,128)→11
+    try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(256, 149, 5, 5, 6, 6, 0, 0));
+    try std.testing.expectEqual(@as(u32, 1), precinctIndexAt(256, 149, 5, 5, 6, 6, 64, 0));
+    try std.testing.expectEqual(@as(u32, 3), precinctIndexAt(256, 149, 5, 5, 6, 6, 192, 0));
+    try std.testing.expectEqual(@as(u32, 4), precinctIndexAt(256, 149, 5, 5, 6, 6, 0, 64));
+    try std.testing.expectEqual(@as(u32, 11), precinctIndexAt(256, 149, 5, 5, 6, 6, 192, 128));
+}
+
+test "isOnPrecinctBoundary: PCRL outer iteration determines which (r) fires at each (x,y)" {
+    // At reference (x=64, y=0) for d1_colr (5, 6, 6):
+    //   r=5 stride=64: on boundary (64 % 64 == 0)
+    //   r=4 stride=128: NOT on boundary (64 % 128 != 0)
+    //   r=3 stride=256: NOT on boundary
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 5, 6, 6, 64, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 4, 6, 6, 64, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 3, 6, 6, 64, 0));
+
+    // At reference (x=128, y=0):
+    //   r=5: on boundary (128 % 64 == 0)
+    //   r=4: on boundary (128 % 128 == 0)
+    //   r=3: NOT (128 % 256 != 0)
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 5, 6, 6, 128, 0));
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 4, 6, 6, 128, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 3, 6, 6, 128, 0));
+
+    // At (0, 0): on boundary for every resolution.
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        try std.testing.expectEqual(true, isOnPrecinctBoundary(5, r, 6, 6, 0, 0));
+    }
 }
 
 test "totalCodeBlocksPerLayerPerComponent: c1_mono.j2c = 34" {
