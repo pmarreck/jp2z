@@ -110,73 +110,131 @@ pub const PacketIndex = struct {
 };
 
 /// Cursor over the Cartesian product (layers × resolutions ×
-/// components × precincts), traversed in the nesting order
-/// specified by `progression_order`. M2 simplification: caller
-/// passes a single `precincts_per_resolution` value (typical for
-/// default-precinct single-tile streams); per-resolution precinct
-/// counts arrive in a follow-on once we parse non-default precinct
-/// sizes from COD.
+/// components × precincts) plus per-resolution variable precinct
+/// counts, traversed in the nesting order specified by
+/// `progression_order`. Per T.800 B.12.1:
+///
+///   - LRCP / RLCP: indexed iteration. At each resolution r the
+///     precinct dim cycles over P(r) = numPrecincts(image, r).
+///   - RPCL: per-resolution reference-grid iteration. Each r uses
+///     its OWN stride 2^(PPx_r + R - r) on the reference grid.
+///   - PCRL / CPRL: reference-grid iteration with the MIN stride
+///     across all resolutions. At each (x, y) we emit packets only
+///     for those (r, c) where (x, y) lies on r's precinct boundary.
 pub const PacketIterator = struct {
     params: CodingParams,
-    precincts_per_resolution: u32,
+    image_w: u32,
+    image_h: u32,
 
+    /// Cached per-resolution geometry. Index r ∈ [0, num_decomp_levels].
+    precincts_at_r: [33]u32 = @splat(0),
+    pcw_at_r: [33]u32 = @splat(0),
+    pch_at_r: [33]u32 = @splat(0),
+    ref_stride_x_at_r: [33]u32 = @splat(1),
+    ref_stride_y_at_r: [33]u32 = @splat(1),
+    /// Reference-grid step for PCRL / CPRL outer iteration.
+    min_stride_x: u32 = 1,
+    min_stride_y: u32 = 1,
+
+    /// Cursor state. Semantics depend on `progression_order`:
+    ///   - LRCP / RLCP: (layer, resolution, component, precinct).
+    ///   - RPCL: (resolution, y, x, component, layer). Precinct is
+    ///     derived from (r, x, y) at emit time.
+    ///   - PCRL / CPRL: (y, x, component-or-not, resolution, layer)
+    ///     with (r) filtered on-boundary at (x, y).
     layer: u16 = 0,
     resolution: u8 = 0,
     component: u16 = 0,
     precinct: u32 = 0,
+    x: u32 = 0,
+    y: u32 = 0,
+
     done: bool = false,
 
-    pub fn init(params: CodingParams, precincts_per_resolution: u32) PacketIterator {
+    pub fn init(params: CodingParams, image_w: u32, image_h: u32) PacketIterator {
+        var iter: PacketIterator = .{
+            .params = params,
+            .image_w = image_w,
+            .image_h = image_h,
+        };
         const num_resolutions: u8 = params.num_decomp_levels + 1;
-        const exhausted = params.num_layers == 0 or
+        var min_sx: u32 = std.math.maxInt(u32);
+        var min_sy: u32 = std.math.maxInt(u32);
+        var any_precincts: bool = false;
+        var r: u8 = 0;
+        while (r < num_resolutions) : (r += 1) {
+            const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
+            const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
+            const grid = subbands.numPrecincts(
+                image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+            iter.pcw_at_r[r] = grid.width;
+            iter.pch_at_r[r] = grid.height;
+            iter.precincts_at_r[r] = grid.width * grid.height;
+            if (iter.precincts_at_r[r] > 0) any_precincts = true;
+            const stride = subbands.referenceGridStride(
+                params.num_decomp_levels, r, ppx, ppy);
+            iter.ref_stride_x_at_r[r] = stride.width;
+            iter.ref_stride_y_at_r[r] = stride.height;
+            if (stride.width < min_sx) min_sx = stride.width;
+            if (stride.height < min_sy) min_sy = stride.height;
+        }
+        iter.min_stride_x = if (num_resolutions > 0) min_sx else 1;
+        iter.min_stride_y = if (num_resolutions > 0) min_sy else 1;
+
+        iter.done = params.num_layers == 0 or
             num_resolutions == 0 or
             params.num_components == 0 or
-            precincts_per_resolution == 0;
-        return .{
-            .params = params,
-            .precincts_per_resolution = precincts_per_resolution,
-            .done = exhausted,
-        };
+            image_w == 0 or image_h == 0 or
+            !any_precincts;
+        return iter;
     }
 
     pub fn total(self: PacketIterator) usize {
-        const num_resolutions: usize = @as(usize, self.params.num_decomp_levels) + 1;
+        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
+        var total_p: usize = 0;
+        var r: u8 = 0;
+        while (r < num_resolutions) : (r += 1) {
+            total_p += @as(usize, self.precincts_at_r[r]);
+        }
         return @as(usize, self.params.num_layers) *
-            num_resolutions *
-            @as(usize, self.params.num_components) *
-            @as(usize, self.precincts_per_resolution);
+            total_p *
+            @as(usize, self.params.num_components);
     }
 
     pub fn next(self: *PacketIterator) ?PacketIndex {
         if (self.done) return null;
+        return switch (self.params.progression_order) {
+            .lrcp, .rlcp => self.nextIndexed(),
+            .rpcl => self.nextRpcl(),
+            .pcrl, .cprl => self.nextPositional(),
+        };
+    }
+
+    // ── LRCP / RLCP — indexed iteration with per-r precinct count ──
+
+    fn nextIndexed(self: *PacketIterator) ?PacketIndex {
         const result: PacketIndex = .{
             .layer = self.layer,
             .resolution = self.resolution,
             .component = self.component,
             .precinct = self.precinct,
         };
-        self.advance();
+        self.advanceIndexed();
         return result;
     }
 
-    /// Carry-style increment in the nesting dictated by progression
-    /// order. Innermost (fastest-changing) dimension is the leftmost
-    /// letter of the order; outermost (slowest) is the rightmost.
-    fn advance(self: *PacketIterator) void {
+    fn advanceIndexed(self: *PacketIterator) void {
         const num_resolutions: u8 = self.params.num_decomp_levels + 1;
         const dims: [4]Dim = switch (self.params.progression_order) {
             .lrcp => .{ .layer, .resolution, .component, .precinct },
             .rlcp => .{ .resolution, .layer, .component, .precinct },
-            .rpcl => .{ .resolution, .precinct, .component, .layer },
-            .pcrl => .{ .precinct, .component, .resolution, .layer },
-            .cprl => .{ .component, .precinct, .resolution, .layer },
+            else => unreachable,
         };
-        // dims is ordered outer→inner; we increment from inner→outer.
+        // dims is outer→inner; we carry inner→outer.
         var i: usize = dims.len;
         while (i > 0) {
             i -= 1;
-            const dim = dims[i];
-            switch (dim) {
+            switch (dims[i]) {
                 .layer => {
                     self.layer += 1;
                     if (self.layer < self.params.num_layers) return;
@@ -184,8 +242,14 @@ pub const PacketIterator = struct {
                 },
                 .resolution => {
                     self.resolution += 1;
-                    if (self.resolution < num_resolutions) return;
+                    if (self.resolution < num_resolutions) {
+                        // New resolution → reset precinct (precinct
+                        // count is per-r). Component is untouched.
+                        self.precinct = 0;
+                        return;
+                    }
                     self.resolution = 0;
+                    self.precinct = 0;
                 },
                 .component => {
                     self.component += 1;
@@ -194,13 +258,126 @@ pub const PacketIterator = struct {
                 },
                 .precinct => {
                     self.precinct += 1;
-                    if (self.precinct < self.precincts_per_resolution) return;
+                    if (self.precinct < self.precincts_at_r[self.resolution]) return;
                     self.precinct = 0;
                 },
             }
         }
-        // Walked off all four dimensions — we're done.
         self.done = true;
+    }
+
+    // ── RPCL — resolution outer; each r uses its OWN stride ──
+
+    fn nextRpcl(self: *PacketIterator) ?PacketIndex {
+        const r = self.resolution;
+        const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
+        const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
+        const p_idx = subbands.precinctIndexAt(
+            self.image_w, self.image_h, self.params.num_decomp_levels,
+            r, ppx, ppy, self.x, self.y);
+        const result: PacketIndex = .{
+            .layer = self.layer,
+            .resolution = r,
+            .component = self.component,
+            .precinct = p_idx,
+        };
+        self.advanceRpcl();
+        return result;
+    }
+
+    fn advanceRpcl(self: *PacketIterator) void {
+        // Nesting (inner→outer): l, c, x, y, r.
+        self.layer += 1;
+        if (self.layer < self.params.num_layers) return;
+        self.layer = 0;
+        self.component += 1;
+        if (self.component < self.params.num_components) return;
+        self.component = 0;
+        self.x += self.ref_stride_x_at_r[self.resolution];
+        if (self.x < self.image_w) return;
+        self.x = 0;
+        self.y += self.ref_stride_y_at_r[self.resolution];
+        if (self.y < self.image_h) return;
+        self.y = 0;
+        self.resolution += 1;
+        if (self.resolution < self.params.num_decomp_levels + 1) return;
+        self.done = true;
+    }
+
+    // ── PCRL / CPRL — reference-grid outer; (r) filtered on-boundary ──
+
+    fn nextPositional(self: *PacketIterator) ?PacketIndex {
+        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
+        // At entry, (x, y, c, r, l) is the *candidate* state. The
+        // outer loop skips past invalid r (not on its own precinct
+        // boundary at (x, y)) and advances the outer dims when
+        // necessary. Emits when current r is on boundary.
+        while (!self.done) {
+            // Find the next r ≥ self.resolution that is on boundary
+            // at (x, y) for the current precinct exponents.
+            while (self.resolution < num_resolutions) {
+                const ppx: u4 = @intCast(self.params.precinct_sizes[self.resolution].x_exp);
+                const ppy: u4 = @intCast(self.params.precinct_sizes[self.resolution].y_exp);
+                if (subbands.isOnPrecinctBoundary(
+                    self.params.num_decomp_levels, self.resolution,
+                    ppx, ppy, self.x, self.y))
+                {
+                    break;
+                }
+                self.resolution += 1;
+            }
+            if (self.resolution < num_resolutions) {
+                const r = self.resolution;
+                const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
+                const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
+                const p_idx = subbands.precinctIndexAt(
+                    self.image_w, self.image_h, self.params.num_decomp_levels,
+                    r, ppx, ppy, self.x, self.y);
+                const result: PacketIndex = .{
+                    .layer = self.layer,
+                    .resolution = r,
+                    .component = self.component,
+                    .precinct = p_idx,
+                };
+                // Advance: l → r → (carry to next-outer dim per order)
+                self.layer += 1;
+                if (self.layer < self.params.num_layers) return result;
+                self.layer = 0;
+                self.resolution += 1; // next candidate r
+                return result;
+            }
+            // No more valid r at current (x, y, c). Reset r and carry
+            // to the next outer dim per progression order.
+            self.resolution = 0;
+            switch (self.params.progression_order) {
+                .pcrl => {
+                    // Inner→outer past r: c, x, y.
+                    self.component += 1;
+                    if (self.component < self.params.num_components) continue;
+                    self.component = 0;
+                    self.x += self.min_stride_x;
+                    if (self.x < self.image_w) continue;
+                    self.x = 0;
+                    self.y += self.min_stride_y;
+                    if (self.y < self.image_h) continue;
+                    self.done = true;
+                },
+                .cprl => {
+                    // Inner→outer past r: x, y, c.
+                    self.x += self.min_stride_x;
+                    if (self.x < self.image_w) continue;
+                    self.x = 0;
+                    self.y += self.min_stride_y;
+                    if (self.y < self.image_h) continue;
+                    self.y = 0;
+                    self.component += 1;
+                    if (self.component < self.params.num_components) continue;
+                    self.done = true;
+                },
+                else => unreachable,
+            }
+        }
+        return null;
     }
 
     const Dim = enum { layer, resolution, component, precinct };
@@ -773,8 +950,19 @@ fn walkPackets(
         }
     }
 
-    // Iterate every packet and read its header.
-    var iter = jp2z.PacketIterator.init(params, 1);
+    // Iterate every packet and read its header. The iterator itself
+    // handles per-resolution variable precinct counts and all five
+    // T.800 progression orders, BUT we deliberately pass image_w =
+    // image_h = 1 here to degenerate it to 1-precinct-per-resolution
+    // mode. Reason: `packet_header.SubbandState` is currently per-
+    // (component, resolution, subband) — one tag tree + one cblk grid
+    // covers a WHOLE subband. Multi-precinct subbands need per-precinct
+    // tag trees + per-precinct cblk sub-grids; until that refactor
+    // lands, emitting "real" PCRL/CPRL packets makes readPacketHeader
+    // over-read because each header walks every cblk in the subband.
+    // d1_colr.j2c is the canary; flip to (image_w, image_h) once the
+    // SubbandState refactor ships.
+    var iter = jp2z.PacketIterator.init(params, 1, 1);
     var body_pos: usize = 0;
     while (iter.next()) |pi| {
         if (body_pos >= tp_body.len) {

@@ -36,9 +36,22 @@ oracle tests.
 - [ ] Known-bad fixtures (truncations, bad markers, garbage fields) — defensive coverage
 
 ### M2 — tier-2 (packet headers)
-- [ ] Progression order: LRCP / RLCP / RPCL / PCRL / CPRL
-- [ ] Packet header decode (PPM / PPT / inline)
-- [ ] Layer / resolution / component / precinct walk
+- [x] Progression order syntax: LRCP / RLCP / RPCL / PCRL / CPRL
+      (PacketIterator covers all 5 with per-r variable precinct counts
+      and reference-grid iteration for non-indexed orders)
+- [x] Packet header decode (inline; PPM / PPT deferred)
+- [x] Layer / resolution / component walk
+- [x] c1_mono.j2c byte-perfect packet walk
+- [x] file1.jp2 byte-perfect packet walk
+- [x] file9.jp2 byte-perfect packet walk
+- [ ] Per-precinct SubbandState — currently `packet_header.SubbandState`
+      is per-(component, resolution, subband) but multi-precinct
+      streams need per-(precinct) tag trees + per-precinct cblk
+      sub-grids. d1_colr.j2c (PCRL + user-defined precincts) over-reads
+      until this lands. walkPackets passes (1, 1) to PacketIterator
+      as a degenerate-mode workaround.
+- [ ] PPM / PPT marker support (packed packet headers in main /
+      tile-part header rather than inline) — separate slice
 
 ### M3 — tier-1 EBCOT
 - [ ] MQ arithmetic coder (initial state, context model)

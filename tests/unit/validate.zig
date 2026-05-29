@@ -101,13 +101,24 @@ test "validate: file9.jp2 → BYTE-PERFECT packet-walk" {
     try std.testing.expect(!saw_under_read);
 }
 
-test "validate: d1_colr.j2c → under-read warn (known limitation: PCRL + user precincts)" {
-    // PCRL ordering + Scod bit 0 = user-defined precincts means the
-    // PacketIterator needs precinct-count-per-resolution + PCRL-
-    // specific iteration (precinct outer). Until both land, d1_colr
-    // surfaces an under-read warning. This test pins the current
-    // state so we'll notice when the fix lands and can flip the
-    // assertion to "walked_to_end."
+test "validate: d1_colr.j2c → under-read warn (known: per-precinct SubbandState still pending)" {
+    // PCRL + user-defined precincts (Scod bit 0) was the headline d1_colr
+    // gap. The PacketIterator now handles both: per-resolution variable
+    // precinct counts AND reference-grid iteration for PCRL/CPRL/RPCL
+    // (see commit dd0830e + the iterator rewrite).
+    //
+    // The remaining piece is `packet_header.SubbandState`: today it
+    // covers a WHOLE subband (one tag tree, one cblk grid), but multi-
+    // precinct subbands need per-precinct tag trees + per-precinct cblk
+    // sub-grids. Without that, even if the iterator emits the right
+    // packet sequence, `readPacketHeader` walks the entire subband's
+    // cblks for every packet — massive over-read.
+    //
+    // Until that refactor lands, walkPackets passes image_w=image_h=1
+    // to the iterator (degenerates to 1-precinct mode), preserving the
+    // under-read warn rather than regressing to a truncated_stream
+    // fail. This test pins the current state; flip to walked_to_end
+    // when the SubbandState refactor lands.
     var report = try jp2z.validate(std.testing.allocator, d1_colr_j2c);
     defer report.deinit(std.testing.allocator);
     var saw_under_read = false;
@@ -115,7 +126,6 @@ test "validate: d1_colr.j2c → under-read warn (known limitation: PCRL + user p
         if (f.code == .jp2_packets_under_read) saw_under_read = true;
     }
     try std.testing.expect(saw_under_read);
-    // isOk() still true — warn is recoverable.
     try std.testing.expect(report.isOk());
 }
 
@@ -239,14 +249,15 @@ test "inspect: d1_colr.j2c uses user-defined 64x64 precincts at every resolution
 // each is a different nesting of the four inner loops.
 
 test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
-    // CodingParams: LRCP, 10 layers, 1 component, 5 decomp → 6 res levels, 1 precinct.
+    // CodingParams: LRCP, 10 layers, 1 component, 5 decomp → 6 res levels.
+    // Default precincts (15, 15) over any image → 1 precinct per resolution.
     const params: jp2z.CodingParams = .{
         .progression_order = .lrcp,
         .num_layers = 10,
         .num_components = 1,
         .num_decomp_levels = 5, // → 6 resolution levels (0..5)
     };
-    var iter = jp2z.PacketIterator.init(params, 1);
+    var iter = jp2z.PacketIterator.init(params, 303, 179);
     try std.testing.expectEqual(@as(usize, 60), iter.total());
 
     var count: usize = 0;
@@ -269,14 +280,17 @@ test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
 }
 
 test "packet iterator: d1_colr PCRL produces 72 packets (1×3×6×4 = 72)" {
-    // CodingParams: PCRL, 4 layers, 3 components, 5 decomp → 6 res, 1 precinct.
+    // CodingParams: PCRL, 4 layers, 3 components, 5 decomp → 6 res.
+    // Default precincts here (15, 15) → 1 precinct per resolution; the
+    // d1_colr fixture itself uses (6, 6) but this test exercises the
+    // default-precinct degenerate case.
     const params: jp2z.CodingParams = .{
         .progression_order = .pcrl,
         .num_layers = 4,
         .num_components = 3,
         .num_decomp_levels = 5,
     };
-    var iter = jp2z.PacketIterator.init(params, 1);
+    var iter = jp2z.PacketIterator.init(params, 256, 149);
     try std.testing.expectEqual(@as(usize, 72), iter.total());
 
     // Confirm first packet is (l=0,r=0,c=0,p=0) and 4th packet is
@@ -314,7 +328,7 @@ test "packet iterator: every progression order covers exactly the full Cartesian
             .num_layers = params.num_layers,
             .num_components = params.num_components,
             .num_decomp_levels = params.num_decomp_levels,
-        }, 1);
+        }, 256, 256);
         try std.testing.expectEqual(expected_total, iter.total());
         var count: usize = 0;
         // Bitset of seen (l,r,c,p) tuples — packs into a u32 for this small case.
@@ -331,6 +345,78 @@ test "packet iterator: every progression order covers exactly the full Cartesian
         try std.testing.expectEqual(expected_total, count);
         try std.testing.expectEqual(@as(u32, (1 << @as(u5, @intCast(expected_total))) - 1), seen);
     }
+}
+
+test "packet iterator: d1_colr params (PCRL, 64×64 precincts) → 240 packets total" {
+    // d1_colr: 256×149, 4 layers, 3 components, num_decomp=5, all
+    // precincts (6, 6) = 64×64. Per T.800 B.6 numPrecincts:
+    //   r=5: 4×3 = 12   r=4: 2×2 = 4   r=0..3: 1×1 = 1 each
+    // Sum = 20 precincts × 3 components × 4 layers = 240 packets.
+    var params: jp2z.CodingParams = .{
+        .progression_order = .pcrl,
+        .num_layers = 4,
+        .num_components = 3,
+        .num_decomp_levels = 5,
+        .scod = 0x01, // user-defined precincts
+    };
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
+    }
+    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    try std.testing.expectEqual(@as(usize, 240), iter.total());
+
+    var count: usize = 0;
+    while (iter.next()) |_| count += 1;
+    try std.testing.expectEqual(@as(usize, 240), count);
+}
+
+test "packet iterator: d1_colr params (PCRL) — first packet is (l=0,r=0,c=0)" {
+    var params: jp2z.CodingParams = .{
+        .progression_order = .pcrl,
+        .num_layers = 4,
+        .num_components = 3,
+        .num_decomp_levels = 5,
+        .scod = 0x01,
+    };
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
+    }
+    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    // PCRL nesting (outer→inner): P, C, R, L. At (x=0, y=0), all 6
+    // resolutions fire (all on boundary). Layer is innermost.
+    const p0 = iter.next().?;
+    try std.testing.expectEqual(@as(u16, 0), p0.layer);
+    try std.testing.expectEqual(@as(u8, 0), p0.resolution);
+    try std.testing.expectEqual(@as(u16, 0), p0.component);
+    try std.testing.expectEqual(@as(u32, 0), p0.precinct);
+    const p1 = iter.next().?;
+    try std.testing.expectEqual(@as(u16, 1), p1.layer); // layer ticks
+    try std.testing.expectEqual(@as(u8, 0), p1.resolution);
+}
+
+test "packet iterator: LRCP with d1_colr params (per-r variable precincts)" {
+    // Same params but LRCP. Total still 240, but order differs: layer
+    // outer, then resolution. After exhausting precincts at r=5 (12)
+    // for the first layer/comp pair, move to r=4 (4 precincts), etc.
+    var params: jp2z.CodingParams = .{
+        .progression_order = .lrcp,
+        .num_layers = 4,
+        .num_components = 3,
+        .num_decomp_levels = 5,
+        .scod = 0x01,
+    };
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
+    }
+    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    try std.testing.expectEqual(@as(usize, 240), iter.total());
+
+    var count: usize = 0;
+    while (iter.next()) |_| count += 1;
+    try std.testing.expectEqual(@as(usize, 240), count);
 }
 
 test "validate: SOC only (no SIZ) emits truncated_stream" {
