@@ -72,9 +72,25 @@ oracle tests.
       tile-part header rather than inline) — separate slice
 
 ### M3 — tier-1 EBCOT
-- [ ] MQ arithmetic coder (initial state, context model)
-- [ ] Code-block decode: significance / refinement / cleanup passes
-- [ ] Context formation per T.800 Annex C
+- [x] MQ arithmetic coder (T.800 Annex C) — 47-entry state table,
+      INITDEC/DECODE/BYTEIN/RENORMD, full MPS/LPS exchange branches
+- [x] EBCOT context model (T.800 D.5) — 19 contexts; RLC + UNIFORM
+      pinned at state 46
+- [x] Cblk coefficient state + ZC context formation (T.800 Table D-1)
+      including HL ↔ V swap and HH-orientation diagonal table
+- [x] SC context formation + sign prediction (T.800 Table D-3,
+      symmetric-pair canonicalisation)
+- [x] MR context formation (T.800 D.3.3) — CX 14/15 first refinement,
+      CX 16 thereafter
+- [x] SP (significance propagation) pass — T.800 D.3.1
+- [x] MR (magnitude refinement) pass — T.800 D.3.2
+- [x] CL (cleanup) pass with RLC sub-path — T.800 D.3.3 / D.3.4
+- [x] Bit-plane orchestration (decodeCblk) — first bp CL-only,
+      subsequent SP→MR→CL, .visited reset between bp, underflow-safe
+- [ ] Walker integration: extract per-cblk byte slices + pass counts
+      across packets so decodeCblk can be invoked on real data
+- [ ] Oracle test against OpenJPEG (byte-perfect cblk output)
+- [ ] Wire decodeCblk into the M2 walker for end-to-end EBCOT
 
 ### M4 — inverse 5/3 wavelet (lossless)
 - [ ] 1D inverse DWT (lifting steps)
@@ -105,3 +121,4 @@ oracle tests.
 - Phase 1 C CLI binary + end-to-end test with byte-perfect oracle comparison vs opj_decompress
 - Phase 2 M1 (core scope): cleanroom codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
 - Phase 2 M2 (tier-2 packet headers): walker BYTE-PERFECT against opj_t2 on every vendored ISO 15444-4 conformance fixture (c1_mono, d1_colr, file1, file9). All 5 progression orders + per-resolution variable precinct counts + reference-grid iteration for PCRL/CPRL + per-precinct SubbandState + T.800 A.6.1 cblk-cap-by-precinct.
+- Phase 2 M3 (tier-1 EBCOT core): MQ arithmetic decoder (T.800 Annex C) + EBCOT context model (19 contexts, ZC/SC/MR formation per T.800 Table D-1/D-3/D.3.3) + three coding passes (SP/MR/CL with RLC sub-path) + bit-plane orchestrator (decodeCblk). 97 inline tests passing. Pending: walker integration to feed real cblk byte slices, then OpenJPEG oracle byte-perfect verification.
