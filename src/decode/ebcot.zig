@@ -91,6 +91,10 @@ pub const Coeff = struct {
     /// first became significant — prevents subsequent passes from
     /// re-processing it.
     visited: bool = false,
+    /// True once magnitude refinement has been performed on this
+    /// coefficient at least once. Drives MR context selection
+    /// (CX 14/15 first time, CX 16 thereafter — T.800 D.3.3).
+    refined: bool = false,
 };
 
 /// Per-code-block decode state: a 2-D coefficient array sized to
@@ -122,6 +126,16 @@ pub const Cblk = struct {
         const yu: u32 = @intCast(y);
         if (xu >= self.width or yu >= self.height) return false;
         return self.coeffs[yu * self.width + xu].significant;
+    }
+
+    /// Sign at (x, y) — out-of-bounds and not-significant both
+    /// return 0 (positive). Used by sign-coding context formation.
+    pub fn sign(self: Cblk, x: i32, y: i32) u1 {
+        if (x < 0 or y < 0) return 0;
+        const xu: u32 = @intCast(x);
+        const yu: u32 = @intCast(y);
+        if (xu >= self.width or yu >= self.height) return 0;
+        return self.coeffs[yu * self.width + xu].sign;
     }
 };
 
@@ -187,6 +201,90 @@ pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
     if (d >= 2) return .zc_2;
     if (d == 1) return .zc_1;
     return .zc_0;
+}
+
+/// Sign-coding context + sign-prediction XOR (T.800 Table D-3).
+/// Per-axis contributions collapse the four (sig × sign) cases into
+/// one of {-1, 0, +1}; the (H, V) pair then picks a CX from 9..13
+/// and an XOR flag that flips the decoded sign bit if 1.
+pub const SignContext = struct {
+    cx: CtxIdx,
+    xor: u1,
+};
+
+fn axisContribution(left_sig: bool, left_sign: u1, right_sig: bool, right_sign: u1) i2 {
+    // Per T.800 Table D-2: each axis (H or V) contributes -1, 0, +1.
+    //   Both significant with same sign: +1 if sign=0 (positive), -1 if sign=1 (negative)
+    //   One significant: that one's sign-contribution (+1 / -1)
+    //   Both significant with opposite signs: 0
+    //   Neither significant: 0
+    const ls: i2 = if (left_sig) (if (left_sign == 0) @as(i2, 1) else @as(i2, -1)) else 0;
+    const rs: i2 = if (right_sig) (if (right_sign == 0) @as(i2, 1) else @as(i2, -1)) else 0;
+    const sum: i32 = @as(i32, ls) + @as(i32, rs);
+    if (sum > 0) return 1;
+    if (sum < 0) return -1;
+    return 0;
+}
+
+pub fn scContext(cblk: Cblk, x: u32, y: u32) SignContext {
+    const xi: i32 = @intCast(x);
+    const yi: i32 = @intCast(y);
+    const h_contrib = axisContribution(
+        cblk.isSig(xi - 1, yi),
+        cblk.sign(xi - 1, yi),
+        cblk.isSig(xi + 1, yi),
+        cblk.sign(xi + 1, yi),
+    );
+    const v_contrib = axisContribution(
+        cblk.isSig(xi, yi - 1),
+        cblk.sign(xi, yi - 1),
+        cblk.isSig(xi, yi + 1),
+        cblk.sign(xi, yi + 1),
+    );
+    // T.800 Table D-3 — closed-form CX + XOR from (H, V):
+    //   CX = 9  + (|H| + |V|? — actually) — table mapping by cases:
+    //   (1,1)=cx13,xor0  (1,0)=cx12,xor0  (1,-1)=cx11,xor0
+    //   (0,1)=cx10,xor0  (0,0)=cx9,xor0   (0,-1)=cx10,xor1
+    //   (-1,1)=cx11,xor1 (-1,0)=cx12,xor1 (-1,-1)=cx13,xor1
+    if (h_contrib == 0 and v_contrib == 0) return .{ .cx = .sc_0, .xor = 0 };
+    // Symmetric pairs share a CX with opposite XOR:
+    //   (H>=0): xor=0; (H<0): xor=1, mapped to (-H,-V) equivalent.
+    var H = h_contrib;
+    var V = v_contrib;
+    var xor: u1 = 0;
+    if (H < 0 or (H == 0 and V < 0)) {
+        H = -H;
+        V = -V;
+        xor = 1;
+    }
+    // Now H >= 0, and if H == 0 then V > 0.
+    if (H == 0) return .{ .cx = .sc_1, .xor = xor }; // (0, 1) → CX 10
+    if (V == 1) return .{ .cx = .sc_4, .xor = xor }; // (1, 1) → CX 13
+    if (V == 0) return .{ .cx = .sc_3, .xor = xor }; // (1, 0) → CX 12
+    // V == -1
+    return .{ .cx = .sc_2, .xor = xor }; // (1, -1) → CX 11
+}
+
+/// Magnitude-refinement context (T.800 D.3.3).
+///   CX 14 (mr_0): first refinement for this coefficient, no
+///                  significant neighbors (H+V+D = 0)
+///   CX 15 (mr_1): first refinement, ≥ 1 significant neighbor
+///   CX 16 (mr_2): subsequent refinements (coeff.refined == true)
+pub fn mrContext(cblk: Cblk, x: u32, y: u32) CtxIdx {
+    const coeff = cblk.coeffs[y * cblk.width + x];
+    if (coeff.refined) return .mr_2;
+    const xi: i32 = @intCast(x);
+    const yi: i32 = @intCast(y);
+    const b = struct {
+        fn s(c: Cblk, xx: i32, yy: i32) u8 {
+            return @intFromBool(c.isSig(xx, yy));
+        }
+    }.s;
+    const sum: u8 = b(cblk, xi - 1, yi) + b(cblk, xi + 1, yi) +
+        b(cblk, xi, yi - 1) + b(cblk, xi, yi + 1) +
+        b(cblk, xi - 1, yi - 1) + b(cblk, xi + 1, yi - 1) +
+        b(cblk, xi - 1, yi + 1) + b(cblk, xi + 1, yi + 1);
+    return if (sum > 0) .mr_1 else .mr_0;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -287,6 +385,82 @@ test "zcContext: LL — H=1, V=0, D=1 → ZC 6" {
     cblk.coeffs[2 * 4 + 1].significant = true; // H neighbor
     cblk.coeffs[1 * 4 + 1].significant = true; // D neighbor
     try std.testing.expectEqual(CtxIdx.zc_6, zcContext(cblk, 2, 2, .ll));
+}
+
+test "scContext: no significant neighbors → CX 9, XOR 0" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    const r = scContext(cblk, 2, 2);
+    try std.testing.expectEqual(CtxIdx.sc_0, r.cx);
+    try std.testing.expectEqual(@as(u1, 0), r.xor);
+}
+
+test "scContext: both H neighbors positive significant → CX 12, XOR 0" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[2 * 4 + 1].significant = true;
+    cblk.coeffs[2 * 4 + 1].sign = 0; // positive
+    cblk.coeffs[2 * 4 + 3].significant = true;
+    cblk.coeffs[2 * 4 + 3].sign = 0;
+    // H_contrib = +1 (both positive). V_contrib = 0. (H=1, V=0) → CX 12, XOR 0.
+    const r = scContext(cblk, 2, 2);
+    try std.testing.expectEqual(CtxIdx.sc_3, r.cx); // CX 12 = sc_3
+    try std.testing.expectEqual(@as(u1, 0), r.xor);
+}
+
+test "scContext: both H neighbors negative significant → CX 12, XOR 1" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[2 * 4 + 1].significant = true;
+    cblk.coeffs[2 * 4 + 1].sign = 1; // negative
+    cblk.coeffs[2 * 4 + 3].significant = true;
+    cblk.coeffs[2 * 4 + 3].sign = 1;
+    // H_contrib = -1. V_contrib = 0. Mapped (1, 0) with XOR 1.
+    const r = scContext(cblk, 2, 2);
+    try std.testing.expectEqual(CtxIdx.sc_3, r.cx);
+    try std.testing.expectEqual(@as(u1, 1), r.xor);
+}
+
+test "scContext: H neighbors with opposing signs cancel → H_contrib 0" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[2 * 4 + 1].significant = true;
+    cblk.coeffs[2 * 4 + 1].sign = 0; // positive
+    cblk.coeffs[2 * 4 + 3].significant = true;
+    cblk.coeffs[2 * 4 + 3].sign = 1; // negative
+    // H_contrib = 0 (cancellation). V_contrib = 0. → CX 9.
+    const r = scContext(cblk, 2, 2);
+    try std.testing.expectEqual(CtxIdx.sc_0, r.cx);
+}
+
+test "mrContext: not yet refined + no significant neighbors → CX 14" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    try std.testing.expectEqual(CtxIdx.mr_0, mrContext(cblk, 2, 2));
+}
+
+test "mrContext: not yet refined + at least one sig neighbor → CX 15" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[1 * 4 + 1].significant = true; // diagonal neighbor sig
+    try std.testing.expectEqual(CtxIdx.mr_1, mrContext(cblk, 2, 2));
+}
+
+test "mrContext: already refined → CX 16 regardless of neighbors" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[2 * 4 + 2].refined = true;
+    try std.testing.expectEqual(CtxIdx.mr_2, mrContext(cblk, 2, 2));
+    // Neighbors don't matter for subsequent refinements.
+    cblk.coeffs[1 * 4 + 1].significant = true;
+    try std.testing.expectEqual(CtxIdx.mr_2, mrContext(cblk, 2, 2));
 }
 
 test "CtxIdx values match OpenJPEG t1.h offsets" {
