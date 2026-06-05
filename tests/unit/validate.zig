@@ -101,32 +101,22 @@ test "validate: file9.jp2 → BYTE-PERFECT packet-walk" {
     try std.testing.expect(!saw_under_read);
 }
 
-test "validate: d1_colr.j2c → under-read warn (known: per-precinct SubbandState still pending)" {
-    // PCRL + user-defined precincts (Scod bit 0) was the headline d1_colr
-    // gap. The PacketIterator now handles both: per-resolution variable
-    // precinct counts AND reference-grid iteration for PCRL/CPRL/RPCL
-    // (see commit dd0830e + the iterator rewrite).
-    //
-    // The remaining piece is `packet_header.SubbandState`: today it
-    // covers a WHOLE subband (one tag tree, one cblk grid), but multi-
-    // precinct subbands need per-precinct tag trees + per-precinct cblk
-    // sub-grids. Without that, even if the iterator emits the right
-    // packet sequence, `readPacketHeader` walks the entire subband's
-    // cblks for every packet — massive over-read.
-    //
-    // Until that refactor lands, walkPackets passes image_w=image_h=1
-    // to the iterator (degenerates to 1-precinct mode), preserving the
-    // under-read warn rather than regressing to a truncated_stream
-    // fail. This test pins the current state; flip to walked_to_end
-    // when the SubbandState refactor lands.
+test "validate: d1_colr.j2c → BYTE-PERFECT packet-walk (PCRL + user precincts)" {
+    // The d1_colr finish: PCRL ordering + user-defined precincts +
+    // T.800 A.6.1 cblk cap by precinct + proper subband-internal
+    // coordinate mapping (cblksInPrecinctSubband mirrors OpenJPEG's
+    // opj_tcd_init_tile). All 4 vendored conformance fixtures now
+    // walk byte-perfect.
     var report = try jp2z.validate(std.testing.allocator, d1_colr_j2c);
     defer report.deinit(std.testing.allocator);
+    var saw_walked_to_end = false;
     var saw_under_read = false;
     for (report.findings.items) |f| {
+        if (f.code == .jp2_packets_walked_to_end) saw_walked_to_end = true;
         if (f.code == .jp2_packets_under_read) saw_under_read = true;
     }
-    try std.testing.expect(saw_under_read);
-    try std.testing.expect(report.isOk());
+    try std.testing.expect(saw_walked_to_end);
+    try std.testing.expect(!saw_under_read);
 }
 
 test "validate: COD body parse emits info jp2_uses_5x3_wavelet for c1_mono" {

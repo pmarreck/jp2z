@@ -44,12 +44,10 @@ oracle tests.
 - [x] c1_mono.j2c byte-perfect packet walk
 - [x] file1.jp2 byte-perfect packet walk
 - [x] file9.jp2 byte-perfect packet walk
-- [ ] Per-precinct SubbandState — currently `packet_header.SubbandState`
-      is per-(component, resolution, subband) but multi-precinct
-      streams need per-(precinct) tag trees + per-precinct cblk
-      sub-grids. d1_colr.j2c (PCRL + user-defined precincts) over-reads
-      until this lands. walkPackets passes (1, 1) to PacketIterator
-      as a degenerate-mode workaround.
+- [x] **d1_colr.j2c byte-perfect packet walk (PCRL + user-defined precincts)**
+- [x] Per-precinct SubbandState (4D: component × resolution × subband × precinct)
+- [x] cblksInPrecinctSubband matches OpenJPEG opj_tcd_init_tile (subband-internal
+      coords + overlap-based cblk count + T.800 A.6.1 cblk-cap-by-precinct)
 - [ ] Findings vocabulary enrichment for corruption-detection consumers
       (primary downstream use case is data integrity, not pixel decode).
       Track every spec deviation; never silently smooth issues. Specifics
@@ -106,3 +104,4 @@ oracle tests.
 - Phase 1 wrapper backend + decode tests against vendored conformance fixtures
 - Phase 1 C CLI binary + end-to-end test with byte-perfect oracle comparison vs opj_decompress
 - Phase 2 M1 (core scope): cleanroom codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
+- Phase 2 M2 (tier-2 packet headers): walker BYTE-PERFECT against opj_t2 on every vendored ISO 15444-4 conformance fixture (c1_mono, d1_colr, file1, file9). All 5 progression orders + per-resolution variable precinct counts + reference-grid iteration for PCRL/CPRL + per-precinct SubbandState + T.800 A.6.1 cblk-cap-by-precinct.
