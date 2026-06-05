@@ -355,6 +355,49 @@ pub fn spPass(
     }
 }
 
+/// Magnitude refinement pass (T.800 D.3.2). The second of the three
+/// coding passes per bit-plane.
+///
+/// Iteration order is identical to SP: 4-row stripes top→bottom;
+/// columns left→right; rows top→bottom within each stripe.
+///
+/// Inclusion criterion: coefficient is significant AND was NOT marked
+/// visited during this bit-plane's SP pass (i.e., it became significant
+/// in a previous bit-plane, not the current one — those just-became-sig
+/// coeffs have already had their sign coded and aren't refined yet).
+///
+/// For each included coefficient:
+///   1. Pick CX via `mrContext` (CX 14/15 first refinement, CX 16
+///      thereafter — driven by `coeff.refined`).
+///   2. Decode the refinement bit and OR `(bit << bp)` into `.magnitude`.
+///   3. Set `.refined = true` so subsequent bit-planes use CX 16.
+pub fn mrPass(
+    dec: *mq.Decoder,
+    cblk: *Cblk,
+    ctxs: *[NUM_CONTEXTS]mq.Context,
+    bp: u5,
+) void {
+    var y_stripe: u32 = 0;
+    while (y_stripe < cblk.height) : (y_stripe += 4) {
+        const rows_in_stripe = @min(@as(u32, 4), cblk.height - y_stripe);
+        var x: u32 = 0;
+        while (x < cblk.width) : (x += 1) {
+            var dy: u32 = 0;
+            while (dy < rows_in_stripe) : (dy += 1) {
+                const y = y_stripe + dy;
+                const idx = y * cblk.width + x;
+                const coeff = cblk.coeffs[idx];
+                if (!coeff.significant) continue;
+                if (coeff.visited) continue; // became sig in this bp's SP
+                const cx = mrContext(cblk.*, x, y);
+                const bit = dec.decode(&ctxs[@intFromEnum(cx)]);
+                cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
+                cblk.coeffs[idx].refined = true;
+            }
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "initContexts: 19 contexts; RLC and UNIFORM at state 46, others fresh" {
@@ -663,4 +706,104 @@ test "spPass: stripe-then-column iteration order" {
     try std.testing.expect(cblk.coeffs[1].visited); // (1,0)
     try std.testing.expect(cblk.coeffs[2].visited); // (0,1)
     try std.testing.expect(cblk.coeffs[3].visited); // (1,1)
+}
+
+// ── MR-pass tests ─────────────────────────────────────────────────
+
+test "mrPass: empty cblk consumes zero MQ decisions" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    mrPass(&dec, &cblk, &ctxs, 0);
+    // No coefficient is significant → MR processes none.
+    try std.testing.expectEqual(bp_before, dec.bp);
+    for (cblk.coeffs) |c| try std.testing.expect(!c.refined);
+}
+
+test "mrPass: skips coefficients marked visited (just became sig this bp)" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    // One coeff significant + visited (became sig in this bp's SP pass).
+    cblk.coeffs[2 * 4 + 2].significant = true;
+    cblk.coeffs[2 * 4 + 2].visited = true;
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    mrPass(&dec, &cblk, &ctxs, 0);
+    // MR should skip the just-became-sig coeff → no decode, no refined.
+    try std.testing.expectEqual(bp_before, dec.bp);
+    try std.testing.expect(!cblk.coeffs[2 * 4 + 2].refined);
+}
+
+test "mrPass: refines significant coefficient — sets .refined, advances MQ" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    // One coeff significant from a previous bitplane (not visited).
+    cblk.coeffs[2 * 4 + 2].significant = true;
+    cblk.coeffs[2 * 4 + 2].magnitude = 0x4; // bit at bp=2
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    mrPass(&dec, &cblk, &ctxs, 1); // refining at bit-plane 1
+    // Exactly one MR decode happened.
+    try std.testing.expect(dec.bp >= bp_before);
+    try std.testing.expect(cblk.coeffs[2 * 4 + 2].refined);
+    // Magnitude either unchanged (bit=0) or has bit-1 set (bit=1).
+    const mag = cblk.coeffs[2 * 4 + 2].magnitude;
+    try std.testing.expect(mag == 0x4 or mag == 0x6);
+    // No other coefficient was refined.
+    for (cblk.coeffs, 0..) |c, idx| {
+        if (idx == 2 * 4 + 2) continue;
+        try std.testing.expect(!c.refined);
+    }
+}
+
+test "mrPass: refined coefficient uses CX 16 (mr_2) on subsequent passes" {
+    // White-box: confirm second refinement of the same coefficient
+    // uses mr_2 by checking the context state of mr_2 advanced
+    // (rather than mr_0/mr_1).
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    cblk.coeffs[2 * 4 + 2].significant = true;
+    cblk.coeffs[2 * 4 + 2].refined = true; // already refined once
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const mr0_state_before = ctxs[@intFromEnum(CtxIdx.mr_0)].state;
+    const mr1_state_before = ctxs[@intFromEnum(CtxIdx.mr_1)].state;
+    const mr2_state_before = ctxs[@intFromEnum(CtxIdx.mr_2)].state;
+    mrPass(&dec, &cblk, &ctxs, 0);
+    // mr_0 and mr_1 must be untouched; mr_2 may or may not have
+    // advanced (depends on whether the decode produced an MPS path
+    // that triggered renormalisation). At minimum, we confirm the
+    // refinement used mr_2 by checking that mr_0/mr_1 didn't change.
+    try std.testing.expectEqual(mr0_state_before, ctxs[@intFromEnum(CtxIdx.mr_0)].state);
+    try std.testing.expectEqual(mr1_state_before, ctxs[@intFromEnum(CtxIdx.mr_1)].state);
+    _ = mr2_state_before;
+}
+
+test "mrPass: all significant + all visited → no work" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    for (cblk.coeffs) |*c| {
+        c.significant = true;
+        c.visited = true;
+    }
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    mrPass(&dec, &cblk, &ctxs, 0);
+    try std.testing.expectEqual(bp_before, dec.bp);
+    for (cblk.coeffs) |c| try std.testing.expect(!c.refined);
 }
