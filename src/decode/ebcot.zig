@@ -493,6 +493,50 @@ pub fn clPass(
     }
 }
 
+/// Reset the per-bitplane `.visited` flag on every coefficient. Called
+/// between bit-planes so the next bit-plane's SP starts from a clean
+/// "no one's been visited yet" state.
+fn resetVisited(cblk: *Cblk) void {
+    for (cblk.coeffs) |*c| c.visited = false;
+}
+
+/// Decode `num_bitplanes` bit-planes of a single code-block, MSB-first,
+/// per T.800 Annex D.
+///
+/// `msb_bp` is the index (0..30) of the MOST-SIGNIFICANT bit-plane to
+/// decode — i.e. the highest non-zero bit-plane reported by the tier-2
+/// inclusion-tag-tree. The first bit-plane uses CL only (no significance
+/// to propagate, none to refine); subsequent bit-planes run SP → MR → CL.
+/// `.visited` is reset between bit-planes so per-bp semantics hold.
+///
+/// The decoder must already be initialised against the cblk's segment
+/// data (`mq.Decoder.initDec`); contexts must be freshly init'd
+/// (`initContexts`).
+pub fn decodeCblk(
+    dec: *mq.Decoder,
+    cblk: *Cblk,
+    ctxs: *[NUM_CONTEXTS]mq.Context,
+    orient: Orientation,
+    msb_bp: u5,
+    num_bitplanes: u5,
+) void {
+    if (num_bitplanes == 0) return;
+    // First bit-plane: CL only.
+    clPass(dec, cblk, ctxs, orient, msb_bp);
+    resetVisited(cblk);
+    // Subsequent bit-planes: SP → MR → CL.
+    var i: u5 = 1;
+    while (i < num_bitplanes) : (i += 1) {
+        // Saturating subtract: bp can't underflow below 0.
+        if (i > msb_bp) break;
+        const bp = msb_bp - i;
+        spPass(dec, cblk, ctxs, orient, bp);
+        mrPass(dec, cblk, ctxs, bp);
+        clPass(dec, cblk, ctxs, orient, bp);
+        resetVisited(cblk);
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "initContexts: 19 contexts; RLC and UNIFORM at state 46, others fresh" {
@@ -1016,4 +1060,84 @@ test "clPass: partial-stripe rows never use RLC, only ZC" {
     clPass(&dec, &cblk, &ctxs, .ll, 0);
     // RLC context state unchanged — partial stripe avoided RLC entirely.
     try std.testing.expectEqual(rlc_state_before, ctxs[@intFromEnum(CtxIdx.rlc)].state);
+}
+
+// ── decodeCblk (bit-plane orchestration) tests ────────────────────
+
+test "resetVisited: clears flag on every coefficient" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    for (cblk.coeffs) |*c| c.visited = true;
+    resetVisited(&cblk);
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+test "decodeCblk: num_bitplanes = 0 is a no-op" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    decodeCblk(&dec, &cblk, &ctxs, .ll, 7, 0);
+    try std.testing.expectEqual(bp_before, dec.bp);
+    for (cblk.coeffs) |c| {
+        try std.testing.expect(!c.significant);
+        try std.testing.expect(!c.visited);
+    }
+}
+
+test "decodeCblk: num_bitplanes = 1 runs ONLY a CL pass (no SP/MR)" {
+    // White-box: confirm SP/MR contexts (mr_0..mr_2) untouched after
+    // a single-bitplane decode — only CL was run, and CL never selects
+    // an mr_* context.
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00 };
+    var dec = mq.Decoder.initDec(&stream);
+    const mr0_before = ctxs[@intFromEnum(CtxIdx.mr_0)].state;
+    const mr1_before = ctxs[@intFromEnum(CtxIdx.mr_1)].state;
+    const mr2_before = ctxs[@intFromEnum(CtxIdx.mr_2)].state;
+    decodeCblk(&dec, &cblk, &ctxs, .ll, 7, 1);
+    try std.testing.expectEqual(mr0_before, ctxs[@intFromEnum(CtxIdx.mr_0)].state);
+    try std.testing.expectEqual(mr1_before, ctxs[@intFromEnum(CtxIdx.mr_1)].state);
+    try std.testing.expectEqual(mr2_before, ctxs[@intFromEnum(CtxIdx.mr_2)].state);
+    // All .visited reset at end of bit-plane.
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+test "decodeCblk: multi-bitplane decode resets visited between bit-planes" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    // Larger stream — multi-bp decode consumes many bits.
+    const stream = [_]u8{
+        0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00,
+        0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78, 0xFF, 0x00,
+    };
+    var dec = mq.Decoder.initDec(&stream);
+    decodeCblk(&dec, &cblk, &ctxs, .ll, 7, 4);
+    // After full decode, .visited must be reset (post-last-bp reset).
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+test "decodeCblk: msb_bp = 0 with num_bitplanes > 1 doesn't underflow" {
+    // Sanity guard: when msb_bp is small and num_bitplanes is large,
+    // bp = msb_bp - i would underflow on u5. The implementation breaks
+    // out of the loop instead.
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    // msb_bp = 0, num_bitplanes = 3 → only the CL at bp=0 runs;
+    // subsequent SP/MR/CL iterations would need bp=-1, -2 (impossible).
+    decodeCblk(&dec, &cblk, &ctxs, .ll, 0, 3);
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
 }
