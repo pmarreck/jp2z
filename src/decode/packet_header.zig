@@ -206,20 +206,39 @@ pub const SubbandState = struct {
         cblk_h_exp: u8,
     ) std.mem.Allocator.Error!SubbandState {
         const grid = subbands.codeBlockGrid(sb, cblk_w_exp, cblk_h_exp);
-        const blocks = try allocator.alloc(CodeBlockState, @as(usize, grid.width) * @as(usize, grid.height));
+        return initFromGrid(allocator, grid.width, grid.height);
+    }
+
+    /// Direct constructor for the per-(component, resolution, subband,
+    /// precinct) allocation pattern, where the caller has already
+    /// computed the precinct's cblk grid via `cblksInPrecinctSubband`.
+    /// Handles the empty case (grid 0×0 — common when a precinct
+    /// doesn't intersect its subband): TagTrees are still allocated
+    /// at minimum 1×1 (so deinit is uniform), but `grid_w == 0`
+    /// signals readPacketHeader to skip this subband-state entirely.
+    pub fn initFromGrid(
+        allocator: std.mem.Allocator,
+        grid_w: u32,
+        grid_h: u32,
+    ) std.mem.Allocator.Error!SubbandState {
+        const is_empty = grid_w == 0 or grid_h == 0;
+        const tree_w: u32 = if (is_empty) 1 else grid_w;
+        const tree_h: u32 = if (is_empty) 1 else grid_h;
+
+        const blocks_len: usize = if (is_empty) 0 else @as(usize, grid_w) * @as(usize, grid_h);
+        const blocks = try allocator.alloc(CodeBlockState, blocks_len);
         @memset(blocks, .{});
         errdefer allocator.free(blocks);
 
-        // Tag tree dims = code-block grid dims (one leaf per cblk).
-        var incl = try TagTree.init(allocator, grid.width, grid.height);
+        var incl = try TagTree.init(allocator, tree_w, tree_h);
         errdefer incl.deinit(allocator);
-        const zb = try TagTree.init(allocator, grid.width, grid.height);
+        const zb = try TagTree.init(allocator, tree_w, tree_h);
         return .{
             .inclusion_tree = incl,
             .zero_bitplane_tree = zb,
             .blocks = blocks,
-            .grid_w = grid.width,
-            .grid_h = grid.height,
+            .grid_w = grid_w,
+            .grid_h = grid_h,
         };
     }
 
@@ -280,6 +299,40 @@ pub fn readPacketHeader(
     }
     reader.alignToByte();
     return total_length;
+}
+
+test "SubbandState.initFromGrid: 0×0 → empty (no blocks, deinit-safe)" {
+    const allocator = std.testing.allocator;
+    var s = try SubbandState.initFromGrid(allocator, 0, 0);
+    defer s.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 0), s.grid_w);
+    try std.testing.expectEqual(@as(u32, 0), s.grid_h);
+    try std.testing.expectEqual(@as(usize, 0), s.blocks.len);
+}
+
+test "SubbandState.initFromGrid: 2×3 → six blocks, tag trees sized to grid" {
+    const allocator = std.testing.allocator;
+    var s = try SubbandState.initFromGrid(allocator, 2, 3);
+    defer s.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 2), s.grid_w);
+    try std.testing.expectEqual(@as(u32, 3), s.grid_h);
+    try std.testing.expectEqual(@as(usize, 6), s.blocks.len);
+    try std.testing.expectEqual(@as(u32, 2), s.inclusion_tree.width);
+    try std.testing.expectEqual(@as(u32, 3), s.inclusion_tree.height);
+}
+
+test "readPacketHeader: empty SubbandState (0×0 grid) is a no-op subband contribution" {
+    // Confirms the per-precinct-empty case: walker can pass an empty
+    // SubbandState alongside non-empty ones; readPacketHeader will
+    // simply not read any cblk bits for the empty slot.
+    const allocator = std.testing.allocator;
+    var empty = try SubbandState.initFromGrid(allocator, 0, 0);
+    defer empty.deinit(allocator);
+    // Stream: just the zero-length-packet flag = '0' + byte align padding.
+    var reader = BitReader.init(&.{0x00}, .{});
+    var states = [_]SubbandState{empty};
+    const len = readPacketHeader(&reader, &states, 0, 0).?;
+    try std.testing.expectEqual(@as(u32, 0), len);
 }
 
 test "readPacketHeader: empty packet flag '0' followed by alignment" {
