@@ -171,6 +171,102 @@ pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u
     return (x % stride.width == 0) and (y % stride.height == 0);
 }
 
+/// Code-block count inside one precinct's portion of one subband.
+/// Returns (0, 0) when the precinct doesn't overlap the subband
+/// (which is common — most precincts at fine resolutions sit
+/// outside the HF subband areas, and most precincts at coarse
+/// resolutions span only the LL band).
+///
+/// The math:
+///   1. Precinct rect on resolution-r grid = (px·2^PPx, py·2^PPy)
+///      to ((px+1)·2^PPx, (py+1)·2^PPy), clipped to res extent.
+///   2. Subband rect on resolution-r grid:
+///        r=0 LL: full (0,0)-(res_0.w, res_0.h)
+///        r≥1 HL: (res_{r-1}.w, 0)-(res_r.w,  res_{r-1}.h)
+///        r≥1 LH: (0, res_{r-1}.h)-(res_{r-1}.w, res_r.h)
+///        r≥1 HH: (res_{r-1}.w, res_{r-1}.h)-(res_r.w, res_r.h)
+///   3. Intersect (1) and (2); translate to subband-internal coords.
+///   4. Cblks tile the subband on a 2^(cblk_w_exp+2) grid starting
+///      at (0, 0) subband-internal. Count distinct cblk indices that
+///      overlap the precinct's local rect.
+pub fn cblksInPrecinctSubband(
+    image_w: u32,
+    image_h: u32,
+    num_decomp_levels: u8,
+    r: u8,
+    sb_idx: u8,
+    precinct_x: u32,
+    precinct_y: u32,
+    ppx: u4,
+    ppy: u4,
+    cblk_w_exp: u8,
+    cblk_h_exp: u8,
+) GridSize {
+    const res_ext = resolutionExtent(image_w, image_h, num_decomp_levels, r);
+    // 1. Precinct rect on resolution-r grid, clipped to res extent.
+    const pdx: u32 = @as(u32, 1) << @intCast(ppx);
+    const pdy: u32 = @as(u32, 1) << @intCast(ppy);
+    const prc_x0 = precinct_x * pdx;
+    const prc_y0 = precinct_y * pdy;
+    if (prc_x0 >= res_ext.width or prc_y0 >= res_ext.height) {
+        return .{ .width = 0, .height = 0 };
+    }
+    const prc_x1 = @min(prc_x0 + pdx, res_ext.width);
+    const prc_y1 = @min(prc_y0 + pdy, res_ext.height);
+
+    // 2. Subband rect on resolution-r grid.
+    var sb_x0: u32 = 0;
+    var sb_y0: u32 = 0;
+    var sb_x1: u32 = res_ext.width;
+    var sb_y1: u32 = res_ext.height;
+    if (r > 0) {
+        const prev = resolutionExtent(image_w, image_h, num_decomp_levels, r - 1);
+        switch (sb_idx) {
+            0 => { // HL — upper-right
+                sb_x0 = prev.width;
+                sb_y1 = prev.height;
+            },
+            1 => { // LH — lower-left
+                sb_x1 = prev.width;
+                sb_y0 = prev.height;
+            },
+            2 => { // HH — lower-right
+                sb_x0 = prev.width;
+                sb_y0 = prev.height;
+            },
+            else => return .{ .width = 0, .height = 0 },
+        }
+    }
+
+    // 3. Intersection on res-r grid.
+    const ix0 = @max(prc_x0, sb_x0);
+    const iy0 = @max(prc_y0, sb_y0);
+    const ix1 = @min(prc_x1, sb_x1);
+    const iy1 = @min(prc_y1, sb_y1);
+    if (ix1 <= ix0 or iy1 <= iy0) return .{ .width = 0, .height = 0 };
+
+    // 4. Translate to subband-internal coords + cblk count.
+    const local_x0 = ix0 - sb_x0;
+    const local_y0 = iy0 - sb_y0;
+    const local_x1 = ix1 - sb_x0;
+    const local_y1 = iy1 - sb_y0;
+    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp + 2);
+    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp + 2);
+    // Cblks tile the subband on a fixed grid (origins at multiples
+    // of cblk_w/cblk_h, starting at (0, 0)). A cblk "belongs to"
+    // this precinct iff its ORIGIN is in [local_x0, local_x1) ×
+    // [local_y0, local_y1) — NOT merely if the cblk overlaps the
+    // rect. (Overlap-counting would double-count cblks straddling
+    // a precinct boundary.)
+    const first_x = (local_x0 + cblk_w - 1) / cblk_w; // ceil
+    const last_x = (local_x1 - 1) / cblk_w; // floor of (x1-1)
+    const first_y = (local_y0 + cblk_h - 1) / cblk_h;
+    const last_y = (local_y1 - 1) / cblk_h;
+    const cblk_x_count: u32 = if (last_x >= first_x) last_x - first_x + 1 else 0;
+    const cblk_y_count: u32 = if (last_y >= first_y) last_y - first_y + 1 else 0;
+    return .{ .width = cblk_x_count, .height = cblk_y_count };
+}
+
 /// Total code-blocks across every resolution and subband (single
 /// component, single precinct per subband). Useful as a sanity
 /// metric for "what does it take to walk one (component, layer)
@@ -347,6 +443,55 @@ test "isOnPrecinctBoundary: PCRL outer iteration determines which (r) fires at e
     while (r <= 5) : (r += 1) {
         try std.testing.expectEqual(true, isOnPrecinctBoundary(5, r, 6, 6, 0, 0));
     }
+}
+
+test "cblksInPrecinctSubband: d1_colr r=5 precinct (0,0) — outside HF area → 0 cblks for every HF subband" {
+    // d1_colr image 256×149, num_decomp_levels=5, precincts 64×64, cblks 64×64.
+    // Precinct (0,0) at r=5 covers res-r grid (0,0)–(64,64), entirely inside
+    // the LL_4 quadrant. All three HF subbands at r=5 start past x=128 or
+    // y=75, so the precinct intersects none of them.
+    var sb: u8 = 0;
+    while (sb < 3) : (sb += 1) {
+        const g = cblksInPrecinctSubband(256, 149, 5, 5, sb, 0, 0, 6, 6, 4, 4);
+        try std.testing.expectEqual(@as(u32, 0), g.width);
+        try std.testing.expectEqual(@as(u32, 0), g.height);
+    }
+}
+
+test "cblksInPrecinctSubband: d1_colr r=5 precinct (2,0) HL → 1 cblk" {
+    // Precinct (2,0) covers res-r (128,0)-(192,64). Intersects HL_5
+    // (which sits at res-r (128,0)-(256,75)) exactly: (128,0)-(192,64).
+    // In HL subband-internal: (0,0)-(64,64). With 64×64 cblks → 1×1.
+    const g = cblksInPrecinctSubband(256, 149, 5, 5, 0, 2, 0, 6, 6, 4, 4);
+    try std.testing.expectEqual(@as(u32, 1), g.width);
+    try std.testing.expectEqual(@as(u32, 1), g.height);
+}
+
+test "cblksInPrecinctSubband: d1_colr r=5 precinct (3,2) HH (image edge) → 1 cblk" {
+    // Precinct (3,2) covers res-r (192,128)-(256,192), clipped to image
+    // extent (256×149) → (192,128)-(256,149). Intersects HH_5
+    // (res-r (128,75)-(256,149)) → (192,128)-(256,149). Width 64, height 21.
+    // In HH subband-internal: (64,53)-(128,74). One 64×64 cblk covers it.
+    const g = cblksInPrecinctSubband(256, 149, 5, 5, 2, 3, 2, 6, 6, 4, 4);
+    try std.testing.expectEqual(@as(u32, 1), g.width);
+    try std.testing.expectEqual(@as(u32, 1), g.height);
+}
+
+test "cblksInPrecinctSubband: c1_mono default precincts → whole subband per precinct" {
+    // c1_mono image 303×179, default precincts 2^15. Every (resolution,
+    // subband) has exactly one precinct that contains the entire subband.
+    // r=5 HL subband: 151×90 → cblk grid 3×2 = 6.
+    const g = cblksInPrecinctSubband(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
+    try std.testing.expectEqual(@as(u32, 3), g.width);
+    try std.testing.expectEqual(@as(u32, 2), g.height);
+}
+
+test "cblksInPrecinctSubband: r=0 LL — precinct intersects the LL subband" {
+    // d1_colr r=0: LL is res_0 extent (8×5). Precinct (0,0) on res-r
+    // grid is (0,0)-(64,64) but clipped to (0,0)-(8,5). cblks 64×64: 1×1.
+    const g = cblksInPrecinctSubband(256, 149, 5, 0, 0, 0, 0, 6, 6, 4, 4);
+    try std.testing.expectEqual(@as(u32, 1), g.width);
+    try std.testing.expectEqual(@as(u32, 1), g.height);
 }
 
 test "totalCodeBlocksPerLayerPerComponent: c1_mono.j2c = 34" {
