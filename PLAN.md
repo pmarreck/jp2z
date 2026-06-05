@@ -50,6 +50,26 @@ oracle tests.
       sub-grids. d1_colr.j2c (PCRL + user-defined precincts) over-reads
       until this lands. walkPackets passes (1, 1) to PacketIterator
       as a degenerate-mode workaround.
+- [ ] Findings vocabulary enrichment for corruption-detection consumers
+      (primary downstream use case is data integrity, not pixel decode).
+      Track every spec deviation; never silently smooth issues. Specifics
+      to add (FindingCode numeric values must be NEW and APPEND-ONLY —
+      see core/errors.zig):
+        - Per-COD-field range findings (split `jp2_invalid_codestream`
+          into specific codes for prog order / num_layers / decomp depth
+          / cblk dims / cblksty bits / qmfbid)
+        - Per-QCD-field range findings (split quant style / guard bits /
+          per-subband step sizes)
+        - Per-SIZ-field findings (Csiz=0, Xsiz<=XOsiz, Ssiz reserved
+          bits set, XRsiz=0 / YRsiz=0, Rsiz reserved)
+        - Per-tile-part `Psot` mismatch (declared vs actual SOT-to-next
+          distance)
+        - Per-packet contribution length mismatch (when fully cleanroom)
+        - `jp2_trailing_data_after_eoc` (currently partial — warn only)
+        - Per-component descriptor info findings (sign / precision /
+          sample period) so consumers can show per-component metadata
+        - Once M3-M6 land: cblk-level integrity (segment termination
+          marker presence / MQ-coder predictable-termination violations)
 - [ ] PPM / PPT marker support (packed packet headers in main /
       tile-part header rather than inline) — separate slice
 

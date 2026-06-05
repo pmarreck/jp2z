@@ -250,8 +250,17 @@ pub fn cblksInPrecinctSubband(
     const local_y0 = iy0 - sb_y0;
     const local_x1 = ix1 - sb_x0;
     const local_y1 = iy1 - sb_y0;
-    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp + 2);
-    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp + 2);
+    // T.800 A.6.1 cap: the actual cblk size for a subband is the
+    // smaller of 2^(cblk_exp+2) and the precinct dim in the subband
+    // domain. For r=0 LL the subband-domain precinct dim is 2^PPx;
+    // for r≥1 HF it's halved to 2^(PPx-1) (the wavelet downsampling
+    // halves the precinct in subband space).
+    const precinct_dim_x_exp: u8 = if (r == 0) @as(u8, @intCast(ppx)) else @as(u8, @intCast(ppx)) - 1;
+    const precinct_dim_y_exp: u8 = if (r == 0) @as(u8, @intCast(ppy)) else @as(u8, @intCast(ppy)) - 1;
+    const cblk_w_exp_actual: u8 = @min(cblk_w_exp + 2, precinct_dim_x_exp);
+    const cblk_h_exp_actual: u8 = @min(cblk_h_exp + 2, precinct_dim_y_exp);
+    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp_actual);
+    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp_actual);
     // Cblks tile the subband on a fixed grid (origins at multiples
     // of cblk_w/cblk_h, starting at (0, 0)). A cblk "belongs to"
     // this precinct iff its ORIGIN is in [local_x0, local_x1) ×
@@ -458,22 +467,25 @@ test "cblksInPrecinctSubband: d1_colr r=5 precinct (0,0) — outside HF area →
     }
 }
 
-test "cblksInPrecinctSubband: d1_colr r=5 precinct (2,0) HL → 1 cblk" {
+test "cblksInPrecinctSubband: d1_colr r=5 precinct (2,0) HL → 2×2 cblks (cblk capped to 32 by precinct)" {
     // Precinct (2,0) covers res-r (128,0)-(192,64). Intersects HL_5
-    // (which sits at res-r (128,0)-(256,75)) exactly: (128,0)-(192,64).
-    // In HL subband-internal: (0,0)-(64,64). With 64×64 cblks → 1×1.
+    // (res-r (128,0)-(256,75)) → (128,0)-(192,64). 64×64.
+    // In HL subband-internal: (0,0)-(64,64). T.800 A.6.1 cap: HF
+    // cblk = min(2^(4+2)=64, 2^(PPx-1)=32) = 32. Cblk origins at
+    // (0,0), (32,0), (0,32), (32,32) — all 4 in rect → 2×2.
     const g = cblksInPrecinctSubband(256, 149, 5, 5, 0, 2, 0, 6, 6, 4, 4);
-    try std.testing.expectEqual(@as(u32, 1), g.width);
-    try std.testing.expectEqual(@as(u32, 1), g.height);
+    try std.testing.expectEqual(@as(u32, 2), g.width);
+    try std.testing.expectEqual(@as(u32, 2), g.height);
 }
 
-test "cblksInPrecinctSubband: d1_colr r=5 precinct (3,2) HH (image edge) → 1 cblk" {
+test "cblksInPrecinctSubband: d1_colr r=5 precinct (3,2) HH (image edge) → 2×1 cblks" {
     // Precinct (3,2) covers res-r (192,128)-(256,192), clipped to image
-    // extent (256×149) → (192,128)-(256,149). Intersects HH_5
-    // (res-r (128,75)-(256,149)) → (192,128)-(256,149). Width 64, height 21.
-    // In HH subband-internal: (64,53)-(128,74). One 64×64 cblk covers it.
+    // extent → (192,128)-(256,149). Intersects HH_5 (res-r (128,75)-
+    // (256,149)) → (192,128)-(256,149). 64×21.
+    // HH subband-internal: (64,53)-(128,74). With 32×32 cblks (capped),
+    // origins in rect: (64,64) and (96,64) → 2×1.
     const g = cblksInPrecinctSubband(256, 149, 5, 5, 2, 3, 2, 6, 6, 4, 4);
-    try std.testing.expectEqual(@as(u32, 1), g.width);
+    try std.testing.expectEqual(@as(u32, 2), g.width);
     try std.testing.expectEqual(@as(u32, 1), g.height);
 }
 

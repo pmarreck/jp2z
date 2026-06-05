@@ -905,78 +905,96 @@ fn walkPackets(
 ) Allocator.Error!void {
     const num_resolutions: u8 = params.num_decomp_levels + 1;
 
-    // Allocate SubbandStates: a flat array indexed by
-    // (component * num_subband_slots) + slot, where slot covers
-    // every (resolution, subband_index) pair for a single
-    // component (so 1 + 3 * num_decomp_levels slots per component).
-    const slots_per_component: usize =
-        1 + 3 * @as(usize, params.num_decomp_levels);
-    const total_slots: usize =
-        slots_per_component * @as(usize, params.num_components);
+    // Per-resolution precinct counts and a prefix-sum offset into
+    // the flat per-component slot array. With per-(component,
+    // resolution, subband, precinct) layout, each component owns
+    //   sum_r (subband_count(r) × precincts_at_r[r])
+    // SubbandStates back-to-back; resolution_offset[r] indexes the
+    // start of resolution r within one component's pool.
+    var precincts_at_r: [33]u32 = @splat(0);
+    var resolution_offset: [33]usize = @splat(0);
+    var slots_per_component: usize = 0;
+    {
+        var r: u8 = 0;
+        while (r < num_resolutions) : (r += 1) {
+            resolution_offset[r] = slots_per_component;
+            const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
+            const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
+            const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+            precincts_at_r[r] = grid.width * grid.height;
+            slots_per_component += @as(usize, subbands.subbandCount(r)) * @as(usize, precincts_at_r[r]);
+        }
+    }
+
+    const total_slots: usize = slots_per_component * @as(usize, params.num_components);
+    if (total_slots == 0) return; // degenerate — nothing to walk
 
     const states = try allocator.alloc(packet_header.SubbandState, total_slots);
     var initialised: usize = 0;
-    // Single deinit/free path that handles both partial-init failure
-    // (mid-loop) and fully-initialised success — registering
-    // separate errdefer + defer would double-free.
+    // Single deinit/free path covers both partial-init failure
+    // (allocator OOM mid-loop) and fully-initialised success.
     defer {
         var i: usize = 0;
         while (i < initialised) : (i += 1) states[i].deinit(allocator);
         allocator.free(states);
     }
 
-    // Populate every slot. Slot indexing: for component c, slot 0
-    // is resolution 0's only LL subband, then for r = 1..R the
-    // three HL/LH/HH live at offsets 1+3*(r-1)+0..2.
-    var c: u8 = 0;
-    while (c < params.num_components) : (c += 1) {
-        var r: u8 = 0;
-        while (r < num_resolutions) : (r += 1) {
-            const sb_count = subbands.subbandCount(r);
-            var i: u8 = 0;
-            while (i < sb_count) : (i += 1) {
-                const sb = subbands.subbandDims(image_w, image_h, params.num_decomp_levels, r, i);
-                const slot = slotIndex(c, r, i, slots_per_component);
-                // Store BEFORE bumping initialised so the defer can
-                // free this entry if a later init in the loop fails.
-                states[slot] = try packet_header.SubbandState.init(
-                    allocator,
-                    sb,
-                    params.cblk_width_exp,
-                    params.cblk_height_exp,
-                );
-                initialised = slot + 1;
+    // Populate every slot — one SubbandState per
+    // (component, resolution, subband, precinct), sized to that
+    // precinct's cblk count via cblksInPrecinctSubband. Empty
+    // (0×0) precincts get an empty SubbandState (a no-op for
+    // readPacketHeader's inner loop).
+    {
+        var c: u16 = 0;
+        while (c < params.num_components) : (c += 1) {
+            var r: u8 = 0;
+            while (r < num_resolutions) : (r += 1) {
+                const sb_count = subbands.subbandCount(r);
+                const pcount = precincts_at_r[r];
+                const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
+                const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
+                const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                var sb: u8 = 0;
+                while (sb < sb_count) : (sb += 1) {
+                    var p: u32 = 0;
+                    while (p < pcount) : (p += 1) {
+                        const prc_x = p % grid.width;
+                        const prc_y = p / grid.width;
+                        const cblks = subbands.cblksInPrecinctSubband(
+                            image_w, image_h, params.num_decomp_levels,
+                            r, sb, prc_x, prc_y, ppx, ppy,
+                            params.cblk_width_exp, params.cblk_height_exp,
+                        );
+                        const slot = slotIndex(@intCast(c), r, sb, p, resolution_offset, precincts_at_r, slots_per_component);
+                        states[slot] = try packet_header.SubbandState.initFromGrid(
+                            allocator,
+                            cblks.width,
+                            cblks.height,
+                        );
+                        initialised = slot + 1;
+                    }
+                }
             }
         }
     }
 
-    // Iterate every packet and read its header. The iterator itself
-    // handles per-resolution variable precinct counts and all five
-    // T.800 progression orders, BUT we deliberately pass image_w =
-    // image_h = 1 here to degenerate it to 1-precinct-per-resolution
-    // mode. Reason: `packet_header.SubbandState` is currently per-
-    // (component, resolution, subband) — one tag tree + one cblk grid
-    // covers a WHOLE subband. Multi-precinct subbands need per-precinct
-    // tag trees + per-precinct cblk sub-grids; until that refactor
-    // lands, emitting "real" PCRL/CPRL packets makes readPacketHeader
-    // over-read because each header walks every cblk in the subband.
-    // d1_colr.j2c is the canary; flip to (image_w, image_h) once the
-    // SubbandState refactor ships.
-    var iter = jp2z.PacketIterator.init(params, 1, 1);
+    // Walk every packet via the full per-r-variable-precinct iterator.
+    var iter = jp2z.PacketIterator.init(params, image_w, image_h);
     var body_pos: usize = 0;
     while (iter.next()) |pi| {
         if (body_pos >= tp_body.len) {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
             return;
         }
-        // Build the per-packet view: one SubbandState pointer per
-        // subband at this resolution, for the relevant component.
+        // Per-packet view: SubbandStates for (component, resolution,
+        // all-subbands-at-r, this-precinct). value-copied in (will be
+        // copied out after readPacketHeader has mutated state).
         var view_buf: [3]packet_header.SubbandState = undefined;
         const sb_count = subbands.subbandCount(pi.resolution);
-        var i: u8 = 0;
-        while (i < sb_count) : (i += 1) {
-            const slot = slotIndex(@intCast(pi.component), pi.resolution, i, slots_per_component);
-            view_buf[i] = states[slot];
+        var sb: u8 = 0;
+        while (sb < sb_count) : (sb += 1) {
+            const slot = slotIndex(@intCast(pi.component), pi.resolution, sb, pi.precinct, resolution_offset, precincts_at_r, slots_per_component);
+            view_buf[sb] = states[slot];
         }
         const view = view_buf[0..sb_count];
 
@@ -987,10 +1005,10 @@ fn walkPackets(
         };
 
         // Write back the (mutated) SubbandState entries.
-        i = 0;
-        while (i < sb_count) : (i += 1) {
-            const slot = slotIndex(@intCast(pi.component), pi.resolution, i, slots_per_component);
-            states[slot] = view[i];
+        sb = 0;
+        while (sb < sb_count) : (sb += 1) {
+            const slot = slotIndex(@intCast(pi.component), pi.resolution, sb, pi.precinct, resolution_offset, precincts_at_r, slots_per_component);
+            states[slot] = view[sb];
         }
 
         const header_bytes = reader.bytesConsumed();
@@ -1003,8 +1021,7 @@ fn walkPackets(
     }
 
     // Surface walker-vs-tile-part-body match status as findings.
-    // Only meaningful when COD was fully parsed (num_layers > 0) —
-    // skip for synthetic / partial codestreams that never reached COD.
+    // Only meaningful when COD was fully parsed (num_layers > 0).
     if (params.num_layers > 0) {
         if (body_pos == tp_body.len) {
             try emit(report, allocator, .info, .jp2_packets_walked_to_end, body_offset_in_data, null);
@@ -1014,10 +1031,23 @@ fn walkPackets(
     }
 }
 
-fn slotIndex(component: u8, resolution: u8, subband_idx: u8, slots_per_component: usize) usize {
+/// 4-D index into the flat per-component SubbandState pool. Layout:
+///   slot(c, r, sb, p) = c·slots_per_component
+///                     + resolution_offset[r]
+///                     + sb·precincts_at_r[r]
+///                     + p
+fn slotIndex(
+    component: u16,
+    resolution: u8,
+    subband_idx: u8,
+    precinct: u32,
+    resolution_offset: [33]usize,
+    precincts_at_r: [33]u32,
+    slots_per_component: usize,
+) usize {
     const base = @as(usize, component) * slots_per_component;
-    if (resolution == 0) return base; // LL
-    return base + 1 + (@as(usize, resolution) - 1) * 3 + @as(usize, subband_idx);
+    const sb_offset = @as(usize, subband_idx) * @as(usize, precincts_at_r[resolution]);
+    return base + resolution_offset[resolution] + sb_offset + @as(usize, precinct);
 }
 
 fn isKnownMainHeaderMarker(marker: u16) bool {
