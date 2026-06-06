@@ -1,0 +1,132 @@
+--- a/src/lib/openjp2/t1.c
++++ b/src/lib/openjp2/t1.c
+@@ -218,7 +218,11 @@
+                                    OPJ_UINT32 cblksty,
+                                    opj_event_mgr_t *p_manager,
+                                    opj_mutex_t* p_manager_mutex,
+-                                   OPJ_BOOL check_pterm);
++                                   OPJ_BOOL check_pterm,
++                                   OPJ_UINT32 jp2z_dump_tile,
++                                   OPJ_UINT32 jp2z_dump_comp,
++                                   OPJ_UINT32 jp2z_dump_resno,
++                                   OPJ_UINT32 jp2z_dump_precinct);
+ 
+ /**
+ Decode 1 HT code-block
+@@ -1711,7 +1715,11 @@
+                     tccp->cblksty,
+                     job->p_manager,
+                     job->p_manager_mutex,
+-                    job->check_pterm)) {
++                    job->check_pterm,
++                    0u, /* tile_idx — single-tile fixtures only for now */
++                    tilec->compno,
++                    job->resno,
++                    0u  /* precinct_idx — TODO when multi-precinct oracle is wired */)) {
+             *(job->pret) = OPJ_FALSE;
+             opj_free(job);
+             return;
+@@ -1993,8 +2001,80 @@
+ #endif
+     return;
+ }
++
++
++/* --- jp2z cblk dump --------------------------------------------------
++ * When JP2Z_DUMP_T1 names a writable file path, every successful cblk
++ * decode appends a fixed-format binary record. The dump is env-gated;
++ * with the var unset the cost is one getenv() probe on the first call.
++ * Run with OPJ_NUM_THREADS=1 for a deterministic ordering.
++ */
++static FILE*        jp2z_dump_fp = NULL;
++static opj_mutex_t* jp2z_dump_mutex = NULL;
++static int          jp2z_dump_initialised = 0;
+ 
++static void jp2z_dump_maybe_init(void)
++{
++    const char* path;
++    if (jp2z_dump_initialised) {
++        return;
++    }
++    jp2z_dump_initialised = 1;
++    path = getenv("JP2Z_DUMP_T1");
++    if (path == NULL || path[0] == '\0') {
++        return;
++    }
++    jp2z_dump_mutex = opj_mutex_create();
++    if (jp2z_dump_mutex == NULL) {
++        return;
++    }
++    jp2z_dump_fp = fopen(path, "ab");
++    /* Leak fp on process exit — kernel flushes / closes. */
++}
+ 
++static void jp2z_dump_cblk(opj_t1_t* t1,
++                           opj_tcd_cblk_dec_t* cblk,
++                           OPJ_UINT32 orient,
++                           OPJ_UINT32 tile_idx,
++                           OPJ_UINT32 comp_idx,
++                           OPJ_UINT32 resno,
++                           OPJ_UINT32 precinct_idx)
++{
++    OPJ_UINT32 magic = 0x4B4C4243u; /* 'CBLK' little-endian */
++    OPJ_INT32 x0 = cblk->x0;
++    OPJ_INT32 y0 = cblk->y0;
++    OPJ_INT32 x1 = cblk->x1;
++    OPJ_INT32 y1 = cblk->y1;
++    OPJ_UINT32 w = (OPJ_UINT32)(x1 - x0);
++    OPJ_UINT32 h = (OPJ_UINT32)(y1 - y0);
++    OPJ_UINT32 numbps = cblk->numbps;
++    OPJ_UINT32 data_len = w * h * (OPJ_UINT32)sizeof(OPJ_INT32);
++    OPJ_INT32* src = t1->data;
++    jp2z_dump_maybe_init();
++    if (jp2z_dump_fp == NULL) {
++        return;
++    }
++    opj_mutex_lock(jp2z_dump_mutex);
++    fwrite(&magic,        4, 1, jp2z_dump_fp);
++    fwrite(&tile_idx,     4, 1, jp2z_dump_fp);
++    fwrite(&comp_idx,     4, 1, jp2z_dump_fp);
++    fwrite(&resno,        4, 1, jp2z_dump_fp);
++    fwrite(&orient,       4, 1, jp2z_dump_fp); /* band orientation = bandno */
++    fwrite(&precinct_idx, 4, 1, jp2z_dump_fp);
++    fwrite(&x0,           4, 1, jp2z_dump_fp);
++    fwrite(&y0,           4, 1, jp2z_dump_fp);
++    fwrite(&x1,           4, 1, jp2z_dump_fp);
++    fwrite(&y1,           4, 1, jp2z_dump_fp);
++    fwrite(&numbps,       4, 1, jp2z_dump_fp);
++    fwrite(&data_len,     4, 1, jp2z_dump_fp);
++    if (data_len > 0 && src != NULL) {
++        fwrite(src, 1, data_len, jp2z_dump_fp);
++    }
++    fflush(jp2z_dump_fp);
++    opj_mutex_unlock(jp2z_dump_mutex);
++}
++/* --- end jp2z cblk dump --------------------------------------------- */
++
+ static OPJ_BOOL opj_t1_decode_cblk(opj_t1_t *t1,
+                                    opj_tcd_cblk_dec_t* cblk,
+                                    OPJ_UINT32 orient,
+@@ -2002,7 +2082,11 @@
+                                    OPJ_UINT32 cblksty,
+                                    opj_event_mgr_t *p_manager,
+                                    opj_mutex_t* p_manager_mutex,
+-                                   OPJ_BOOL check_pterm)
++                                   OPJ_BOOL check_pterm,
++                                   OPJ_UINT32 jp2z_dump_tile,
++                                   OPJ_UINT32 jp2z_dump_comp,
++                                   OPJ_UINT32 jp2z_dump_resno,
++                                   OPJ_UINT32 jp2z_dump_precinct)
+ {
+     opj_mqc_t *mqc = &(t1->mqc);   /* MQC component */
+ 
+@@ -2179,6 +2263,9 @@
+     if (cblk->decoded_data) {
+         t1->data = original_t1_data;
+     }
++
++    jp2z_dump_cblk(t1, cblk, orient, jp2z_dump_tile, jp2z_dump_comp,
++                   jp2z_dump_resno, jp2z_dump_precinct);
+ 
+     return OPJ_TRUE;
+ }
