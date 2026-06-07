@@ -57,8 +57,23 @@ pub const CodeBlockState = struct {
     /// Coding passes already assigned to the current segment from
     /// previous packets. Once this reaches `seg_max_passes`, the
     /// next packet's contributions roll over to a new segment with
+    /// next packet's contributions roll over to a new segment with
     /// a fresh `seg_max_passes` (per cblksty rules).
     seg_passes_so_far: u32 = 0,
+
+    /// Total EBCOT coding passes accumulated across every packet that
+    /// has contributed to this code-block. Used by the tier-2 → tier-1
+    /// dispatcher (jp2z M3 brick 9): once the walker is done, this is
+    /// the `total_passes` argument to `ebcot.decodeCblkPasses`.
+    total_passes: u32 = 0,
+
+    /// Compressed bytes contributed by the most recently parsed packet.
+    /// Reset to 0 at the start of every packet (in readPacketHeader),
+    /// populated by `readCodeBlockContribution` when the cblk is
+    /// included. The walker iterates this immediately after the packet
+    /// header read to slice the contribution bytes out of the tile-part
+    /// body and append them to the per-cblk concatenated buffer.
+    last_contribution_length: u32 = 0,
 };
 
 /// Compute the `maxpasses` allotment for a new segment.
@@ -113,6 +128,10 @@ pub fn readCodeBlockContribution(
     current_layer: u16,
     cblksty: u8,
 ) ?CodeBlockContribution {
+    // M3 brick 9: reset per-packet contribution length to 0. If the
+    // cblk is NOT included in this packet, it stays 0 — the walker
+    // skips zero-length slices when accumulating cblk byte buffers.
+    state.last_contribution_length = 0;
     // 1. Inclusion.
     if (state.included) {
         const b = reader.readBit() orelse return null;
@@ -180,6 +199,13 @@ pub fn readCodeBlockContribution(
         state.seg_passes_so_far += seg_passes;
         remaining -= seg_passes;
     }
+
+    // jp2z M3 brick 9: persist the per-packet contribution + accumulate
+    // the running total of coding passes so the post-walk dispatcher
+    // can hand each cblk to `ebcot.decodeCblkPasses` with the right
+    // pass count + byte slice.
+    state.total_passes += total_new_passes;
+    state.last_contribution_length = total_length;
 
     return .{
         .included = true,
@@ -526,6 +552,34 @@ test "readCodeBlockContribution: first inclusion, 1 pass, default lblock" {
     try std.testing.expectEqual(@as(u8, 3), state.lblock);
     try std.testing.expectEqual(true, state.included);
     try std.testing.expectEqual(@as(u16, 0), state.inclusion_layer);
+    // M3 brick 9: state.total_passes accumulates from total_new_passes;
+    // state.last_contribution_length captures this packet's bytes.
+    try std.testing.expectEqual(@as(u32, 1), state.total_passes);
+    try std.testing.expectEqual(@as(u32, 2), state.last_contribution_length);
+}
+
+test "readCodeBlockContribution: total_passes accumulates across packets" {
+    // Two packets to the same cblk: first contributes 1 pass / 2 bytes,
+    // second contributes 0 passes (skip). state.total_passes must end at 1,
+    // last_contribution_length must reset to 0 on the skip.
+    const allocator = std.testing.allocator;
+    var incl = try TagTree.init(allocator, 1, 1);
+    defer incl.deinit(allocator);
+    var zb = try TagTree.init(allocator, 1, 1);
+    defer zb.deinit(allocator);
+    var state: CodeBlockState = .{};
+
+    // Packet 1: 0xC4 = first-inclusion w/ 1 pass / contribution_length = 2.
+    var r1 = BitReader.init(&.{0xC4}, .{});
+    _ = readCodeBlockContribution(&r1, &incl, &zb, &state, 0, 0, 0, 0).?;
+    try std.testing.expectEqual(@as(u32, 1), state.total_passes);
+    try std.testing.expectEqual(@as(u32, 2), state.last_contribution_length);
+
+    // Packet 2: 0x00 = previously-included + skip-bit '0' → no contribution.
+    var r2 = BitReader.init(&.{0x00}, .{});
+    _ = readCodeBlockContribution(&r2, &incl, &zb, &state, 0, 0, 1, 0).?;
+    try std.testing.expectEqual(@as(u32, 1), state.total_passes); // unchanged
+    try std.testing.expectEqual(@as(u32, 0), state.last_contribution_length); // reset
 }
 
 test "readCodeBlockContribution: previously-included, 0-pass packet (skip bit '0')" {
