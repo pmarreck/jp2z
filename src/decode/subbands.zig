@@ -254,6 +254,101 @@ pub fn cblksInPrecinctSubband(
     };
 }
 
+/// A rectangle in subband-internal coordinates.
+pub const Rect = struct {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+};
+
+/// Subband-internal rectangle for one code-block at grid position
+/// (`grid_x`, `grid_y`) inside the (precinct, subband) addressed by
+/// the rest of the arguments. Mirrors OpenJPEG opj_tcd_init_tile's
+/// per-cblk rect computation:
+///
+///     tlcblkx_base = floor(prc_x0 / cblk_w) * cblk_w
+///     raw_x0 = tlcblkx_base + grid_x * cblk_w
+///     cblk.x0 = max(raw_x0, prc_x0)
+///     cblk.x1 = min(raw_x0 + cblk_w, prc_x1)
+///   (and similarly for y).
+///
+/// Returns an empty rect (x1 == x0 or y1 == y0) when the precinct
+/// doesn't intersect the band — caller should treat that as "skip".
+pub fn cblkSubbandRect(
+    image_w: u32,
+    image_h: u32,
+    num_decomp_levels: u8,
+    r: u8,
+    sb_idx: u8,
+    precinct_x: u32,
+    precinct_y: u32,
+    ppx: u4,
+    ppy: u4,
+    cblk_w_exp: u8,
+    cblk_h_exp: u8,
+    grid_x: u32,
+    grid_y: u32,
+) Rect {
+    // Subband-internal band dims via the same derivation as
+    // cblksInPrecinctSubband (kept duplicated for now; sharing would
+    // mean a private helper that returns both band_w/h and the
+    // precinct rect — a refactor for later).
+    var band_w: u32 = 0;
+    var band_h: u32 = 0;
+    if (r == 0) {
+        const ext = resolutionExtent(image_w, image_h, num_decomp_levels, 0);
+        band_w = ext.width;
+        band_h = ext.height;
+    } else {
+        const level_no: u5 = @intCast(num_decomp_levels - r);
+        const x0b: u32 = if (sb_idx == 0 or sb_idx == 2) 1 else 0;
+        const y0b: u32 = if (sb_idx == 1 or sb_idx == 2) 1 else 0;
+        const lvl_pow: u32 = @as(u32, 1) << level_no;
+        const lvl_pow_plus_1: u32 = @as(u32, 1) << (level_no + 1);
+        const x_num: u32 = if (image_w > lvl_pow * x0b) image_w - lvl_pow * x0b else 0;
+        const y_num: u32 = if (image_h > lvl_pow * y0b) image_h - lvl_pow * y0b else 0;
+        band_w = (x_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
+        band_h = (y_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
+    }
+    if (band_w == 0 or band_h == 0) return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
+
+    const prec_w_exp: u8 = if (r == 0) @as(u8, @intCast(ppx)) else @as(u8, @intCast(ppx)) - 1;
+    const prec_h_exp: u8 = if (r == 0) @as(u8, @intCast(ppy)) else @as(u8, @intCast(ppy)) - 1;
+    const prec_w: u32 = @as(u32, 1) << @intCast(prec_w_exp);
+    const prec_h: u32 = @as(u32, 1) << @intCast(prec_h_exp);
+
+    const prc_x0 = precinct_x * prec_w;
+    const prc_y0 = precinct_y * prec_h;
+    if (prc_x0 >= band_w or prc_y0 >= band_h) return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
+    const prc_x1 = @min(prc_x0 + prec_w, band_w);
+    const prc_y1 = @min(prc_y0 + prec_h, band_h);
+
+    const cblk_w_exp_actual: u8 = @min(cblk_w_exp + 2, prec_w_exp);
+    const cblk_h_exp_actual: u8 = @min(cblk_h_exp + 2, prec_h_exp);
+    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp_actual);
+    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp_actual);
+    const tlcblkx = (prc_x0 / cblk_w) * cblk_w;
+    const tlcblky = (prc_y0 / cblk_h) * cblk_h;
+
+    const raw_x0 = tlcblkx + grid_x * cblk_w;
+    const raw_y0 = tlcblky + grid_y * cblk_h;
+    const raw_x1 = raw_x0 + cblk_w;
+    const raw_y1 = raw_y0 + cblk_h;
+
+    const x0 = @max(raw_x0, prc_x0);
+    const y0 = @max(raw_y0, prc_y0);
+    const x1 = @min(raw_x1, prc_x1);
+    const y1 = @min(raw_y1, prc_y1);
+
+    return .{
+        .x0 = @intCast(x0),
+        .y0 = @intCast(y0),
+        .x1 = @intCast(x1),
+        .y1 = @intCast(y1),
+    };
+}
+
 /// Total code-blocks across every resolution and subband (single
 /// component, single precinct per subband). Useful as a sanity
 /// metric for "what does it take to walk one (component, layer)
@@ -490,4 +585,59 @@ test "totalCodeBlocksPerLayerPerComponent: c1_mono.j2c = 34" {
     //   Total: 1 + 3 + 3 + 3 + 6 + 18 = 34
     const n = totalCodeBlocksPerLayerPerComponent(303, 179, 5, 4, 4);
     try std.testing.expectEqual(@as(u32, 34), n);
+}
+
+test "cblkSubbandRect: c1_mono r=5 HL grid(0,0) — top-left of band" {
+    // c1_mono is 303×179 with 5 decomp levels and default 2^15 precincts.
+    // At r=5 the HL band has level_no=0, x0b=1, y0b=0:
+    //   x_num = 303 - 1 = 302; band_w = (302 + 1)/2 = 151
+    //   y_num = 179;          band_h = (179 + 1)/2 = 90
+    // Precincts cover the entire band (prec_w = 2^14 ≫ band_w). Cblks
+    // are 64×64. Grid (0, 0) starts at (0, 0).
+    const rect = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 0, 0);
+    try std.testing.expectEqual(@as(i32, 0), rect.x0);
+    try std.testing.expectEqual(@as(i32, 0), rect.y0);
+    try std.testing.expectEqual(@as(i32, 64), rect.x1);
+    try std.testing.expectEqual(@as(i32, 64), rect.y1);
+}
+
+test "cblkSubbandRect: c1_mono r=5 HL grid(2,1) — last cblk clips at (151, 90)" {
+    // HL band is 151×90, cblks 64×64. Grid (2, 1) raw rect = (128, 64)
+    // .. (192, 128). Clipped to band right edge x=151, band bottom y=90.
+    const rect = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 2, 1);
+    try std.testing.expectEqual(@as(i32, 128), rect.x0);
+    try std.testing.expectEqual(@as(i32, 64), rect.y0);
+    try std.testing.expectEqual(@as(i32, 151), rect.x1);
+    try std.testing.expectEqual(@as(i32, 90), rect.y1);
+}
+
+test "cblkSubbandRect: every cblk in the grid covers the precinct rect (tile)" {
+    // Structural invariant: the union of every grid cell's rect must
+    // tile [prc_x0..prc_x1) × [prc_y0..prc_y1) exactly — no gaps, no
+    // overlaps, no spillage beyond the precinct.
+    const cblks = cblksInPrecinctSubband(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
+    // Compute the expected precinct bounds (entire HL band).
+    const expected_x0: i32 = 0;
+    const expected_y0: i32 = 0;
+    const expected_x1: i32 = 151;
+    const expected_y1: i32 = 90;
+    var union_x0: i32 = std.math.maxInt(i32);
+    var union_y0: i32 = std.math.maxInt(i32);
+    var union_x1: i32 = std.math.minInt(i32);
+    var union_y1: i32 = std.math.minInt(i32);
+    var gy: u32 = 0;
+    while (gy < cblks.height) : (gy += 1) {
+        var gx: u32 = 0;
+        while (gx < cblks.width) : (gx += 1) {
+            const r = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, gx, gy);
+            if (r.x0 < union_x0) union_x0 = r.x0;
+            if (r.y0 < union_y0) union_y0 = r.y0;
+            if (r.x1 > union_x1) union_x1 = r.x1;
+            if (r.y1 > union_y1) union_y1 = r.y1;
+        }
+    }
+    try std.testing.expectEqual(expected_x0, union_x0);
+    try std.testing.expectEqual(expected_y0, union_y0);
+    try std.testing.expectEqual(expected_x1, union_x1);
+    try std.testing.expectEqual(expected_y1, union_y1);
 }
