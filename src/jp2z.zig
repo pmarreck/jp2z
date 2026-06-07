@@ -200,6 +200,7 @@ comptime {
 
 test {
     _ = @import("decode/bit_reader.zig");
+    _ = @import("decode/cblk_plan.zig");
     _ = @import("decode/codestream.zig");
     _ = @import("decode/ebcot.zig");
     _ = @import("decode/findings.zig");
