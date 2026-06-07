@@ -87,10 +87,22 @@ oracle tests.
 - [x] CL (cleanup) pass with RLC sub-path — T.800 D.3.3 / D.3.4
 - [x] Bit-plane orchestration (decodeCblk) — first bp CL-only,
       subsequent SP→MR→CL, .visited reset between bp, underflow-safe
-- [ ] Walker integration: extract per-cblk byte slices + pass counts
-      across packets so decodeCblk can be invoked on real data
-- [ ] Oracle test against OpenJPEG (byte-perfect cblk output)
-- [ ] Wire decodeCblk into the M2 walker for end-to-end EBCOT
+- [x] Pass-level decodeCblkPasses for arbitrary pass counts (9a)
+- [x] CodeBlockState.total_passes + last_contribution_length (9b)
+- [x] CblkDecodePlan / CblkDecodePlanList types (9c)
+- [x] subbands.cblkSubbandRect per-cblk geometry (9c+)
+- [x] extractCblkPlans — walker accumulates per-cblk byte slices
+      into plans; produces 34 cblks for c1_mono.j2c, histogram
+      matches OpenJPEG dump 1:1 (9d)
+- [x] decodePlan tier-1 dispatcher — runs decodeCblkPasses per
+      plan; end-to-end through c1_mono.j2c yields 34 decoded
+      cblks with sig coeffs (9e)
+- [ ] Oracle test against OpenJPEG (byte-perfect cblk output):
+      needs QCD-derived M_b for per-band msb_bp + format conversion
+      between our (significant/sign/magnitude) and OpenJPEG's
+      packed int32 coefficient layout. Compare against the
+      JP2Z_DUMP_T1 binary records produced by the patched
+      openjpeg (see patches/openjpeg-cblk-dump.patch)
 
 ### M4 — inverse 5/3 wavelet (lossless)
 - [ ] 1D inverse DWT (lifting steps)
