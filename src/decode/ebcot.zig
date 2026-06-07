@@ -521,19 +521,62 @@ pub fn decodeCblk(
     num_bitplanes: u5,
 ) void {
     if (num_bitplanes == 0) return;
+    // Convert full-bp count to pass count: first bp = 1 pass (CL),
+    // each subsequent bp = 3 passes (SP, MR, CL).
+    const total_passes: u32 = 1 + 3 * (@as(u32, num_bitplanes) - 1);
+    decodeCblkPasses(dec, cblk, ctxs, orient, msb_bp, total_passes);
+}
+
+/// Pass-level variant of `decodeCblk`. Real-world packet contributions
+/// land at arbitrary pass-count boundaries (any number of EBCOT coding
+/// passes, not just whole bit-planes), so the tier-2 → tier-1 integration
+/// path uses this entry point.
+///
+/// `total_passes` is the accumulated number of coding passes assigned to
+/// this code-block across every packet that contributed to it. The
+/// pass schedule per bit-plane is: bp[0] = 1 pass (CL), bp[i>0] = up to
+/// 3 passes (SP → MR → CL). Decoding stops the moment `passes_done`
+/// reaches `total_passes`, so a value of 5 means: CL @ msb_bp, then
+/// SP + MR + CL @ msb_bp-1, then SP @ msb_bp-2 (and stop).
+///
+/// `.visited` is always reset before exit so a fresh entry leaves the
+/// cblk in a consistent "no per-bp state hanging around" condition.
+pub fn decodeCblkPasses(
+    dec: *mq.Decoder,
+    cblk: *Cblk,
+    ctxs: *[NUM_CONTEXTS]mq.Context,
+    orient: Orientation,
+    msb_bp: u5,
+    total_passes: u32,
+) void {
+    if (total_passes == 0) return;
     // First bit-plane: CL only.
     clPass(dec, cblk, ctxs, orient, msb_bp);
     resetVisited(cblk);
-    // Subsequent bit-planes: SP → MR → CL.
+    var passes_done: u32 = 1;
+    if (passes_done >= total_passes) return;
+    // Subsequent bit-planes: SP → MR → CL, but each individual pass
+    // is gated on remaining `total_passes`.
     var i: u5 = 1;
-    while (i < num_bitplanes) : (i += 1) {
-        // Saturating subtract: bp can't underflow below 0.
+    while (true) : (i += 1) {
         if (i > msb_bp) break;
         const bp = msb_bp - i;
         spPass(dec, cblk, ctxs, orient, bp);
+        passes_done += 1;
+        if (passes_done >= total_passes) {
+            resetVisited(cblk);
+            return;
+        }
         mrPass(dec, cblk, ctxs, bp);
+        passes_done += 1;
+        if (passes_done >= total_passes) {
+            resetVisited(cblk);
+            return;
+        }
         clPass(dec, cblk, ctxs, orient, bp);
+        passes_done += 1;
         resetVisited(cblk);
+        if (passes_done >= total_passes) return;
     }
 }
 
@@ -1140,4 +1183,100 @@ test "decodeCblk: msb_bp = 0 with num_bitplanes > 1 doesn't underflow" {
     // subsequent SP/MR/CL iterations would need bp=-1, -2 (impossible).
     decodeCblk(&dec, &cblk, &ctxs, .ll, 0, 3);
     for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+// ── decodeCblkPasses (pass-level granularity) tests ───────────────
+
+test "decodeCblkPasses: 0 passes is a no-op" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC };
+    var dec = mq.Decoder.initDec(&stream);
+    const bp_before = dec.bp;
+    decodeCblkPasses(&dec, &cblk, &ctxs, .ll, 7, 0);
+    try std.testing.expectEqual(bp_before, dec.bp);
+}
+
+test "decodeCblkPasses: 1 pass runs CL only — equivalent to decodeCblk(..., 1)" {
+    // White-box: confirm the first bp uses CL only by checking that
+    // mr_0..mr_2 contexts remain at state 0 after a 1-pass decode.
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00 };
+    var dec = mq.Decoder.initDec(&stream);
+    decodeCblkPasses(&dec, &cblk, &ctxs, .ll, 7, 1);
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_0)].state);
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_1)].state);
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_2)].state);
+}
+
+test "decodeCblkPasses: 2 passes runs CL @ msb_bp + SP @ msb_bp-1 (no MR / no CL second time)" {
+    // Set up a cblk where the SP pass will actually do work (some
+    // coefficient becomes sig in CL @ msb_bp; SP @ msb_bp-1 then has
+    // candidates to process). The structural check: total_passes=2
+    // must NOT cause any MR or second-bp CL bits to be consumed.
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{ 0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00 };
+    var dec = mq.Decoder.initDec(&stream);
+    decodeCblkPasses(&dec, &cblk, &ctxs, .ll, 7, 2);
+    // MR contexts must not have been touched (still state 0).
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_0)].state);
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_1)].state);
+    try std.testing.expectEqual(@as(u8, 0), ctxs[@intFromEnum(CtxIdx.mr_2)].state);
+    // .visited reset at end of pass.
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+test "decodeCblkPasses: 4 passes — CL + SP + MR + CL (one full subsequent bp)" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    var ctxs = initContexts();
+    const stream = [_]u8{
+        0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00,
+        0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78, 0xFF, 0x00,
+    };
+    var dec = mq.Decoder.initDec(&stream);
+    decodeCblkPasses(&dec, &cblk, &ctxs, .ll, 7, 4);
+    for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
+}
+
+test "decodeCblkPasses: equivalence to decodeCblk for bp-aligned pass counts" {
+    // decodeCblk(N bitplanes) == decodeCblkPasses(1 + 3*(N-1) passes)
+    // — verify by running both against fresh state and comparing
+    // the resulting MQ decoder positions + cblk state.
+    const allocator = std.testing.allocator;
+    const stream = [_]u8{
+        0x80, 0x80, 0x00, 0x00, 0xFF, 0xAC, 0x00, 0x00,
+        0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78, 0xFF, 0x00,
+    };
+
+    var cblk_bp = try Cblk.init(allocator, 4, 4);
+    defer cblk_bp.deinit(allocator);
+    var ctxs_bp = initContexts();
+    var dec_bp = mq.Decoder.initDec(&stream);
+    decodeCblk(&dec_bp, &cblk_bp, &ctxs_bp, .ll, 7, 3); // 3 bitplanes
+
+    var cblk_passes = try Cblk.init(allocator, 4, 4);
+    defer cblk_passes.deinit(allocator);
+    var ctxs_passes = initContexts();
+    var dec_passes = mq.Decoder.initDec(&stream);
+    decodeCblkPasses(&dec_passes, &cblk_passes, &ctxs_passes, .ll, 7, 7); // 1 + 3*2 = 7
+
+    // Decoders should land at the same byte position.
+    try std.testing.expectEqual(dec_bp.bp, dec_passes.bp);
+    // Per-coefficient state should match.
+    for (cblk_bp.coeffs, cblk_passes.coeffs) |a, b| {
+        try std.testing.expectEqual(a.significant, b.significant);
+        try std.testing.expectEqual(a.sign, b.sign);
+        try std.testing.expectEqual(a.magnitude, b.magnitude);
+        try std.testing.expectEqual(a.refined, b.refined);
+    }
 }
