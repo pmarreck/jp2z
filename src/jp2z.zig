@@ -193,6 +193,21 @@ pub const internal = struct {
     pub fn extractCblkPlans(allocator: Allocator, data: []const u8) error{OutOfMemory}!CblkDecodePlanList {
         return @import("decode/codestream.zig").extractCblkPlans(allocator, data);
     }
+
+    /// Run EBCOT tier-1 decode on a single `CblkDecodePlan` (from
+    /// `extractCblkPlans`). `msb_bp` is the bit-position of the most-
+    /// significant non-zero bit-plane for this cblk (typically
+    /// `numbps - 1` where `numbps = M_b - zero_bitplanes`).
+    ///
+    /// Returns a heap-owned `decode.ebcot.Cblk` with reconstructed
+    /// coefficient state; caller must deinit.
+    pub fn decodePlan(
+        allocator: Allocator,
+        plan: CblkDecodePlan,
+        msb_bp: u5,
+    ) error{OutOfMemory}!@import("decode/ebcot.zig").Cblk {
+        return @import("decode/cblk_dispatch.zig").decodePlan(allocator, plan, msb_bp);
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -212,6 +227,7 @@ comptime {
 
 test {
     _ = @import("decode/bit_reader.zig");
+    _ = @import("decode/cblk_dispatch.zig");
     _ = @import("decode/cblk_extract.zig");
     _ = @import("decode/cblk_plan.zig");
     _ = @import("decode/codestream.zig");

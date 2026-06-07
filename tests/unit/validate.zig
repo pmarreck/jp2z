@@ -835,3 +835,38 @@ test "extractCblkPlans: garbage input → empty plan list (no crash)" {
     defer list.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), list.plans.len);
 }
+
+// ── M3 brick 9e: end-to-end decode (extract → dispatch) ───────────
+
+test "decodePlan: c1_mono.j2c — every cblk runs through EBCOT without crash" {
+    // End-to-end smoke: walker → extractor → dispatcher. Verifies the
+    // 34 plans for c1_mono.j2c each decode cleanly via decodePlan +
+    // produce a Cblk of the expected dimensions. Byte-perfect verification
+    // against the OpenJPEG t1 dump lands in brick 10.
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, c1_mono_j2c);
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 34), list.plans.len);
+
+    var decoded_count: u32 = 0;
+    var any_sig: bool = false;
+    for (list.plans) |plan| {
+        // For now use a generous fixed msb_bp (7 → 8 bit-planes); this
+        // works for 8-bit input fixtures pending QCD-derived M_b parsing.
+        // The decode may stop early at total_passes; that's expected.
+        var cblk = try jp2z.internal.decodePlan(std.testing.allocator, plan, 7);
+        defer cblk.deinit(std.testing.allocator);
+        try std.testing.expectEqual(plan.width(), cblk.width);
+        try std.testing.expectEqual(plan.height(), cblk.height);
+        // Sanity: at least SOME coefficient ought to become significant
+        // across the whole fixture (random 8-bit grayscale image data).
+        for (cblk.coeffs) |c| {
+            if (c.significant) {
+                any_sig = true;
+                break;
+            }
+        }
+        decoded_count += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 34), decoded_count);
+    try std.testing.expect(any_sig); // at least one cblk has a sig coeff
+}
