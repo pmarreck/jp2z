@@ -736,3 +736,102 @@ test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
     }
     try std.testing.expect(saw_unknown);
 }
+
+// ── M3 brick 9d: extractCblkPlans against real fixtures ───────────
+
+test "extractCblkPlans: c1_mono.j2c — produces > 0 plans, each with non-empty data + non-zero passes" {
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, c1_mono_j2c);
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expect(list.plans.len > 0);
+    // Every plan must carry real data + a positive pass count.
+    var total_bytes: usize = 0;
+    var total_passes: usize = 0;
+    for (list.plans) |p| {
+        try std.testing.expect(p.data.len > 0);
+        try std.testing.expect(p.total_passes > 0);
+        try std.testing.expect(p.sb_x1 > p.sb_x0);
+        try std.testing.expect(p.sb_y1 > p.sb_y0);
+        total_bytes += p.data.len;
+        total_passes += p.total_passes;
+    }
+    // Sanity: total bytes should be roughly the codestream's compressed
+    // payload size (within an order of magnitude). c1_mono.j2c is ~6KB
+    // of compressed data.
+    try std.testing.expect(total_bytes >= 1024);
+    try std.testing.expect(total_passes >= 10);
+}
+
+test "extractCblkPlans: c1_mono.j2c — at least one plan in each resolution 0..5" {
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, c1_mono_j2c);
+    defer list.deinit(std.testing.allocator);
+    var seen_res: [6]bool = @splat(false);
+    for (list.plans) |p| {
+        if (p.resolution < seen_res.len) seen_res[p.resolution] = true;
+    }
+    for (seen_res, 0..) |s, r| {
+        if (!s) std.debug.print("missing plans at resolution {d}\n", .{r});
+        try std.testing.expect(s);
+    }
+}
+
+test "extractCblkPlans: c1_mono.j2c — bands at r=0 are LL (band=0); at r>=1 are HL/LH/HH (bands 1/2/3)" {
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, c1_mono_j2c);
+    defer list.deinit(std.testing.allocator);
+    for (list.plans) |p| {
+        if (p.resolution == 0) {
+            try std.testing.expectEqual(@as(u8, 0), p.band);
+        } else {
+            try std.testing.expect(p.band >= 1 and p.band <= 3);
+        }
+    }
+}
+
+test "extractCblkPlans: c1_mono.j2c — exactly 34 plans, histogram by (res, band) matches OpenJPEG" {
+    // OpenJPEG decodes 34 cblks for c1_mono.j2c (single component,
+    // 5 decomp levels, default 1-precinct-per-band). With the
+    // JP2Z_DUMP_T1 patched openjpeg run via opj_decompress, the
+    // per-(resolution, band) histogram is:
+    //   r=0 b=0: 1   (LL @ r=0)
+    //   r=1 b=1,2,3: 1 each (HL/LH/HH at coarsest HF level)
+    //   r=2 b=1,2,3: 1 each
+    //   r=3 b=1,2,3: 1 each
+    //   r=4 b=1,2,3: 2 each (band starts to exceed cblk dims)
+    //   r=5 b=1,2,3: 6 each (finest detail level)
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, c1_mono_j2c);
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 34), list.plans.len);
+
+    // Histogram: indexed [resolution * 4 + band].
+    var hist: [6 * 4]u32 = @splat(0);
+    for (list.plans) |p| {
+        const idx = @as(usize, p.resolution) * 4 + @as(usize, p.band);
+        hist[idx] += 1;
+    }
+    // r=0 b=0
+    try std.testing.expectEqual(@as(u32, 1), hist[0 * 4 + 0]);
+    // r=1..3 each have 1 cblk per HF band (bands 1, 2, 3)
+    inline for ([_]u8{ 1, 2, 3 }) |r| {
+        try std.testing.expectEqual(@as(u32, 1), hist[r * 4 + 1]);
+        try std.testing.expectEqual(@as(u32, 1), hist[r * 4 + 2]);
+        try std.testing.expectEqual(@as(u32, 1), hist[r * 4 + 3]);
+    }
+    // r=4: 2 cblks per HF band
+    try std.testing.expectEqual(@as(u32, 2), hist[4 * 4 + 1]);
+    try std.testing.expectEqual(@as(u32, 2), hist[4 * 4 + 2]);
+    try std.testing.expectEqual(@as(u32, 2), hist[4 * 4 + 3]);
+    // r=5: 6 cblks per HF band
+    try std.testing.expectEqual(@as(u32, 6), hist[5 * 4 + 1]);
+    try std.testing.expectEqual(@as(u32, 6), hist[5 * 4 + 2]);
+    try std.testing.expectEqual(@as(u32, 6), hist[5 * 4 + 3]);
+}
+test "extractCblkPlans: empty input → empty plan list (no crash)" {
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, "");
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), list.plans.len);
+}
+
+test "extractCblkPlans: garbage input → empty plan list (no crash)" {
+    var list = try jp2z.internal.extractCblkPlans(std.testing.allocator, "definitely not a jp2");
+    defer list.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), list.plans.len);
+}

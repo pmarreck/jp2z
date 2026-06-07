@@ -19,7 +19,7 @@ const errors = @import("../core/errors.zig");
 const BitReader = @import("bit_reader.zig").BitReader;
 const subbands = @import("subbands.zig");
 const packet_header = @import("packet_header.zig");
-
+const cblk_extract = @import("cblk_extract.zig");
 const Severity = errors.Severity;
 const Variant = errors.Variant;
 const FindingCode = errors.FindingCode;
@@ -437,18 +437,53 @@ pub fn validate(allocator: Allocator, data: []const u8) Allocator.Error!Validati
 
     // JP2 file format: starts with 12-byte signature box.
     if (looksLikeJp2(data)) {
-        try walkJp2(&report, allocator, data);
+        try walkJp2(&report, allocator, data, null);
         return report;
     }
 
     // J2K raw codestream: SOC magic.
     if (data.len >= 2 and data[0] == 0xFF and data[1] == 0x4F) {
-        try walkJ2k(&report, allocator, data);
+        try walkJ2k(&report, allocator, data, null);
         return report;
     }
 
     try emit(&report, allocator, .fail, .missing_soi, 0, null);
     return report;
+}
+
+/// Walk a JP2/J2K codestream like `validate` does, but also collect a
+/// `CblkDecodePlanList` containing every code-block's accumulated byte
+/// slice + total coding pass count + subband-internal rect. Hands the
+/// list off to the tier-1 EBCOT dispatcher (M3 brick 9d → 9e).
+///
+/// Errors only on allocator failure; structurally-broken codestreams
+/// return whatever plans were extracted before the walker hit trouble
+/// (the parallel `validate()` call surfaces the failure as a Finding).
+pub fn extractCblkPlans(
+    allocator: Allocator,
+    data: []const u8,
+) Allocator.Error!cblk_extract.CblkDecodePlanList {
+    var report = ValidationReport{
+        .overall = .pass,
+        .variant = .unknown,
+        .width = null,
+        .height = null,
+        .findings = .empty,
+    };
+    defer report.deinit(allocator);
+
+    var extractor = cblk_extract.CblkExtractor.init(allocator);
+    errdefer extractor.deinit();
+
+    if (looksLikeJp2(data)) {
+        try walkJp2(&report, allocator, data, &extractor);
+    } else if (data.len >= 2 and data[0] == 0xFF and data[1] == 0x4F) {
+        try walkJ2k(&report, allocator, data, &extractor);
+    }
+
+    const list = try extractor.finalize();
+    extractor.deinit();
+    return list;
 }
 
 /// Magic-bytes sniff for JP2. T.800 Annex I.5.1: every JP2 file
@@ -467,7 +502,7 @@ fn looksLikeJp2(data: []const u8) bool {
 /// (signature → ftyp → jp2h → jp2c), pulls width/height from the
 /// `ihdr` sub-box inside `jp2h`, and recursively validates the
 /// embedded codestream inside `jp2c` via the J2K walker.
-fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8) Allocator.Error!void {
+fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, extractor: ?*cblk_extract.CblkExtractor) Allocator.Error!void {
     report.variant = .jp2_file;
 
     // Verify the signature box. looksLikeJp2 already checked LBox
@@ -529,7 +564,7 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8) Al
             },
             BoxType.jp2c => {
                 saw_jp2c = true;
-                try walkJ2k(report, allocator, body);
+                try walkJ2k(report, allocator, body, extractor);
             },
             else => {}, // unknown / optional boxes — ignore for M1
         }
@@ -578,7 +613,7 @@ fn parseJp2HeaderBox(report: *ValidationReport, body: []const u8) void {
 /// finding for any 0xFFxx marker code we don't recognise. Marker
 /// *bodies* are skipped (M2+ parses them); we only validate
 /// length-field consistency here.
-fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8) Allocator.Error!void {
+fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, extractor: ?*cblk_extract.CblkExtractor) Allocator.Error!void {
     // SOC magic check. T.800 A.4.1: every codestream MUST begin with SOC.
     if (data.len < 2 or data[0] != 0xFF or data[1] != 0x4F) {
         try emit(report, allocator, .fail, .missing_soi, 0, null);
@@ -628,7 +663,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8) Al
             @intFromEnum(Marker.sot) => {
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
-                try walkTileParts(report, allocator, data, pos);
+                try walkTileParts(report, allocator, data, pos, extractor);
                 return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
@@ -685,6 +720,7 @@ fn walkTileParts(
     allocator: Allocator,
     data: []const u8,
     start: usize,
+    extractor: ?*cblk_extract.CblkExtractor,
 ) Allocator.Error!void {
     var pos: usize = start;
     while (true) {
@@ -728,7 +764,7 @@ fn walkTileParts(
             if (report.width != null and report.height != null) {
                 if (findSod(data, pos, next_pos)) |sod_pos| {
                     const tp_body = data[sod_pos + 2 .. next_pos];
-                    try walkPackets(report, allocator, tp_body, params, report.width.?, report.height.?, sod_pos + 2);
+                    try walkPackets(report, allocator, tp_body, params, report.width.?, report.height.?, sod_pos + 2, extractor);
                 }
                 // Missing SOD inside a tile-part is already caught
                 // structurally by the main-header walker; no extra
@@ -902,6 +938,7 @@ fn walkPackets(
     image_w: u32,
     image_h: u32,
     body_offset_in_data: usize,
+    extractor: ?*cblk_extract.CblkExtractor,
 ) Allocator.Error!void {
     const num_resolutions: u8 = params.num_decomp_levels + 1;
 
@@ -1012,6 +1049,71 @@ fn walkPackets(
         }
 
         const header_bytes = reader.bytesConsumed();
+
+        // M3 brick 9d: per-cblk byte extraction. When an extractor is
+        // wired in, we slice each cblk's contribution bytes out of the
+        // tile-part body in the SAME order readPacketHeader walked them
+        // (subband × cblk row-major), and append to the extractor's
+        // per-cblk byte buffer. The extractor stamps subband-internal
+        // rect + zero_bitplanes + cblksty on first sight and tracks the
+        // running total_passes.
+        if (extractor) |ex| {
+            const ppx: u4 = @intCast(params.precinct_sizes[pi.resolution].x_exp);
+            const ppy: u4 = @intCast(params.precinct_sizes[pi.resolution].y_exp);
+            const prc_grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
+            const prc_x_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct % prc_grid.width;
+            const prc_y_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct / prc_grid.width;
+            const data_base = body_pos + header_bytes;
+            var bytes_so_far: u32 = 0;
+            var ex_sb: u8 = 0;
+            while (ex_sb < sb_count) : (ex_sb += 1) {
+                const sbs_view = view[ex_sb];
+                if (sbs_view.grid_w == 0 or sbs_view.grid_h == 0) continue;
+                // OpenJPEG `bandno`: 0 (LL @ r=0) or 1/2/3 (HL/LH/HH @ r>=1).
+                const band_for_key: u8 = if (pi.resolution == 0) 0 else ex_sb + 1;
+                var gy: u32 = 0;
+                while (gy < sbs_view.grid_h) : (gy += 1) {
+                    var gx: u32 = 0;
+                    while (gx < sbs_view.grid_w) : (gx += 1) {
+                        const cb = sbs_view.blocks[gy * sbs_view.grid_w + gx];
+                        if (cb.last_contribution_length == 0) continue;
+                        const L: usize = cb.last_contribution_length;
+                        if (data_base + bytes_so_far + L > tp_body.len) {
+                            // Bounds-mismatched contribution; the post-loop
+                            // emit() below catches the structural issue.
+                            break;
+                        }
+                        const rect = subbands.cblkSubbandRect(
+                            image_w, image_h, params.num_decomp_levels,
+                            pi.resolution, ex_sb,
+                            prc_x_in_grid, prc_y_in_grid,
+                            ppx, ppy,
+                            params.cblk_width_exp, params.cblk_height_exp,
+                            gx, gy,
+                        );
+                        try ex.appendContribution(.{
+                            .tile = 0, // single-tile fixtures only today
+                            .component = @intCast(pi.component),
+                            .resolution = pi.resolution,
+                            .band = band_for_key,
+                            .precinct = pi.precinct,
+                            .grid_x = gx,
+                            .grid_y = gy,
+                        }, tp_body[data_base + bytes_so_far .. data_base + bytes_so_far + L], .{
+                            .sb_x0 = rect.x0,
+                            .sb_y0 = rect.y0,
+                            .sb_x1 = rect.x1,
+                            .sb_y1 = rect.y1,
+                            .zero_bitplanes = cb.zero_bitplanes,
+                            .cblksty = params.cblksty,
+                            .total_passes = cb.total_passes,
+                        });
+                        bytes_so_far += @intCast(L);
+                    }
+                }
+            }
+        }
+
         const advance = header_bytes + @as(usize, contribution_len);
         if (body_pos + advance > tp_body.len) {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos + advance, null);

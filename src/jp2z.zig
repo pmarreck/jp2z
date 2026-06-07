@@ -71,7 +71,8 @@ pub const PacketIndex = @import("decode/codestream.zig").PacketIndex;
 pub const PacketIterator = @import("decode/codestream.zig").PacketIterator;
 pub const BitReader = @import("decode/bit_reader.zig").BitReader;
 pub const TagTree = @import("decode/tag_tree.zig").TagTree;
-
+pub const CblkDecodePlan = @import("decode/cblk_plan.zig").CblkDecodePlan;
+pub const CblkDecodePlanList = @import("decode/cblk_plan.zig").CblkDecodePlanList;
 pub const ValidationReport = struct {
     overall: Severity,
     variant: Variant,
@@ -181,6 +182,17 @@ pub const internal = struct {
         defer report.deinit(allocator);
         return report.coding_params;
     }
+
+    /// Walk a codestream and extract one `CblkDecodePlan` per
+    /// code-block that was included in any packet — a list of
+    /// concatenated cblk byte slices + accumulated coding-pass counts
+    /// + subband-internal rects, ready to be handed to the M3 tier-1
+    /// EBCOT dispatcher (`ebcot.decodeCblkPasses`).
+    ///
+    /// Caller owns the returned list and must deinit it.
+    pub fn extractCblkPlans(allocator: Allocator, data: []const u8) error{OutOfMemory}!CblkDecodePlanList {
+        return @import("decode/codestream.zig").extractCblkPlans(allocator, data);
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -200,6 +212,7 @@ comptime {
 
 test {
     _ = @import("decode/bit_reader.zig");
+    _ = @import("decode/cblk_extract.zig");
     _ = @import("decode/cblk_plan.zig");
     _ = @import("decode/codestream.zig");
     _ = @import("decode/ebcot.zig");
