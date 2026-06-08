@@ -42,10 +42,12 @@ pub const CblkDecodePlan = struct {
     sb_y1: i32,
 
     /// Number of zero bit-planes at the top of the magnitude range,
-    /// from the per-cblk zero-bitplane tag tree. Combined with the
-    /// subband's per-band magnitude budget M_b to compute `msb_bp`
-    /// for `decodeCblkPasses`.
+    /// from the per-cblk zero-bitplane tag tree.
     zero_bitplanes: u8,
+    /// Number of magnitude bit-planes actually coded for this cblk:
+    /// numbps = M_b - zero_bitplanes (T.800 E.1 + tag-tree result).
+    /// Drives `msb_bp = numbps - 1` in the EBCOT dispatcher.
+    numbps: u8,
     /// Total EBCOT coding passes contributed to this cblk across all
     /// packets. Becomes the `total_passes` arg to `decodeCblkPasses`.
     total_passes: u32,
@@ -98,6 +100,7 @@ test "CblkDecodePlan: width/height derive from subband rect" {
         .sb_x1 = 128,
         .sb_y1 = 64,
         .zero_bitplanes = 2,
+        .numbps = 5,
         .total_passes = 7,
         .cblksty = 0,
         .data = buf,
@@ -113,13 +116,13 @@ test "CblkDecodePlanList: deinit frees every plan + its data buffer" {
     plans_buf[0] = .{
         .tile = 0, .component = 0, .resolution = 0, .band = 0, .precinct = 0,
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4,
-        .zero_bitplanes = 0, .total_passes = 1, .cblksty = 0,
+        .zero_bitplanes = 0, .numbps = 8, .total_passes = 1, .cblksty = 0,
         .data = try allocator.alloc(u8, 8),
     };
     plans_buf[1] = .{
         .tile = 0, .component = 1, .resolution = 0, .band = 0, .precinct = 0,
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4,
-        .zero_bitplanes = 0, .total_passes = 4, .cblksty = 0,
+        .zero_bitplanes = 0, .numbps = 8, .total_passes = 4, .cblksty = 0,
         .data = try allocator.alloc(u8, 16),
     };
     var list = CblkDecodePlanList{ .plans = plans_buf };

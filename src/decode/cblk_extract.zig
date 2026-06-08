@@ -44,6 +44,9 @@ pub const CblkExtractor = struct {
         sb_x1: i32 = 0,
         sb_y1: i32 = 0,
         zero_bitplanes: u8 = 0,
+        /// Per-subband M_b from QCD (= G_b + epsilon_b - 1). Combined
+        /// with `zero_bitplanes` in `finalize` to yield plan.numbps.
+        m_b: u8 = 0,
         cblksty: u8 = 0,
         total_passes: u32 = 0,
     };
@@ -79,6 +82,7 @@ pub const CblkExtractor = struct {
             sb_x1: i32,
             sb_y1: i32,
             zero_bitplanes: u8,
+            m_b: u8,
             cblksty: u8,
             total_passes: u32,
         },
@@ -91,6 +95,7 @@ pub const CblkExtractor = struct {
                 .sb_x1 = meta.sb_x1,
                 .sb_y1 = meta.sb_y1,
                 .zero_bitplanes = meta.zero_bitplanes,
+                .m_b = meta.m_b,
                 .cblksty = meta.cblksty,
             };
         }
@@ -124,6 +129,7 @@ pub const CblkExtractor = struct {
                 .sb_x1 = entry.sb_x1,
                 .sb_y1 = entry.sb_y1,
                 .zero_bitplanes = entry.zero_bitplanes,
+                .numbps = if (entry.m_b > entry.zero_bitplanes) entry.m_b - entry.zero_bitplanes else 0,
                 .total_passes = entry.total_passes,
                 .cblksty = entry.cblksty,
                 .data = data,
@@ -150,7 +156,7 @@ test "CblkExtractor: append single contribution, finalize → 1 plan" {
     };
     try ex.appendContribution(key, &.{ 0x12, 0x34, 0x56 }, .{
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 64, .sb_y1 = 64,
-        .zero_bitplanes = 2, .cblksty = 0, .total_passes = 4,
+        .zero_bitplanes = 2, .m_b = 11, .cblksty = 0, .total_passes = 4,
     });
     var list = try ex.finalize();
     defer list.deinit(allocator);
@@ -160,6 +166,8 @@ test "CblkExtractor: append single contribution, finalize → 1 plan" {
     try std.testing.expectEqual(@as(u8, 1), p.band);
     try std.testing.expectEqual(@as(i32, 64), p.sb_x1);
     try std.testing.expectEqual(@as(u32, 4), p.total_passes);
+    // numbps = m_b - zero_bitplanes = 11 - 2 = 9.
+    try std.testing.expectEqual(@as(u8, 9), p.numbps);
     try std.testing.expectEqual(@as(usize, 3), p.data.len);
     try std.testing.expectEqual(@as(u8, 0x34), p.data[1]);
 }
@@ -175,7 +183,7 @@ test "CblkExtractor: multiple appends to same key concatenate; metadata captured
     // First contribution sets metadata.
     try ex.appendContribution(key, &.{ 0xAA, 0xBB }, .{
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 16, .sb_y1 = 16,
-        .zero_bitplanes = 1, .cblksty = 0, .total_passes = 1,
+        .zero_bitplanes = 1, .m_b = 9, .cblksty = 0, .total_passes = 1,
     });
     // Second contribution — different "meta", but only buffer + total_passes
     // should update. Subband rect / zero_bitplanes / cblksty must STAY the
@@ -183,7 +191,7 @@ test "CblkExtractor: multiple appends to same key concatenate; metadata captured
     // per-packet quantities).
     try ex.appendContribution(key, &.{ 0xCC, 0xDD, 0xEE }, .{
         .sb_x0 = 99, .sb_y0 = 99, .sb_x1 = 0, .sb_y1 = 0, // bogus
-        .zero_bitplanes = 99, .cblksty = 99, .total_passes = 5,
+        .zero_bitplanes = 99, .m_b = 99, .cblksty = 99, .total_passes = 5,
     });
     var list = try ex.finalize();
     defer list.deinit(allocator);
@@ -207,8 +215,8 @@ test "CblkExtractor: multiple distinct keys produce multiple plans" {
     defer ex.deinit();
     const k0: CblkKey = .{ .tile = 0, .component = 0, .resolution = 0, .band = 0, .precinct = 0, .grid_x = 0, .grid_y = 0 };
     const k1: CblkKey = .{ .tile = 0, .component = 0, .resolution = 1, .band = 1, .precinct = 0, .grid_x = 0, .grid_y = 0 };
-    try ex.appendContribution(k0, &.{0x01}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4, .zero_bitplanes = 0, .cblksty = 0, .total_passes = 1 });
-    try ex.appendContribution(k1, &.{0x02}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 8, .sb_y1 = 8, .zero_bitplanes = 0, .cblksty = 0, .total_passes = 1 });
+    try ex.appendContribution(k0, &.{0x01}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4, .zero_bitplanes = 0, .m_b = 8, .cblksty = 0, .total_passes = 1 });
+    try ex.appendContribution(k1, &.{0x02}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 8, .sb_y1 = 8, .zero_bitplanes = 0, .m_b = 9, .cblksty = 0, .total_passes = 1 });
     var list = try ex.finalize();
     defer list.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 2), list.plans.len);

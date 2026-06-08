@@ -93,6 +93,25 @@ pub const CodingParams = struct {
     /// the values come from the COD body trailing bytes (one byte
     /// per resolution: low nibble = PPx, high nibble = PPy).
     precinct_sizes: [33]PrecinctSize = @splat(.{}),
+    /// Guard bits G_b from Sqcd high 3 bits (0..7). Applies to every
+    /// subband.
+    guard_bits: u8 = 0,
+    /// Quantization style from Sqcd low 5 bits: 0 = no-quant
+    /// (reversible / 5/3), 1 = scalar derived, 2 = scalar expounded.
+    quant_style: u8 = 0,
+    /// Per-subband number of magnitude bit-planes
+    /// M_b = G_b + epsilon_b - 1 (T.800 E.1). Indexed by subband index:
+    ///   r = 0:          subband_idx = 0   (only LL exists)
+    ///   r >= 1, band b: subband_idx = 3*(r-1) + b  (b in {1,2,3} for HL/LH/HH)
+    /// Length 1 + 3*32 = 97 covers num_decomp_levels up to 32.
+    mb_per_subband: [97]u8 = @splat(0),
+
+    /// Look up M_b for a (resolution, band) pair. `band` follows the
+    /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
+    pub fn mbForSubband(self: CodingParams, r: u8, band: u8) u8 {
+        if (r == 0) return self.mb_per_subband[0];
+        return self.mb_per_subband[@as(usize, 3) * (@as(usize, r) - 1) + @as(usize, band)];
+    }
 };
 
 /// One emission of the tier-2 packet iterator. Identifies which
@@ -894,8 +913,59 @@ fn parseQcdBody(
     }
     const sqcd = body[0];
     const quant_style: u8 = sqcd & 0x1F;
+    const guard_bits: u8 = sqcd >> 5;
     if (quant_style > 2) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+    }
+
+    // Populate per-subband M_b on CodingParams (T.800 A.6.4 Table A.30
+    // + E.1). SIZ/COD parsing seeded num_components / num_decomp_levels;
+    // we lay M_b across subband index space here so the tier-1 dispatcher
+    // can pick it up per (resolution, band).
+    if (report.coding_params) |*cp| {
+        cp.guard_bits = guard_bits;
+        cp.quant_style = quant_style;
+        const num_subbands: u8 = 1 + 3 * cp.num_decomp_levels;
+        switch (quant_style) {
+            // Style 0: no quantization (reversible / 5/3). Each subband
+            // gets one SPqcd byte — eps_b in bits 7..3, low 3 reserved.
+            0 => {
+                const needed: usize = 1 + @as(usize, num_subbands);
+                if (body.len < needed) {
+                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+                    return;
+                }
+                var sb: u8 = 0;
+                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                    const eps: u8 = body[1 + @as(usize, sb)] >> 3;
+                    // M_b = G_b + eps_b - 1; clamp at 0 if the sum is 0.
+                    const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
+                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                }
+            },
+            // Style 2: scalar expounded (irreversible / 9/7). Two bytes
+            // per subband: eps_b in bits 15..11, mantissa mu_b in 10..0.
+            // We only need eps_b for M_b; mantissa belongs to dequant.
+            2 => {
+                const needed: usize = 1 + 2 * @as(usize, num_subbands);
+                if (body.len < needed) {
+                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+                    return;
+                }
+                var sb: u8 = 0;
+                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                    const off2: usize = 1 + 2 * @as(usize, sb);
+                    const eps: u8 = body[off2] >> 3;
+                    const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
+                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                }
+            },
+            // Style 1: scalar derived. Only LL's exponent is encoded;
+            // sibling subbands' exponents derive per T.800 E.5. We don't
+            // need style 1 for any current fixture — leaving M_b table
+            // zeroed until a fixture exercises it.
+            else => {},
+        }
     }
 }
 
@@ -1105,6 +1175,7 @@ fn walkPackets(
                             .sb_x1 = rect.x1,
                             .sb_y1 = rect.y1,
                             .zero_bitplanes = cb.zero_bitplanes,
+                            .m_b = params.mbForSubband(pi.resolution, band_for_key),
                             .cblksty = params.cblksty,
                             .total_passes = cb.total_passes,
                         });
@@ -1254,4 +1325,58 @@ test "parseSizBody: 41-byte minimum SIZ yields width/height" {
     parseSizBody(&report, &body);
     try std.testing.expectEqual(@as(?u32, 303), report.width);
     try std.testing.expectEqual(@as(?u32, 179), report.height);
+}
+
+test "parseQcdBody: style 0 reversible — extracts G_b and per-subband M_b" {
+    const body = [_]u8{
+        0x40,
+        8  << 3,
+        9  << 3,
+        9  << 3,
+        10 << 3,
+        10 << 3,
+        10 << 3,
+        11 << 3,
+    };
+    var report = ValidationReport{
+        .overall = .pass,
+        .variant = .j2k_codestream,
+        .width = null,
+        .height = null,
+        .findings = .empty,
+        .coding_params = .{ .num_decomp_levels = 2 },
+    };
+    defer report.deinit(std.testing.allocator);
+
+    try parseQcdBody(&report, std.testing.allocator, &body, 0);
+
+    const cp = report.coding_params.?;
+    try std.testing.expectEqual(@as(u8, 2), cp.guard_bits);
+    try std.testing.expectEqual(@as(u8, 0), cp.quant_style);
+    try std.testing.expectEqual(@as(u8, 9),  cp.mb_per_subband[0]);
+    try std.testing.expectEqual(@as(u8, 10), cp.mb_per_subband[1]);
+    try std.testing.expectEqual(@as(u8, 10), cp.mb_per_subband[2]);
+    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[3]);
+    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[4]);
+    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[5]);
+    try std.testing.expectEqual(@as(u8, 12), cp.mb_per_subband[6]);
+}
+
+test "CodingParams.mbForSubband: r=0 -> idx 0; r>=1 -> 3*(r-1)+band" {
+    var cp = jp2z.CodingParams{ .num_decomp_levels = 2 };
+    cp.mb_per_subband[0] = 9;
+    cp.mb_per_subband[1] = 10;
+    cp.mb_per_subband[2] = 11;
+    cp.mb_per_subband[3] = 12;
+    cp.mb_per_subband[4] = 13;
+    cp.mb_per_subband[5] = 14;
+    cp.mb_per_subband[6] = 15;
+
+    try std.testing.expectEqual(@as(u8, 9),  cp.mbForSubband(0, 0));
+    try std.testing.expectEqual(@as(u8, 10), cp.mbForSubband(1, 1));
+    try std.testing.expectEqual(@as(u8, 11), cp.mbForSubband(1, 2));
+    try std.testing.expectEqual(@as(u8, 12), cp.mbForSubband(1, 3));
+    try std.testing.expectEqual(@as(u8, 13), cp.mbForSubband(2, 1));
+    try std.testing.expectEqual(@as(u8, 14), cp.mbForSubband(2, 2));
+    try std.testing.expectEqual(@as(u8, 15), cp.mbForSubband(2, 3));
 }

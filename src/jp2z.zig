@@ -195,18 +195,29 @@ pub const internal = struct {
     }
 
     /// Run EBCOT tier-1 decode on a single `CblkDecodePlan` (from
-    /// `extractCblkPlans`). `msb_bp` is the bit-position of the most-
-    /// significant non-zero bit-plane for this cblk (typically
-    /// `numbps - 1` where `numbps = M_b - zero_bitplanes`).
+    /// `extractCblkPlans`). Derives `msb_bp` from `plan.numbps`
+    /// (= M_b - zero_bitplanes; both filled in by the walker).
     ///
     /// Returns a heap-owned `decode.ebcot.Cblk` with reconstructed
     /// coefficient state; caller must deinit.
     pub fn decodePlan(
         allocator: Allocator,
         plan: CblkDecodePlan,
-        msb_bp: u5,
     ) error{OutOfMemory}!@import("decode/ebcot.zig").Cblk {
-        return @import("decode/cblk_dispatch.zig").decodePlan(allocator, plan, msb_bp);
+        return @import("decode/cblk_dispatch.zig").decodePlan(allocator, plan);
+    }
+
+    /// OpenJPEG-style i32 sign-magnitude encoding for one decoded
+    /// coefficient. `half_bit_pos` comes from `halfBitPos(msb_bp, total_passes)`.
+    pub fn coeffToOpenJpegI32(coeff: @import("decode/ebcot.zig").Coeff, half_bit_pos: u5) i32 {
+        return @import("decode/cblk_dispatch.zig").coeffToOpenJpegI32(coeff, half_bit_pos);
+    }
+
+    /// Position of OpenJPEG's "half-bit" reconstruction marker for the
+    /// given (msb_bp, total_passes) pair. Used to convert our raw
+    /// bit-plane magnitude to OpenJPEG's centred-bin representation.
+    pub fn halfBitPos(msb_bp: u5, total_passes: u32) u5 {
+        return @import("decode/cblk_dispatch.zig").halfBitPos(msb_bp, total_passes);
     }
 };
 

@@ -97,12 +97,22 @@ oracle tests.
 - [x] decodePlan tier-1 dispatcher — runs decodeCblkPasses per
       plan; end-to-end through c1_mono.j2c yields 34 decoded
       cblks with sig coeffs (9e)
-- [ ] Oracle test against OpenJPEG (byte-perfect cblk output):
-      needs QCD-derived M_b for per-band msb_bp + format conversion
-      between our (significant/sign/magnitude) and OpenJPEG's
-      packed int32 coefficient layout. Compare against the
-      JP2Z_DUMP_T1 binary records produced by the patched
-      openjpeg (see patches/openjpeg-cblk-dump.patch)
+- [x] QCD parsing: per-band M_b = G_b + ε_b − 1 (style 0
+      reversible + style 2 expounded) populated on CodingParams,
+      `mbForSubband(r, band)` helper (10.1)
+- [x] Coefficient → OpenJPEG i32 converter (`coeffToOpenJpegI32` +
+      `halfBitPos` for partial-decode bit-plane truncation) — proven
+      against hand-derived OpenJPEG values in unit tests (10.2)
+- [x] Walker plumbs M_b through CblkExtractor → plan.numbps;
+      dispatcher derives `msb_bp = numbps - 1`; verified end-to-end
+      against the patched-openjpeg dump: jp2z's per-cblk numbps
+      matches OpenJPEG 1:1 on c1_mono.j2c (10.3 — wiring)
+- [ ] Byte-perfect cblk coefficient comparison (10.3 — strict).
+      Oracle dump parser + matching by (tile,comp,res,band,sb_x0,
+      sb_y0) is wired (see test gated by SkipZigTest with TODO).
+      First cblk diverges from coeff[0] — points at an entropy-
+      decode bug (MQ BYTEIN / context advance, sign coding, or MR
+      bit interpretation) rather than wiring. Next session digs.
 
 ### M4 — inverse 5/3 wavelet (lossless)
 - [ ] 1D inverse DWT (lifting steps)
