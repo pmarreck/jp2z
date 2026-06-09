@@ -877,6 +877,8 @@ test "decodePlan: c1_mono.j2c — every cblk runs through EBCOT without crash" {
 /// `OPJ_NUM_THREADS=1`. Each record is the i32 coefficient buffer
 /// produced inside `opj_t1_decode_cblk`, BEFORE dequantisation.
 const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
+const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
+const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 
 const OracleRecord = struct {
     tile: u32,
@@ -991,30 +993,31 @@ test "oracle dump: jp2z extractCblkPlans matches openjpeg per-cblk numbps for c1
 }
 
 test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c1_mono" {
-    // TODO(m3-brick10-finish): This test currently FAILS on the very
-    // first cblk (r=5 LH, 64x25). The structural pipeline is wired —
-    // QCD parsing yields the correct numbps (verified by the test
-    // above), the dispatcher derives msb_bp from plan.numbps, the
-    // converter places OpenJPEG's half-bit per `halfBitPos`. What it
-    // surfaces is a real divergence between our tier-1 entropy decode
-    // and OpenJPEG's at the bit-level.
+    // GATED: c1_mono.j2c uses cblksty=0x1 (SELECTIVE ARITHMETIC CODING
+    // BYPASS / LAZY mode) — confirmed via `opj_dump`. With numbps=6, the
+    // significance-propagation and magnitude-refinement passes at bit-planes
+    // <= numbps-4 are coded as RAW (bypass) bits, not MQ, and the codeword
+    // is split into terminated segments (the MQ coder is flushed/re-init'd
+    // at each MQ<->RAW boundary). Our tier-1 decoder currently treats the
+    // whole cblk byte slice as ONE continuous MQ stream, so it desyncs at
+    // the first bypass boundary.
     //
-    // Diagnostic output (with the skip removed):
-    //   cblk #0 r=5 b=2 numbps=6 passes=16
-    //     ours=-27 oj=+19, ours=+21 oj=-51, ours=+33 oj=+9, ...
+    // Root cause was localised by a byte-perfect MQ (ctxno,bit,registers)
+    // differential trace against patched OpenJPEG: the first 6438 decodes of
+    // cblk #0 match EXACTLY; divergence is purely a byte-consumption (BYTEIN)
+    // difference where OpenJPEG's MQ segment ends (synthesises the 0xFF
+    // terminator) while we read past into the raw segment.
     //
-    // Magnitudes are in the right ballpark but signs and exact values
-    // are wrong from coeff[0] onward — points at the MQ decoder or
-    // SP/MR/CL pass logic, NOT at the wiring/conversion. Next steps:
-    //   1. Instrument both our MQ and OpenJPEG's mqc.c with per-decode
-    //      output. Compare bit-by-bit on the same byte stream for the
-    //      first cblk.
-    //   2. Walk the bit-plane orchestration call-by-call. The first
-    //      diverging decode reveals which pass / context is wrong.
-    //   3. Likely suspects (in order): byte-stuffing / 0xFF handling
-    //      in MQ.BYTEIN, RLC/UNIFORM state pinning across multiple
-    //      decodes, sign-coding XOR with sign prediction, MR refinement
-    //      bit interpretation.
+    // The pure-MQ EBCOT path is already proven correct: see the a1_mono test
+    // above (cblksty=0, numlayers=1) which is byte-perfect across all 34 cblks.
+    //
+    // REMAINING WORK (own brick): implement BYPASS/LAZY mode —
+    //   (1) tier-2: split each cblk into coding-pass SEGMENTS with per-segment
+    //       byte lengths + RAW-vs-MQ classification (T.800 D.6 / Annex on
+    //       arithmetic coding bypass), and
+    //   (2) tier-1: a raw bit decoder + a dispatcher that switches MQ/RAW per
+    //       pass per bit-plane and re-inits the MQ coder at each segment.
+    // Then remove this skip and the diagnostic skip below.
     return error.SkipZigTest;
 }
 
@@ -1041,7 +1044,7 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c
             var cblk = try jp2z.internal.decodePlan(allocator, plan);
             defer cblk.deinit(allocator);
 
-            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps - 1);
+            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
             const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
             const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
             defer allocator.free(our_buf);
@@ -1071,6 +1074,58 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c
     if (first_mismatch) |idx| {
         std.debug.print("\n[oracle] {d}/{d} cblks decoded; first mismatch at cblk index {d}\n", .{ compared, records.len, idx });
         return error.MismatchedCoefficients;
+    }
+    try std.testing.expectEqual(@as(u32, 34), compared);
+}
+
+test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for a1_mono (pure MQ, 1 layer)" {
+    // a1_mono.j2c is the simplest conformance fixture: single tile, single
+    // component, default (single) precincts, numlayers=1, cblksty=0 (pure MQ
+    // arithmetic coding — NO bypass/LAZY). It is the clean validation target
+    // for the tier-1 EBCOT MQ path. (c1_mono uses cblksty=0x1 BYPASS which
+    // additionally requires raw-coding segments — see the c1_mono test below.)
+    const allocator = std.testing.allocator;
+    const records = try parseOracleDump(allocator, a1_mono_t1_oracle);
+    defer freeOracleRecords(allocator, records);
+
+    var list = try jp2z.internal.extractCblkPlans(allocator, a1_mono_j2c);
+    defer list.deinit(allocator);
+
+    var compared: u32 = 0;
+    for (records) |rec| {
+        for (list.plans) |plan| {
+            if (plan.tile != rec.tile) continue;
+            if (plan.component != rec.component) continue;
+            if (plan.resolution != rec.resno) continue;
+            if (plan.band != rec.orient) continue;
+            if (plan.sb_x0 != rec.cblk_x0) continue;
+            if (plan.sb_y0 != rec.cblk_y0) continue;
+
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+
+            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
+            const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
+            const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
+            defer allocator.free(our_buf);
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
+
+            try std.testing.expectEqual(rec.data.len, our_buf.len);
+            if (!std.mem.eql(i32, our_buf, rec.data)) {
+                std.debug.print(
+                    "\n[a1 oracle] MISMATCH cblk r={d} b={d} ({d},{d}) numbps={d} passes={d}\n",
+                    .{ plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.numbps, plan.total_passes },
+                );
+                const show: usize = @min(@as(usize, 12), our_buf.len);
+                var j: usize = 0;
+                while (j < show) : (j += 1) {
+                    std.debug.print("  [{d}] ours={d:>6} oj={d:>6} {s}\n", .{ j, our_buf[j], rec.data[j], if (our_buf[j] == rec.data[j]) "" else "<-- diff" });
+                }
+                return error.MismatchedCoefficients;
+            }
+            compared += 1;
+            break;
+        }
     }
     try std.testing.expectEqual(@as(u32, 34), compared);
 }

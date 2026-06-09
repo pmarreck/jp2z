@@ -65,13 +65,17 @@ pub const CtxIdx = enum(u8) {
 
 pub const NUM_CONTEXTS: usize = 19;
 
-/// Fresh per-code-block context state. T.800 D.5 says CX 17 (RLC)
-/// and CX 18 (UNIFORM) start at state index 46 — the table row
-/// whose NMPS = NLPS = 46 (no adaptation possible). All other
-/// contexts start at state 0 (the unbiased ≈ 0.5 entry).
+/// Fresh per-code-block context state. T.800 Table D-7 gives three
+/// contexts non-zero initial states; all others start at state 0
+/// (the unbiased ~0.5 entry). Verified against OpenJPEG
+/// opj_t1_decode_cblk: resetstates(all->0) then setstate UNI/AGG/ZC.
+///   ZC  ctx 0  -> state 4   (T1_CTXNO_ZC,  prob 4)
+///   RLC ctx 17 -> state 3   (T1_CTXNO_AGG, prob 3) -- ADAPTS, not pinned
+///   UNI ctx 18 -> state 46  (T1_CTXNO_UNI, prob 46) -- pinned (nmps=nlps=46)
 pub fn initContexts() [NUM_CONTEXTS]mq.Context {
     var ctxs: [NUM_CONTEXTS]mq.Context = @splat(.{});
-    ctxs[@intFromEnum(CtxIdx.rlc)] = .{ .state = 46, .mps = 0 };
+    ctxs[@intFromEnum(CtxIdx.zc_0)] = .{ .state = 4, .mps = 0 };
+    ctxs[@intFromEnum(CtxIdx.rlc)] = .{ .state = 3, .mps = 0 };
     ctxs[@intFromEnum(CtxIdx.uniform)] = .{ .state = 46, .mps = 0 };
     return ctxs;
 }
@@ -173,18 +177,20 @@ pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
     }
 
     if (orient == .hh) {
+        // T.800 Table D-1 HH column (verified vs OpenJPEG
+        // t1_generate_luts.c t1_init_ctxno_zc case 3): primary axis is
+        // the diagonal count d, secondary is hv = h + v.
         const hv = h + v;
-        if (d >= 3) return if (hv >= 1) .zc_8 else .zc_7;
-        if (d == 2) {
-            if (hv >= 2) return .zc_6;
-            if (hv == 1) return .zc_5;
-            return .zc_4;
-        }
+        if (d >= 3) return .zc_8;
+        if (d == 2) return if (hv >= 1) .zc_7 else .zc_6;
         if (d == 1) {
-            if (hv >= 2) return .zc_3;
-            if (hv == 1) return .zc_2;
-            return .zc_1;
+            if (hv >= 2) return .zc_5;
+            if (hv == 1) return .zc_4;
+            return .zc_3;
         }
+        // d == 0
+        if (hv >= 2) return .zc_2;
+        if (hv == 1) return .zc_1;
         return .zc_0;
     }
 
@@ -582,38 +588,37 @@ pub fn decodeCblkPasses(
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-test "initContexts: 19 contexts; RLC and UNIFORM at state 46, others fresh" {
+test "initContexts: T.800 Table D-7 initial states (ZC=4, RLC=3, UNI=46, rest=0)" {
     const ctxs = initContexts();
     try std.testing.expectEqual(@as(usize, 19), ctxs.len);
-    // ZC, SC, MR all start at state 0, MPS 0.
-    var i: usize = 0;
+    // ZC ctx 0 -> state 4 (special non-zero init per Table D-7).
+    try std.testing.expectEqual(@as(u8, 4), ctxs[0].state);
+    try std.testing.expectEqual(@as(u1, 0), ctxs[0].mps);
+    // Remaining ZC (1..8), SC (9..13), MR (14..16) start fresh at state 0.
+    var i: usize = 1;
     while (i < 17) : (i += 1) {
         try std.testing.expectEqual(@as(u8, 0), ctxs[i].state);
         try std.testing.expectEqual(@as(u1, 0), ctxs[i].mps);
     }
-    // RLC and UNIFORM pinned at row 46 (NMPS = NLPS = 46 → no adapt).
-    try std.testing.expectEqual(@as(u8, 46), ctxs[17].state);
+    // RLC ctx 17 -> state 3 (adapts); UNIFORM ctx 18 -> state 46 (pinned).
+    try std.testing.expectEqual(@as(u8, 3), ctxs[17].state);
     try std.testing.expectEqual(@as(u1, 0), ctxs[17].mps);
     try std.testing.expectEqual(@as(u8, 46), ctxs[18].state);
     try std.testing.expectEqual(@as(u1, 0), ctxs[18].mps);
 }
 
-test "initContexts: pinned rows really stay pinned through decode" {
-    // RLC/UNIFORM contexts at row 46 should never advance regardless
-    // of decode outcomes (NMPS = NLPS = 46 per state_table[46]).
-    // Verify by stepping each through a few decodes on a synthetic
-    // byte stream and asserting state and mps unchanged.
+test "initContexts: UNIFORM (ctx 18) stays pinned at state 46 through decodes" {
+    // Only UNIFORM is fixed-probability: state_table[46] has NMPS = NLPS = 46,
+    // so it never advances regardless of decode outcome. (RLC ctx 17 starts
+    // at state 3 and DOES adapt — deliberately not asserted as pinned.)
     var ctxs = initContexts();
     const stream = [_]u8{ 0xAB, 0xCD, 0xEF, 0xFF, 0x00 };
     var dec = mq.Decoder.initDec(&stream);
     var i: u32 = 0;
     while (i < 16) : (i += 1) {
-        _ = dec.decode(&ctxs[@intFromEnum(CtxIdx.rlc)]);
         _ = dec.decode(&ctxs[@intFromEnum(CtxIdx.uniform)]);
     }
-    try std.testing.expectEqual(@as(u8, 46), ctxs[17].state);
     try std.testing.expectEqual(@as(u8, 46), ctxs[18].state);
-    try std.testing.expectEqual(@as(u1, 0), ctxs[17].mps);
     try std.testing.expectEqual(@as(u1, 0), ctxs[18].mps);
 }
 
@@ -656,19 +661,46 @@ test "zcContext: LL orientation — H=2 dominates → ZC 8" {
     try std.testing.expectEqual(CtxIdx.zc_4, zcContext(cblk, 2, 2, .hl));
 }
 
-test "zcContext: HH orientation — D=3 with no H/V → ZC 7; with H/V → ZC 8" {
+test "zcContext: HH orientation — T.800 Table D-1 HH column (d primary, hv secondary)" {
     const allocator = std.testing.allocator;
     var cblk = try Cblk.init(allocator, 4, 4);
     defer cblk.deinit(allocator);
-    // 3 diagonal neighbors at (1,1), (3,1), (1,3); none at (3,3).
+    // 3 diagonal neighbors of (2,2): (1,1),(3,1),(1,3); (3,3) absent → d=3.
     cblk.coeffs[1 * 4 + 1].significant = true;
     cblk.coeffs[1 * 4 + 3].significant = true;
     cblk.coeffs[3 * 4 + 1].significant = true;
-    // D = 3, H+V = 0 → ZC 7.
-    try std.testing.expectEqual(CtxIdx.zc_7, zcContext(cblk, 2, 2, .hh));
-    // Add one H neighbor → H+V = 1, D = 3 → ZC 8.
+    // d>=3 → ZC 8 regardless of h+v (this was the bug: it used to return 7).
+    try std.testing.expectEqual(CtxIdx.zc_8, zcContext(cblk, 2, 2, .hh));
+    // Adding an H neighbor keeps it at ZC 8 (still d>=3).
     cblk.coeffs[2 * 4 + 1].significant = true;
     try std.testing.expectEqual(CtxIdx.zc_8, zcContext(cblk, 2, 2, .hh));
+}
+
+test "zcContext: HH orientation — d=2 boundary (hv=0 → ZC 6, hv>=1 → ZC 7)" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    // 2 diagonal neighbors of (2,2): (1,1),(3,1). d=2, hv=0 → ZC 6.
+    cblk.coeffs[1 * 4 + 1].significant = true;
+    cblk.coeffs[1 * 4 + 3].significant = true;
+    try std.testing.expectEqual(CtxIdx.zc_6, zcContext(cblk, 2, 2, .hh));
+    // Add a V neighbor → hv=1, d=2 → ZC 7.
+    cblk.coeffs[1 * 4 + 2].significant = true;
+    try std.testing.expectEqual(CtxIdx.zc_7, zcContext(cblk, 2, 2, .hh));
+}
+
+test "zcContext: HH orientation — d=0 uses hv only (0/1/>=2 → ZC 0/1/2)" {
+    const allocator = std.testing.allocator;
+    var cblk = try Cblk.init(allocator, 4, 4);
+    defer cblk.deinit(allocator);
+    // No diagonal neighbors. hv=0 → ZC 0.
+    try std.testing.expectEqual(CtxIdx.zc_0, zcContext(cblk, 2, 2, .hh));
+    // One H neighbor → hv=1 → ZC 1.
+    cblk.coeffs[2 * 4 + 1].significant = true;
+    try std.testing.expectEqual(CtxIdx.zc_1, zcContext(cblk, 2, 2, .hh));
+    // Add a V neighbor → hv=2 → ZC 2.
+    cblk.coeffs[1 * 4 + 2].significant = true;
+    try std.testing.expectEqual(CtxIdx.zc_2, zcContext(cblk, 2, 2, .hh));
 }
 
 test "zcContext: LL — H=1, V=0, D=1 → ZC 6" {

@@ -74,8 +74,9 @@ oracle tests.
 ### M3 — tier-1 EBCOT
 - [x] MQ arithmetic coder (T.800 Annex C) — 47-entry state table,
       INITDEC/DECODE/BYTEIN/RENORMD, full MPS/LPS exchange branches
-- [x] EBCOT context model (T.800 D.5) — 19 contexts; RLC + UNIFORM
-      pinned at state 46
+- [x] EBCOT context model — 19 contexts; T.800 Table D-7 init:
+      ZC ctx0=state 4, RLC ctx17=state 3 (ADAPTS, not pinned),
+      UNIFORM ctx18=state 46 (pinned). Verified vs OpenJPEG.
 - [x] Cblk coefficient state + ZC context formation (T.800 Table D-1)
       including HL ↔ V swap and HH-orientation diagonal table
 - [x] SC context formation + sign prediction (T.800 Table D-3,
@@ -104,15 +105,37 @@ oracle tests.
       `halfBitPos` for partial-decode bit-plane truncation) — proven
       against hand-derived OpenJPEG values in unit tests (10.2)
 - [x] Walker plumbs M_b through CblkExtractor → plan.numbps;
-      dispatcher derives `msb_bp = numbps - 1`; verified end-to-end
+      dispatcher derives `msb_bp = numbps` (= OpenJPEG bpno_plus_one); verified end-to-end
       against the patched-openjpeg dump: jp2z's per-cblk numbps
       matches OpenJPEG 1:1 on c1_mono.j2c (10.3 — wiring)
-- [ ] Byte-perfect cblk coefficient comparison (10.3 — strict).
-      Oracle dump parser + matching by (tile,comp,res,band,sb_x0,
-      sb_y0) is wired (see test gated by SkipZigTest with TODO).
-      First cblk diverges from coeff[0] — points at an entropy-
-      decode bug (MQ BYTEIN / context advance, sign coding, or MR
-      bit interpretation) rather than wiring. Next session digs.
+- [x] Byte-perfect cblk coefficient comparison — **a1_mono.j2c**
+      (cblksty=0 pure-MQ, numlayers=1, single precinct): ALL 34 cblks
+      decode byte-identical to OpenJPEG (`tests/unit/validate.zig`).
+      This validates the full tier-1 MQ + EBCOT path. Achieved by
+      fixing 4 bugs found via a byte-perfect MQ differential trace vs
+      patched OpenJPEG:
+        1. MQ `mpsExchange` used `qe>0x8000` instead of `A<Qe` (T.800
+           Fig C-17) — branches were effectively inverted.
+        2. dispatcher `msb_bp` off-by-one: `numbps-1` should be `numbps`
+           (OpenJPEG `bpno_plus_one = roishift + numbps`).
+        3. `initContexts` wrong: RLC pinned at 46 (must be state 3,
+           adapts) and ZC ctx0 left at 0 (must be state 4) — T.800 D-7.
+        4. HH-orientation ZC table (`zcContext`) completely wrong vs
+           T.800 Table D-1 HH column / OpenJPEG t1_init_ctxno_zc.
+- [ ] **BYPASS / LAZY mode (cblksty & 0x1)** — own brick. c1_mono.j2c
+      (and e1_colr.j2c) use cblksty=0x1: SP/MR passes at bit-planes
+      <= numbps-4 are RAW (bypass) coded, not MQ, and the codeword is
+      split into terminated SEGMENTS (MQ flushed/re-init'd at each
+      MQ<->RAW boundary). Needs: (1) tier-2 to split each cblk into
+      coding-pass segments with per-segment lengths + RAW/MQ class;
+      (2) tier-1 raw bit decoder + MQ/RAW dispatcher with per-segment
+      MQ re-init. c1_mono strict + diagnostic tests stay SkipZigTest
+      until this lands. (Root cause localised: first 6438 MQ decodes of
+      c1_mono cblk #0 match OpenJPEG exactly; divergence is the BYTEIN
+      at the MQ segment terminator.)
+- [ ] Multi-precinct extraction (d1_colr.j2c: pure-MQ but user 64x64
+      precincts) — walker hardcodes precinct_idx=0; needed before
+      d1_colr can be a byte-perfect target.
 
 ### M4 — inverse 5/3 wavelet (lossless)
 - [ ] 1D inverse DWT (lifting steps)

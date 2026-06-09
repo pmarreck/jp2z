@@ -1,0 +1,5 @@
+# Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
+ver=1.2
+annotate=[
+	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records
+]

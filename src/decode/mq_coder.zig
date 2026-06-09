@@ -216,18 +216,17 @@ pub const Decoder = struct {
     }
 
     fn mpsExchange(self: *Decoder, cx: *Context, s: *const StateEntry) u1 {
-        _ = self;
         var d: u1 = undefined;
         const qe_u16: u16 = @intCast(s.qe);
-        if (qe_u16 > 0x8000) {
-            // Per spec this branch can't hit (Qe ≤ 0x5601 in the table),
-            // but keep the check for robustness.
-            d = cx.mps;
-            cx.state = s.nmps;
-        } else {
+        if (self.a < qe_u16) {
+            // A < Qe: conditional exchange — the LESS probable symbol is
+            // actually decoded (T.800 Figure C-17, "A < Qe" branch).
             d = ~cx.mps;
             if (s.switch_mps == 1) cx.mps = ~cx.mps;
             cx.state = s.nlps;
+        } else {
+            d = cx.mps;
+            cx.state = s.nmps;
         }
         return d;
     }
@@ -256,12 +255,13 @@ test "Decoder.initDec: empty input synthesises 0xFF byte, doesn't crash" {
     try std.testing.expectEqual(@as(u16, 0x8000), dec.a);
 }
 
-test "Decoder.decode: runs the state machine without panicking on a small all-ones stream" {
-    // The spec is intricate enough that the SIMPLEST useful test is
-    // "doesn't trigger an arithmetic or bounds panic on a few hundred
-    // decisions across a fresh context." Byte-perfect oracle vs
-    // OpenJPEG mqc lands once tier-1 wires this into real code-block
-    // bytes.
+test "Decoder.decode: deterministic known-answer on an all-0xFF stream" {
+    // An all-0xFF input is the degenerate "all stuffing markers" case. A
+    // correct decoder still runs without arithmetic/bounds panics and is
+    // deterministic; on this particular input it decodes 64 consecutive
+    // 1-bits against a fresh context (sum == 64). This is a regression
+    // lock, NOT the primary correctness check — that is the byte-perfect
+    // differential test against OpenJPEG on a1_mono.j2c (tests/unit/validate.zig).
     const stream = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
     var dec = Decoder.initDec(&stream);
     var cx: Context = .{};
@@ -270,10 +270,7 @@ test "Decoder.decode: runs the state machine without panicking on a small all-on
     while (i < 64) : (i += 1) {
         sum += dec.decode(&cx);
     }
-    // Loose sanity: 64 decisions against a fresh context shouldn't
-    // produce a wildly degenerate sum (all 0s or all 1s would be
-    // suspicious for a coder converging to ≈ 0.5 initial probability).
-    try std.testing.expect(sum > 0 and sum < 64);
+    try std.testing.expectEqual(@as(u32, 64), sum);
 }
 
 

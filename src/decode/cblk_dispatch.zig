@@ -50,7 +50,12 @@ pub fn decodePlan(
     var ctxs = ebcot.initContexts();
     var dec = mq.Decoder.initDec(plan.data);
     const orient = orientationFromBand(plan.band);
-    const msb_bp: u5 = @intCast(plan.numbps - 1);
+    // OpenJPEG's first bit-plane index is bpno_plus_one = numbps
+    // (t1.c: bpno_plus_one = roishift + cblk->numbps). Our `bp` indexing
+    // is 1:1 with OpenJPEG's bpno_plus_one, so the MSB bp IS numbps,
+    // NOT numbps-1. (The lowest bp processed lands at 1, never 0,
+    // because a cblk of numbps planes is at most 3*numbps-2 passes.)
+    const msb_bp: u5 = @intCast(plan.numbps);
     ebcot.decodeCblkPasses(&dec, &cblk, &ctxs, orient, msb_bp, plan.total_passes);
     return cblk;
 }
