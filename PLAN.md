@@ -133,9 +133,11 @@ oracle tests.
       until this lands. (Root cause localised: first 6438 MQ decodes of
       c1_mono cblk #0 match OpenJPEG exactly; divergence is the BYTEIN
       at the MQ segment terminator.)
-- [ ] Multi-precinct extraction (d1_colr.j2c: pure-MQ but user 64x64
-      precincts) — walker hardcodes precinct_idx=0; needed before
-      d1_colr can be a byte-perfect target.
+- [x] Multi-precinct + multi-component byte-perfect: d1_colr.j2c
+      (cblksty=0, 3 components + MCT, user 64x64 precincts, 4 layers)
+      decodes byte-identical to OpenJPEG across all 174 cblks. The
+      4 a1_mono fixes generalised directly; the walker already
+      produces correct per-precinct/per-component byte slices.
 
 ### M4 — inverse 5/3 wavelet (lossless)
 - [ ] 1D inverse DWT (lifting steps)
