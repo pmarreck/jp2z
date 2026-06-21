@@ -140,10 +140,16 @@ oracle tests.
       4 a1_mono fixes generalised directly; the walker already
       produces correct per-precinct/per-component byte slices.
 
-### M4 — inverse 5/3 wavelet (lossless)
-- [ ] 1D inverse DWT (lifting steps)
-- [ ] 2D inverse via tile/code-block boundary handling
-- [ ] Quantization (none for 5/3 lossless)
+### M4 — inverse 5/3 wavelet (lossless) — DONE
+- [x] 1D inverse 5/3 lifting (dwt.zig idwt53Line) — round-trip tested
+- [x] 2D inverse DWT per-resolution (rows then cols, coarse->fine,
+      Mallat quadrant layout, edge-clamp boundary) — dwt.zig idwt53
+- [x] Coefficient assembly: cblk -> tile buffer by subband quadrant,
+      reversible /2 pre-scale (truncating div), reconstruct.zig
+- [x] DC level shift + clamp (reconstruct.zig levelShift)
+- [x] **End-to-end byte-perfect vs opj_decompress**: a1_mono and
+      c1_mono (incl. BYPASS) reconstructed pixels match the .pgm
+      output exactly (decodeCleanroom). Quantization: none for 5/3.
 
 ### M5 — inverse 9/7 wavelet (lossy)
 - [ ] 1D inverse DWT with lifting + scale

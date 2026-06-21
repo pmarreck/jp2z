@@ -105,6 +105,11 @@ pub const CodingParams = struct {
     ///   r >= 1, band b: subband_idx = 3*(r-1) + b  (b in {1,2,3} for HL/LH/HH)
     /// Length 1 + 3*32 = 97 covers num_decomp_levels up to 32.
     mb_per_subband: [97]u8 = @splat(0),
+    /// Per-component precision (bit depth) from SIZ Ssiz low 7 bits + 1.
+    /// Indexed by component; up to 16 captured (enough for our fixtures).
+    comp_prec: [16]u8 = @splat(8),
+    /// Per-component signedness (SIZ Ssiz bit 7) as a bitmask by component.
+    comp_signed: u16 = 0,
 
     /// Look up M_b for a (resolution, band) pair. `band` follows the
     /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
@@ -1273,7 +1278,16 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     report.height = ysiz - yosiz;
     // Seed CodingParams with the SIZ-derived field. Remaining
     // fields default until parseCodBody overwrites them.
-    report.coding_params = .{ .num_components = csiz };
+    var cp_local: jp2z.CodingParams = .{ .num_components = csiz };
+    const ncomp: usize = @min(@as(usize, csiz), 16);
+    var ci: usize = 0;
+    while (ci < ncomp) : (ci += 1) {
+        // Each component descriptor is 3 bytes; Ssiz is the first.
+        const ssiz = body[38 + ci * 3];
+        cp_local.comp_prec[ci] = (ssiz & 0x7F) + 1;
+        if (ssiz & 0x80 != 0) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
+    }
+    report.coding_params = cp_local;
 }
 
 fn emit(

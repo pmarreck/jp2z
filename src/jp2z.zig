@@ -219,6 +219,12 @@ pub const internal = struct {
     pub fn halfBitPos(msb_bp: u5, total_passes: u32) u5 {
         return @import("decode/cblk_dispatch.zig").halfBitPos(msb_bp, total_passes);
     }
+
+    pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
+    /// Full cleanroom decode (5/3 reversible): codestream -> sample planes.
+    pub fn decodeCleanroom(allocator: std.mem.Allocator, data: []const u8) !CleanroomImage {
+        return @import("decode/reconstruct.zig").decodeCleanroom(allocator, data);
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -241,6 +247,8 @@ test {
     _ = @import("decode/cblk_dispatch.zig");
     _ = @import("decode/cblk_extract.zig");
     _ = @import("decode/cblk_plan.zig");
+    _ = @import("decode/dwt.zig");
+    _ = @import("decode/reconstruct.zig");
     _ = @import("decode/codestream.zig");
     _ = @import("decode/ebcot.zig");
     _ = @import("decode/findings.zig");

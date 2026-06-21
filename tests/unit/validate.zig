@@ -880,6 +880,8 @@ const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
+const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
+const c1_mono_pix = @embedFile("fixtures/oracles/c1_mono.pix");
 
 const OracleRecord = struct {
     tile: u32,
@@ -1156,4 +1158,33 @@ test "extractCblkPlans: c1_mono LH(0,64) captures LAZY segments [10,2,1,2,1]" {
         return;
     }
     return error.CblkNotFound;
+}
+
+test "cleanroom: a1_mono pixels match opj_decompress (5/3 IDWT + DC level shift)" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, a1_mono_j2c);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 303), img.width);
+    try std.testing.expectEqual(@as(u32, 179), img.height);
+    try std.testing.expectEqual(@as(u16, 1), img.num_components);
+    try std.testing.expectEqual(a1_mono_pix.len, img.planes[0].len);
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, a1_mono_pix[i]) != s) {
+            std.debug.print("\n[a1 px] mismatch at {d}: ours={d} oj={d}\n", .{ i, s, a1_mono_pix[i] });
+            return error.PixelMismatch;
+        }
+    }
+}
+
+test "cleanroom: c1_mono pixels match opj_decompress (BYPASS + 5/3 IDWT + level shift)" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, c1_mono_j2c);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(c1_mono_pix.len, img.planes[0].len);
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, c1_mono_pix[i]) != s) {
+            std.debug.print("\n[c1 px] mismatch at {d}: ours={d} oj={d}\n", .{ i, s, c1_mono_pix[i] });
+            return error.PixelMismatch;
+        }
+    }
 }
