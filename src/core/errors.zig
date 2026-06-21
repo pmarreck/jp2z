@@ -71,4 +71,5 @@ pub const FindingCode = enum(u32) {
     jp2_packets_under_read   = 250,  // walker stopped before tp_body.len — possible per-cblk decode bug
     entropy_over_read        = 251,  // MQ/RAW decoder synthesized >2 past-end 0xFF — truncated entropy data
     entropy_under_read       = 252,  // cblk had leftover unconsumed bytes — length/data inconsistency
+    coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2 (impossible — corrupt header)
 };

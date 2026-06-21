@@ -1285,7 +1285,7 @@ fn hasFinding(rep: jp2z.ValidationReport, code: jp2z.FindingCode) bool {
 
 test "deepValidate: clean a1_mono has no entropy over-read finding (no false positive)" {
     const allocator = std.testing.allocator;
-    var rep = try jp2z.internal.deepValidate(allocator, a1_mono_j2c);
+    var rep = try jp2z.internal.deepValidate(allocator, a1_mono_j2c, false);
     defer rep.deinit(allocator);
     try std.testing.expect(!hasFinding(rep, .entropy_over_read));
     try std.testing.expect(!hasFinding(rep, .entropy_under_read));
@@ -1356,4 +1356,28 @@ test "deepValidate strictness: single-byte entropy corruption caught by byte-bud
     }
     try std.testing.expect(clean_max <= 2);
     try std.testing.expect(caught * 4 >= tested * 3); // >= 75% of single-byte flips caught
+}
+
+test "deepValidate strict: entropy corruption escalates report to FAIL" {
+    const allocator = std.testing.allocator;
+    // Baseline clean file is not a FAIL.
+    {
+        var rep = try jp2z.internal.deepValidate(allocator, a1_mono_j2c, true);
+        defer rep.deinit(allocator);
+        try std.testing.expect(rep.overall != .fail);
+    }
+    // A byte flipped deep in the entropy data is caught and (strict) FAILs.
+    const buf = try allocator.dupe(u8, a1_mono_j2c);
+    defer allocator.free(buf);
+    var any_fail = false;
+    var pos: usize = (a1_mono_j2c.len * 3) / 4;
+    while (pos < a1_mono_j2c.len and !any_fail) : (pos += 7) {
+        const o = buf[pos];
+        buf[pos] ^= 0xFF;
+        var rep = try jp2z.internal.deepValidate(allocator, buf, true);
+        if (rep.overall == .fail) any_fail = true;
+        rep.deinit(allocator);
+        buf[pos] = o;
+    }
+    try std.testing.expect(any_fail);
 }

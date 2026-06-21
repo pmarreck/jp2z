@@ -228,8 +228,8 @@ pub const internal = struct {
 
     /// Deep strict validation: structural walk + full entropy decode with
     /// deep-integrity findings (jp2z reports more + tolerates less than libs).
-    pub fn deepValidate(allocator: std.mem.Allocator, data: []const u8) !ValidationReport {
-        return @import("decode/reconstruct.zig").deepValidate(allocator, data);
+    pub fn deepValidate(allocator: std.mem.Allocator, data: []const u8, strict: bool) !ValidationReport {
+        return @import("decode/reconstruct.zig").deepValidate(allocator, data, strict);
     }
 };
 

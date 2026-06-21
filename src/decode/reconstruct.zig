@@ -312,7 +312,7 @@ fn appendFinding(report: *codestream.ValidationReport, allocator: Allocator, sev
 /// of every code-block, emitting deep-integrity findings that permissive
 /// libraries (which decode and move on) never report. This is jp2z's
 /// `validate`-facing value-add. Returns the augmented ValidationReport.
-pub fn deepValidate(allocator: Allocator, data: []const u8) !codestream.ValidationReport {
+pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codestream.ValidationReport {
     var report = try codestream.validate(allocator, data);
     errdefer report.deinit(allocator);
     if (report.coding_params == null) return report; // structural-only
@@ -320,22 +320,32 @@ pub fn deepValidate(allocator: Allocator, data: []const u8) !codestream.Validati
     var list = codestream.extractCblkPlans(allocator, data) catch return report;
     defer list.deinit(allocator);
 
+    const sev: codestream.Severity = if (strict) .fail else .warn;
     var over_count: u32 = 0;
     var under_count: u32 = 0;
+    var passbudget_count: u32 = 0;
     for (list.plans) |plan| {
+        // Coding-pass budget (no decode needed): numbps bit-planes allow at
+        // most 1 + 3*(numbps-1) = 3*numbps-2 passes. More is impossible.
+        const max_passes: u32 = if (plan.numbps == 0) 0 else 3 * @as(u32, plan.numbps) - 2;
+        if (plan.total_passes > max_passes) passbudget_count += 1;
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
         if (cblk.over_read > 2) over_count += 1;
         if (cblk.under_read > 2) under_count += 1;
     }
+    if (passbudget_count > 0) {
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than numbps allows", .{passbudget_count});
+        try appendFinding(&report, allocator, sev, .coding_pass_overflow, detail);
+    }
     if (over_count > 0) {
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt)", .{over_count});
-        try appendFinding(&report, allocator, .warn, .entropy_over_read, detail);
+        try appendFinding(&report, allocator, sev, .entropy_over_read, detail);
     }
     if (under_count > 0) {
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch)", .{under_count});
-        try appendFinding(&report, allocator, .warn, .entropy_under_read, detail);
+        try appendFinding(&report, allocator, sev, .entropy_under_read, detail);
     }
     return report;
 }
