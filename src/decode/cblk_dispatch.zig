@@ -61,6 +61,7 @@ pub fn decodePlan(
         var dec = mq.Decoder.initDec(plan.data);
         ebcot.decodeCblkPasses(&dec, &cblk, &ctxs, orient, msb_bp, plan.total_passes);
         cblk.over_read = dec.end_of_stream_count;
+        cblk.under_read = if (dec.bp < plan.data.len) @intCast(plan.data.len - dec.bp) else 0;
     } else {
         // Real extracted plans carry the LAZY/TERMALL segment breakdown;
         // decode segment-by-segment (MQ or RAW per segment). For cblksty=0

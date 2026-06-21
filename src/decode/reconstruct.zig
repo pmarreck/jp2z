@@ -321,15 +321,21 @@ pub fn deepValidate(allocator: Allocator, data: []const u8) !codestream.Validati
     defer list.deinit(allocator);
 
     var over_count: u32 = 0;
+    var under_count: u32 = 0;
     for (list.plans) |plan| {
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
         if (cblk.over_read > 2) over_count += 1;
+        if (cblk.under_read > 2) under_count += 1;
     }
     if (over_count > 0) {
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt)", .{over_count});
         try appendFinding(&report, allocator, .warn, .entropy_over_read, detail);
+    }
+    if (under_count > 0) {
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch)", .{under_count});
+        try appendFinding(&report, allocator, .warn, .entropy_under_read, detail);
     }
     return report;
 }

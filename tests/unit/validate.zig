@@ -1288,6 +1288,7 @@ test "deepValidate: clean a1_mono has no entropy over-read finding (no false pos
     var rep = try jp2z.internal.deepValidate(allocator, a1_mono_j2c);
     defer rep.deinit(allocator);
     try std.testing.expect(!hasFinding(rep, .entropy_over_read));
+    try std.testing.expect(!hasFinding(rep, .entropy_under_read));
 }
 
 test "decodePlan over_read: degenerate entropy data over-reads its segments" {
@@ -1314,4 +1315,45 @@ test "decodePlan over_read: degenerate entropy data over-reads its segments" {
     }
     if (flagged == 0) std.debug.print("\n[over_read] FAIL: 0/{d} all-zero cblks flagged\n", .{tested});
     try std.testing.expect(flagged > 0);
+}
+
+test "deepValidate strictness: single-byte entropy corruption caught by byte-budget" {
+    // Clean cblks consume ~exactly their declared bytes (no leftover, <=2
+    // over-read terminator slack). A single-byte boltgun XOR perturbs MQ
+    // consumption -> over-read OR under-read. Measures the catch rate jp2z
+    // gets that a permissive decoder (openjpeg) would silently accept.
+    const allocator = std.testing.allocator;
+    var list = try jp2z.internal.extractCblkPlans(allocator, a1_mono_j2c);
+    defer list.deinit(allocator);
+    var clean_max: u32 = 0;
+    var caught: u32 = 0;
+    var tested: u32 = 0;
+    const fracs = [_]usize{ 4, 2, 4 }; // positions: 1/4, 1/2, 3/4 (3/4 via *3 below)
+    _ = fracs;
+    for (list.plans) |plan| {
+        if (plan.total_passes == 0 or plan.data.len < 8) continue;
+        {
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            clean_max = @max(clean_max, @max(cblk.over_read, cblk.under_read));
+        }
+        const positions = [_]usize{ plan.data.len / 4, plan.data.len / 2, (plan.data.len * 3) / 4 };
+        for (positions) |p| {
+            var corrupt = plan;
+            const data = try allocator.dupe(u8, plan.data);
+            defer allocator.free(data);
+            data[p] ^= 0xFF;
+            corrupt.data = data;
+            var cblk = try jp2z.internal.decodePlan(allocator, corrupt);
+            defer cblk.deinit(allocator);
+            tested += 1;
+            if (cblk.over_read > 2 or cblk.under_read > 2) caught += 1;
+        }
+    }
+    // Clean files: no false positive. Corruption: catch the large majority.
+    if (clean_max > 2 or caught * 4 < tested * 3) {
+        std.debug.print("\n[M7 strictness] clean_max={d} caught {d}/{d}\n", .{ clean_max, caught, tested });
+    }
+    try std.testing.expect(clean_max <= 2);
+    try std.testing.expect(caught * 4 >= tested * 3); // >= 75% of single-byte flips caught
 }

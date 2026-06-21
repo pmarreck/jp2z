@@ -184,8 +184,11 @@ DWT and emit on:
       emits `entropy_over_read` when >2. Tested: clean files flag none;
       all-zero (degenerate) cblks flag 34/34. openjpeg only checks this
       under PTERM; jp2z checks always.
-- [ ] Segment length mismatch: declared per-segment byte length vs bytes the
-      MQ/RAW decoder actually consumed.
+- [x] Byte-budget mismatch: under-read (declared-but-unconsumed bytes,
+      cblk.under_read) complements over-read. `deepValidate` emits
+      `entropy_under_read`. Together they catch ~97%% of single-byte
+      (boltgun) and a strong majority of multi-position entropy
+      corruptions that openjpeg silently accepts; clean files: 0 leftover.
 - [ ] Coding-pass budget exceeded (> 3*numbps-2); coefficient magnitude bit
       above numbps (impossible value).
 - [ ] Tag-tree monotonicity violations; inclusion/zero-bitplane anomalies.

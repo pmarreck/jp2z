@@ -113,6 +113,10 @@ pub const Cblk = struct {
     /// Max past-end byte synthesis across the cblk's MQ/RAW segments
     /// (truncation / over-read signal; >2 is suspicious). Strict-validation.
     over_read: u32 = 0,
+    /// Max leftover (declared-but-unconsumed) bytes across segments — a
+    /// clean segment consumes ~all its bytes; large leftover signals a
+    /// byte-budget mismatch (corruption). Strict-validation.
+    under_read: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) std.mem.Allocator.Error!Cblk {
         const coeffs = try allocator.alloc(Coeff, @as(usize, width) * @as(usize, height));
@@ -681,6 +685,7 @@ pub fn decodeCblkSegments(
     var offset: usize = 0;
     var pass_index: u32 = 0;
     var max_over_read: u32 = 0;
+    var max_under_read: u32 = 0;
     for (segments) |seg| {
         const end = offset + seg.byte_len;
         if (end > data.len) return; // malformed; bail defensively
@@ -713,8 +718,12 @@ pub fn decodeCblkSegments(
         }
         const seg_over = if (is_raw) raw_dec.end_of_stream_count else mq_dec.end_of_stream_count;
         if (seg_over > max_over_read) max_over_read = seg_over;
+        const consumed = if (is_raw) raw_dec.bp else mq_dec.bp;
+        const leftover: u32 = if (consumed < seg.byte_len) @intCast(seg.byte_len - consumed) else 0;
+        if (leftover > max_under_read) max_under_read = leftover;
     }
     cblk.over_read = max_over_read;
+    cblk.under_read = max_under_read;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
