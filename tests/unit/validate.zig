@@ -1277,3 +1277,41 @@ test "cleanroom: p0_04 (9/7 lossy, 3-comp ICT, TERMALL) within tolerance" {
     _ = &sum_abs;
     _ = &nmis;
 }
+
+fn hasFinding(rep: jp2z.ValidationReport, code: jp2z.FindingCode) bool {
+    for (rep.findings.items) |f| if (f.code == code) return true;
+    return false;
+}
+
+test "deepValidate: clean a1_mono has no entropy over-read finding (no false positive)" {
+    const allocator = std.testing.allocator;
+    var rep = try jp2z.internal.deepValidate(allocator, a1_mono_j2c);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .entropy_over_read));
+}
+
+test "decodePlan over_read: degenerate entropy data over-reads its segments" {
+    const allocator = std.testing.allocator;
+    var list = try jp2z.internal.extractCblkPlans(allocator, a1_mono_j2c);
+    defer list.deinit(allocator);
+    var tested: u32 = 0;
+    var flagged: u32 = 0;
+    for (list.plans) |plan| {
+        if (plan.total_passes == 0 or plan.data.len < 4) continue;
+        // Corrupt: keep geometry/segments/pass-count, replace entropy bytes
+        // with 0x00 — forces the MQ coder to consume far more than the
+        // segment provides, synthesizing past-end 0xFF (the over-read signal
+        // openjpeg silently swallows).
+        var corrupt = plan;
+        const data = try allocator.dupe(u8, plan.data);
+        defer allocator.free(data);
+        @memset(data, 0x00);
+        corrupt.data = data;
+        var cblk = try jp2z.internal.decodePlan(allocator, corrupt);
+        defer cblk.deinit(allocator);
+        tested += 1;
+        if (cblk.over_read > 2) flagged += 1;
+    }
+    if (flagged == 0) std.debug.print("\n[over_read] FAIL: 0/{d} all-zero cblks flagged\n", .{tested});
+    try std.testing.expect(flagged > 0);
+}

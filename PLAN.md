@@ -171,6 +171,32 @@ oracle tests.
 - [ ] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use.
 - [ ] Final cleanup: remove openjpeg from runtime dependency graph (jpegz cutover).
 
+### M7 — strict validation findings (THE `validate` differentiator)
+Goal: report MORE error types and tolerate LESS than libopenjpeg/grok.
+Typical libs decode permissively (silently paper over corruption); jp2z's
+value in `validate` is to FLAG every spec deviation as a finding. The decode
+(M3-M6) gives byte-exact correctness; this layer turns the decoder into a
+strict validator. Thread a FindingsSink through tier-2 + tier-1 + dequant +
+DWT and emit on:
+- [x] MQ/RAW over-read: decoders count past-end 0xFF synthesis
+      (end_of_stream_count); cblk.over_read aggregates per cblk;
+      `deepValidate` (jp2z.internal.deepValidate) decodes every cblk and
+      emits `entropy_over_read` when >2. Tested: clean files flag none;
+      all-zero (degenerate) cblks flag 34/34. openjpeg only checks this
+      under PTERM; jp2z checks always.
+- [ ] Segment length mismatch: declared per-segment byte length vs bytes the
+      MQ/RAW decoder actually consumed.
+- [ ] Coding-pass budget exceeded (> 3*numbps-2); coefficient magnitude bit
+      above numbps (impossible value).
+- [ ] Tag-tree monotonicity violations; inclusion/zero-bitplane anomalies.
+- [ ] Marker field validation (reserved bits, out-of-range Scod/Sqcd/SIZ,
+      impossible param combinations) beyond what's parsed today.
+- [ ] SOT/Psot tile-part length + ordering consistency; EOC presence;
+      trailing-garbage; PTERM predictable-termination check (always-on).
+- [ ] A `strict` mode: any deviation escalates to FAIL (vs lenient: warn).
+Note: strictness comes from DETERMINISTIC integrity checks (independent of
+the 9/7 float tolerance), so it is exact even on the lossy path.
+
 ## Phase 3 — jpegz integration
 
 - [ ] In jpegz: replace `pub const jpeg2000` body with thin re-export shim to jp2z

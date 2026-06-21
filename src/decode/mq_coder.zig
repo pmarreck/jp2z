@@ -116,6 +116,12 @@ pub const Decoder = struct {
     c: u32,
     a: u16,
     ct: u8,
+    /// Count of BYTEIN calls that ran past the end of the segment data
+    /// (synthesised 0xFF). A valid MQ segment needs 0-2 of these for its
+    /// terminator tail; >2 signals truncated/over-read entropy data
+    /// (T.800 / openjpeg end_of_byte_stream_counter — openjpeg only checks
+    /// this under PTERM; jp2z exposes it for strict validation always).
+    end_of_stream_count: u32 = 0,
 
     /// T.800 C.3.5 INITDEC: prime the registers from the first two
     /// bytes (with BYTEIN handling the 0xFF stuffing on the second).
@@ -140,6 +146,7 @@ pub const Decoder = struct {
     /// fallback) into C; sets CT to 8 (or 7 when the current byte is
     /// 0xFF and the next is "real" data, i.e. high bit clear).
     fn byteIn(self: *Decoder) void {
+        if (self.bp >= self.end) self.end_of_stream_count +%= 1;
         const cur_byte: u8 = if (self.bp < self.end) self.data[self.bp] else 0xFF;
         const next_byte: u8 = if (self.bp + 1 < self.end) self.data[self.bp + 1] else 0xFF;
         if (cur_byte == 0xFF) {
@@ -246,6 +253,9 @@ pub const RawDecoder = struct {
     end: usize,
     c: u8,
     ct: u8,
+    /// Past-end byte fetches (truncated/over-read raw segment). See
+    /// Decoder.end_of_stream_count.
+    end_of_stream_count: u32 = 0,
 
     pub fn initDec(data: []const u8) RawDecoder {
         return .{ .data = data, .bp = 0, .end = data.len, .c = 0, .ct = 0 };
@@ -254,6 +264,7 @@ pub const RawDecoder = struct {
     /// Read the next raw bit (MSB-first, with 0xFF bit-stuffing).
     pub fn decode(self: *RawDecoder) u1 {
         if (self.ct == 0) {
+            if (self.bp >= self.end) self.end_of_stream_count +%= 1;
             if (self.c == 0xFF) {
                 // Byte following a 0xFF: >0x8F is a marker (synthesise
                 // 0xFF, no advance); otherwise it carries only 7 bits.
@@ -389,4 +400,23 @@ test "RawDecoder: past-end synthesises 0xFF (all ones)" {
     var i: u32 = 0;
     while (i < 8) : (i += 1) try std.testing.expectEqual(@as(u1, 0), dec.decode());
     try std.testing.expectEqual(@as(u1, 1), dec.decode());
+}
+
+test "Decoder.end_of_stream_count: truncated data forces many synthesized 0xFF" {
+    // A 1-byte stream decoded far past its content must synthesize many
+    // past-end 0xFF markers — the over-read / truncation signal.
+    var dec = Decoder.initDec(&[_]u8{0x00});
+    var cx: Context = .{};
+    var i: u32 = 0;
+    while (i < 64) : (i += 1) _ = dec.decode(&cx);
+    try std.testing.expect(dec.end_of_stream_count > 2);
+}
+
+test "Decoder.end_of_stream_count: ample data needs no past-end synthesis" {
+    // Plenty of bytes for a handful of decodes → no past-end reads.
+    var dec = Decoder.initDec(&[_]u8{ 0x80, 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00 });
+    var cx: Context = .{};
+    var i: u32 = 0;
+    while (i < 4) : (i += 1) _ = dec.decode(&cx);
+    try std.testing.expectEqual(@as(u32, 0), dec.end_of_stream_count);
 }

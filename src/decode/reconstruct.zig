@@ -301,3 +301,35 @@ test "dequantScaleQ: stepsize=1 (mant=0, expn=prec) gives 0.5 in Q16" {
     // expn = prec-1 -> stepsize=2 -> 0.5*stepsize = 1.0 (= FP_ONE).
     try std.testing.expectEqual(@as(i64, dwt.FP_ONE), dequantScaleQ(8, 7, 0));
 }
+
+/// Append a finding to a report and escalate its overall severity.
+fn appendFinding(report: *codestream.ValidationReport, allocator: Allocator, sev: codestream.Severity, code: codestream.FindingCode, detail: ?[]const u8) Allocator.Error!void {
+    try report.findings.append(allocator, .{ .severity = sev, .code = code, .offset = null, .detail = detail });
+    if (@intFromEnum(sev) > @intFromEnum(report.overall)) report.overall = sev;
+}
+
+/// Strict deep validation: the structural walk PLUS a full entropy decode
+/// of every code-block, emitting deep-integrity findings that permissive
+/// libraries (which decode and move on) never report. This is jp2z's
+/// `validate`-facing value-add. Returns the augmented ValidationReport.
+pub fn deepValidate(allocator: Allocator, data: []const u8) !codestream.ValidationReport {
+    var report = try codestream.validate(allocator, data);
+    errdefer report.deinit(allocator);
+    if (report.coding_params == null) return report; // structural-only
+
+    var list = codestream.extractCblkPlans(allocator, data) catch return report;
+    defer list.deinit(allocator);
+
+    var over_count: u32 = 0;
+    for (list.plans) |plan| {
+        if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
+        var cblk = try cblk_dispatch.decodePlan(allocator, plan);
+        defer cblk.deinit(allocator);
+        if (cblk.over_read > 2) over_count += 1;
+    }
+    if (over_count > 0) {
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt)", .{over_count});
+        try appendFinding(&report, allocator, .warn, .entropy_over_read, detail);
+    }
+    return report;
+}

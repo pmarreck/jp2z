@@ -110,6 +110,9 @@ pub const Cblk = struct {
     width: u32,
     height: u32,
     coeffs: []Coeff,
+    /// Max past-end byte synthesis across the cblk's MQ/RAW segments
+    /// (truncation / over-read signal; >2 is suspicious). Strict-validation.
+    over_read: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) std.mem.Allocator.Error!Cblk {
         const coeffs = try allocator.alloc(Coeff, @as(usize, width) * @as(usize, height));
@@ -677,6 +680,7 @@ pub fn decodeCblkSegments(
     var bpno: u5 = numbps;
     var offset: usize = 0;
     var pass_index: u32 = 0;
+    var max_over_read: u32 = 0;
     for (segments) |seg| {
         const end = offset + seg.byte_len;
         if (end > data.len) return; // malformed; bail defensively
@@ -707,7 +711,10 @@ pub fn decodeCblkSegments(
             }
             pass_index += 1;
         }
+        const seg_over = if (is_raw) raw_dec.end_of_stream_count else mq_dec.end_of_stream_count;
+        if (seg_over > max_over_read) max_over_read = seg_over;
     }
+    cblk.over_read = max_over_read;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

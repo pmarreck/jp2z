@@ -20,11 +20,11 @@ const BitReader = @import("bit_reader.zig").BitReader;
 const subbands = @import("subbands.zig");
 const packet_header = @import("packet_header.zig");
 const cblk_extract = @import("cblk_extract.zig");
-const Severity = errors.Severity;
+pub const Severity = errors.Severity;
 const Variant = errors.Variant;
-const FindingCode = errors.FindingCode;
+pub const FindingCode = errors.FindingCode;
 const Finding = jp2z.Finding;
-const ValidationReport = jp2z.ValidationReport;
+pub const ValidationReport = jp2z.ValidationReport;
 
 /// Tier-2 progression order (T.800 A.6.1, byte 1 of SGcod).
 pub const ProgressionOrder = enum(u8) {
