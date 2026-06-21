@@ -17,6 +17,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// One codeword segment of a code-block (T.800 selective arithmetic
+/// coding bypass / termination). For cblksty=0 a code-block is a single
+/// MQ segment; LAZY (cblksty bit 0) and TERMALL (bit 2) split the
+/// passes into multiple terminated segments, each with its own byte
+/// length and (re-initialised) decoder. `passes` is how many EBCOT
+/// coding passes this segment covers; `byte_len` is its slice length
+/// inside `CblkDecodePlan.data` (segments are laid out in pass order).
+pub const SegInfo = struct {
+    passes: u32,
+    byte_len: u32,
+};
+
 /// One code-block's worth of data ready for tier-1 decode. Owns the
 /// `data` byte slice — caller must call `deinit` to release it (or
 /// hand the plan to a `CblkDecodePlanList` which deinits in bulk).
@@ -60,8 +72,15 @@ pub const CblkDecodePlan = struct {
     /// Owned by this plan — `deinit` frees it.
     data: []u8,
 
+    /// Per-segment breakdown of `data` (pass order). Empty means
+    /// "treat the whole cblk as one MQ segment" (the default for
+    /// synthetic test plans). Real extracted plans always populate it.
+    /// Heap-owned when non-empty; `deinit` frees it.
+    segments: []const SegInfo = &.{},
+
     pub fn deinit(self: *CblkDecodePlan, allocator: Allocator) void {
         allocator.free(self.data);
+        if (self.segments.len > 0) allocator.free(self.segments);
         self.* = undefined;
     }
 

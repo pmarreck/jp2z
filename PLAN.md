@@ -122,17 +122,18 @@ oracle tests.
            adapts) and ZC ctx0 left at 0 (must be state 4) — T.800 D-7.
         4. HH-orientation ZC table (`zcContext`) completely wrong vs
            T.800 Table D-1 HH column / OpenJPEG t1_init_ctxno_zc.
-- [ ] **BYPASS / LAZY mode (cblksty & 0x1)** — own brick. c1_mono.j2c
-      (and e1_colr.j2c) use cblksty=0x1: SP/MR passes at bit-planes
-      <= numbps-4 are RAW (bypass) coded, not MQ, and the codeword is
-      split into terminated SEGMENTS (MQ flushed/re-init'd at each
-      MQ<->RAW boundary). Needs: (1) tier-2 to split each cblk into
-      coding-pass segments with per-segment lengths + RAW/MQ class;
-      (2) tier-1 raw bit decoder + MQ/RAW dispatcher with per-segment
-      MQ re-init. c1_mono strict + diagnostic tests stay SkipZigTest
-      until this lands. (Root cause localised: first 6438 MQ decodes of
-      c1_mono cblk #0 match OpenJPEG exactly; divergence is the BYTEIN
-      at the MQ segment terminator.)
+- [x] **BYPASS / LAZY mode (cblksty & 0x1) — c1_mono.j2c byte-perfect.**
+      c1_mono (cblksty=0x1, 10 layers) now decodes byte-identical to
+      OpenJPEG across all 34 cblks. Implemented as: tier-2 captures the
+      per-segment {passes, byte_len} breakdown (LAZY allotments 10,2,1,2,1
+      via maxPassesForSegment) into `CblkDecodePlan.segments`; a `RawDecoder`
+      (MSB-first bits, 0xFF bit-stuffing); raw SP/MR pass variants
+      (`spPassRaw`/`mrPassRaw`, no context/XOR); and `decodeCblkSegments`
+      which iterates segments, re-inits the MQ registers per MQ segment
+      (contexts persist; cleanup is always MQ) and switches to RAW for the
+      bypassed SP/MR passes. **M3 tier-1 EBCOT is now byte-perfect on
+      a1_mono (pure MQ), d1_colr (3-comp MCT + multi-precinct) and c1_mono
+      (BYPASS).**
 - [x] Multi-precinct + multi-component byte-perfect: d1_colr.j2c
       (cblksty=0, 3 components + MCT, user 64x64 precincts, 4 layers)
       decodes byte-identical to OpenJPEG across all 174 cblks. The

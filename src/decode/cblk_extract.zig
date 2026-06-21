@@ -49,6 +49,10 @@ pub const CblkExtractor = struct {
         m_b: u8 = 0,
         cblksty: u8 = 0,
         total_passes: u32 = 0,
+        /// Per-segment {passes, byte_len} (LAZY/TERMALL). Heap-owned
+        /// copy of the latest CodeBlockState snapshot; freed in deinit
+        /// or transferred to the plan in finalize.
+        segments: []cblk_plan.SegInfo = &.{},
     };
 
     pub fn init(allocator: Allocator) CblkExtractor {
@@ -62,6 +66,7 @@ pub const CblkExtractor = struct {
         var it = self.map.valueIterator();
         while (it.next()) |entry| {
             entry.buffer.deinit(self.allocator);
+            if (entry.segments.len > 0) self.allocator.free(entry.segments);
         }
         self.map.deinit();
         self.* = undefined;
@@ -85,6 +90,7 @@ pub const CblkExtractor = struct {
             m_b: u8,
             cblksty: u8,
             total_passes: u32,
+            segments: []const cblk_plan.SegInfo,
         },
     ) Allocator.Error!void {
         const gop = try self.map.getOrPut(key);
@@ -101,6 +107,10 @@ pub const CblkExtractor = struct {
         }
         gop.value_ptr.total_passes = meta.total_passes;
         try gop.value_ptr.buffer.appendSlice(self.allocator, bytes);
+        // Store the latest per-segment snapshot (CodeBlockState grows it
+        // across packets; the final call carries the complete list).
+        if (gop.value_ptr.segments.len > 0) self.allocator.free(gop.value_ptr.segments);
+        gop.value_ptr.segments = try self.allocator.dupe(cblk_plan.SegInfo, meta.segments);
     }
 
     /// Drain the accumulator into a CblkDecodePlanList. Caller owns
@@ -133,7 +143,9 @@ pub const CblkExtractor = struct {
                 .total_passes = entry.total_passes,
                 .cblksty = entry.cblksty,
                 .data = data,
+                .segments = entry.segments,
             };
+            entry.segments = &.{}; // ownership moved to the plan
             idx += 1;
         }
         return .{ .plans = plans };
@@ -157,6 +169,7 @@ test "CblkExtractor: append single contribution, finalize → 1 plan" {
     try ex.appendContribution(key, &.{ 0x12, 0x34, 0x56 }, .{
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 64, .sb_y1 = 64,
         .zero_bitplanes = 2, .m_b = 11, .cblksty = 0, .total_passes = 4,
+        .segments = &.{},
     });
     var list = try ex.finalize();
     defer list.deinit(allocator);
@@ -184,6 +197,7 @@ test "CblkExtractor: multiple appends to same key concatenate; metadata captured
     try ex.appendContribution(key, &.{ 0xAA, 0xBB }, .{
         .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 16, .sb_y1 = 16,
         .zero_bitplanes = 1, .m_b = 9, .cblksty = 0, .total_passes = 1,
+        .segments = &.{},
     });
     // Second contribution — different "meta", but only buffer + total_passes
     // should update. Subband rect / zero_bitplanes / cblksty must STAY the
@@ -192,6 +206,7 @@ test "CblkExtractor: multiple appends to same key concatenate; metadata captured
     try ex.appendContribution(key, &.{ 0xCC, 0xDD, 0xEE }, .{
         .sb_x0 = 99, .sb_y0 = 99, .sb_x1 = 0, .sb_y1 = 0, // bogus
         .zero_bitplanes = 99, .m_b = 99, .cblksty = 99, .total_passes = 5,
+        .segments = &.{},
     });
     var list = try ex.finalize();
     defer list.deinit(allocator);
@@ -215,8 +230,8 @@ test "CblkExtractor: multiple distinct keys produce multiple plans" {
     defer ex.deinit();
     const k0: CblkKey = .{ .tile = 0, .component = 0, .resolution = 0, .band = 0, .precinct = 0, .grid_x = 0, .grid_y = 0 };
     const k1: CblkKey = .{ .tile = 0, .component = 0, .resolution = 1, .band = 1, .precinct = 0, .grid_x = 0, .grid_y = 0 };
-    try ex.appendContribution(k0, &.{0x01}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4, .zero_bitplanes = 0, .m_b = 8, .cblksty = 0, .total_passes = 1 });
-    try ex.appendContribution(k1, &.{0x02}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 8, .sb_y1 = 8, .zero_bitplanes = 0, .m_b = 9, .cblksty = 0, .total_passes = 1 });
+    try ex.appendContribution(k0, &.{0x01}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4, .zero_bitplanes = 0, .m_b = 8, .cblksty = 0, .total_passes = 1, .segments = &.{} });
+    try ex.appendContribution(k1, &.{0x02}, .{ .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 8, .sb_y1 = 8, .zero_bitplanes = 0, .m_b = 9, .cblksty = 0, .total_passes = 1, .segments = &.{} });
     var list = try ex.finalize();
     defer list.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 2), list.plans.len);

@@ -1106,7 +1106,8 @@ fn walkPackets(
         const view = view_buf[0..sb_count];
 
         var reader = BitReader.init(tp_body[body_pos..], .{ .ff_stuffing = true });
-        const contribution_len = packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty) orelse {
+        const seg_alloc: ?Allocator = if (extractor != null) allocator else null;
+        const contribution_len = (try packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty, seg_alloc)) orelse {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
             return;
         };
@@ -1178,6 +1179,7 @@ fn walkPackets(
                             .m_b = params.mbForSubband(pi.resolution, band_for_key),
                             .cblksty = params.cblksty,
                             .total_passes = cb.total_passes,
+                            .segments = cb.segments.items,
                         });
                         bytes_so_far += @intCast(L);
                     }

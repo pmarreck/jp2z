@@ -232,6 +232,51 @@ pub const Decoder = struct {
     }
 };
 
+/// RAW / "bypass" bit decoder for selective arithmetic-coding bypass
+/// (cblksty bit 0, T.800 Annex D / "LAZY" mode). In bypass, the
+/// significance-propagation and magnitude-refinement passes below
+/// bit-plane (numbps-4) are coded as plain bits instead of MQ. Bits are
+/// read MSB-first; after a 0xFF byte the next byte carries only 7 bits
+/// (the top bit is a stuffed 0), and a 0xFF followed by >0x8F is a
+/// terminating marker that synthesises all-ones. Mirrors OpenJPEG's
+/// opj_mqc_raw_init_dec / opj_mqc_raw_decode (cross-reference only).
+pub const RawDecoder = struct {
+    data: []const u8,
+    bp: usize,
+    end: usize,
+    c: u8,
+    ct: u8,
+
+    pub fn initDec(data: []const u8) RawDecoder {
+        return .{ .data = data, .bp = 0, .end = data.len, .c = 0, .ct = 0 };
+    }
+
+    /// Read the next raw bit (MSB-first, with 0xFF bit-stuffing).
+    pub fn decode(self: *RawDecoder) u1 {
+        if (self.ct == 0) {
+            if (self.c == 0xFF) {
+                // Byte following a 0xFF: >0x8F is a marker (synthesise
+                // 0xFF, no advance); otherwise it carries only 7 bits.
+                const nb: u8 = if (self.bp < self.end) self.data[self.bp] else 0xFF;
+                if (nb > 0x8F) {
+                    self.c = 0xFF;
+                    self.ct = 8;
+                } else {
+                    self.c = nb;
+                    self.bp += 1;
+                    self.ct = 7;
+                }
+            } else {
+                self.c = if (self.bp < self.end) self.data[self.bp] else 0xFF;
+                self.bp += 1;
+                self.ct = 8;
+            }
+        }
+        self.ct -= 1;
+        return @intCast((self.c >> @intCast(self.ct)) & 1);
+    }
+};
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "Decoder.initDec: registers seeded per T.800 C.3.5" {
@@ -321,4 +366,27 @@ test "state_table: row 5 LPS transition jumps to 33 (the fast-adapt path)" {
     // jump that lets the coder rapidly re-estimate after an
     // unexpected LPS bit early in adaptation.
     try std.testing.expectEqual(@as(u8, 33), state_table[5].nlps);
+}
+
+test "RawDecoder: MSB-first bits, no stuffing" {
+    // 0xB4 = 1011_0100 → bits MSB-first.
+    var dec = RawDecoder.initDec(&[_]u8{0xB4});
+    const expect = [_]u1{ 1, 0, 1, 1, 0, 1, 0, 0 };
+    for (expect) |e| try std.testing.expectEqual(e, dec.decode());
+}
+
+test "RawDecoder: 0xFF stuffing — next byte carries only 7 bits" {
+    // 0xFF → eight 1-bits. Then (after 0xFF) 0x40=0100_0000, not >0x8F,
+    // so it carries 7 bits (positions 6..0): 1,0,0,0,0,0,0.
+    var dec = RawDecoder.initDec(&[_]u8{ 0xFF, 0x40 });
+    const expect = [_]u1{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
+    for (expect) |e| try std.testing.expectEqual(e, dec.decode());
+}
+
+test "RawDecoder: past-end synthesises 0xFF (all ones)" {
+    var dec = RawDecoder.initDec(&[_]u8{0x00});
+    // First 8 bits are 0 (0x00), then past-end → 0xFF → ones.
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) try std.testing.expectEqual(@as(u1, 0), dec.decode());
+    try std.testing.expectEqual(@as(u1, 1), dec.decode());
 }

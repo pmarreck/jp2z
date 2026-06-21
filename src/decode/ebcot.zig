@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const mq = @import("mq_coder.zig");
+const cblk_plan = @import("cblk_plan.zig");
 
 /// Subband orientation. ZC context formation differs for HH from
 /// LL/HL/LH because high-frequency diagonal subbands have a
@@ -404,6 +405,57 @@ pub fn mrPass(
     }
 }
 
+/// RAW (bypass) significance-propagation pass — T.800 selective
+/// arithmetic-coding bypass. Same inclusion criterion and scan order as
+/// `spPass`, but the significance and sign bits are read as plain bits
+/// (`RawDecoder`), with NO context modelling and NO sign-prediction XOR.
+pub fn spPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
+    var y_stripe: u32 = 0;
+    while (y_stripe < cblk.height) : (y_stripe += 4) {
+        const rows_in_stripe = @min(@as(u32, 4), cblk.height - y_stripe);
+        var x: u32 = 0;
+        while (x < cblk.width) : (x += 1) {
+            var dy: u32 = 0;
+            while (dy < rows_in_stripe) : (dy += 1) {
+                const y = y_stripe + dy;
+                const idx = y * cblk.width + x;
+                if (cblk.coeffs[idx].significant) continue;
+                if (!hasSigNeighbor(cblk.*, x, y)) continue;
+                const sig_bit = dec.decode();
+                cblk.coeffs[idx].visited = true;
+                if (sig_bit == 1) {
+                    cblk.coeffs[idx].significant = true;
+                    cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
+                    cblk.coeffs[idx].sign = dec.decode();
+                }
+            }
+        }
+    }
+}
+
+/// RAW (bypass) magnitude-refinement pass. Same inclusion + scan order
+/// as `mrPass`, but the refinement bit is a plain raw bit (no MR context).
+pub fn mrPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
+    var y_stripe: u32 = 0;
+    while (y_stripe < cblk.height) : (y_stripe += 4) {
+        const rows_in_stripe = @min(@as(u32, 4), cblk.height - y_stripe);
+        var x: u32 = 0;
+        while (x < cblk.width) : (x += 1) {
+            var dy: u32 = 0;
+            while (dy < rows_in_stripe) : (dy += 1) {
+                const y = y_stripe + dy;
+                const idx = y * cblk.width + x;
+                const coeff = cblk.coeffs[idx];
+                if (!coeff.significant) continue;
+                if (coeff.visited) continue;
+                const bit = dec.decode();
+                cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
+                cblk.coeffs[idx].refined = true;
+            }
+        }
+    }
+}
+
 /// True iff a column-stripe (rows `y_stripe..y_stripe+4`) at column
 /// `x` is run-length-coding eligible per T.800 D.3.4: every one of
 /// the 4 sample locations must be currently insignificant, not
@@ -583,6 +635,78 @@ pub fn decodeCblkPasses(
         passes_done += 1;
         resetVisited(cblk);
         if (passes_done >= total_passes) return;
+    }
+}
+
+/// Map a global coding-pass index to whether it is RAW (bypass) coded.
+/// T.800: under LAZY (cblksty bit 0) the SP and MR passes (passtype 0/1)
+/// at bit-planes <= numbps-4 are raw-coded; the cleanup pass (passtype 2)
+/// and all passes at higher bit-planes stay MQ. Pass 0 is CL@numbps; for
+/// i>=1 the schedule is SP/MR/CL descending one bit-plane per triple.
+fn passIsRaw(cblksty: u8, numbps: u5, pass_index: u32) bool {
+    if (cblksty & 0x01 == 0) return false; // not LAZY
+    var bpno: i32 = undefined;
+    var passtype: u32 = undefined;
+    if (pass_index == 0) {
+        bpno = numbps;
+        passtype = 2;
+    } else {
+        const group = (pass_index - 1) / 3;
+        passtype = (pass_index - 1) % 3;
+        bpno = @as(i32, numbps) - 1 - @as(i32, @intCast(group));
+    }
+    return passtype < 2 and bpno <= @as(i32, numbps) - 4;
+}
+
+/// Segment-aware code-block decode (handles cblksty LAZY/TERMALL where the
+/// codeword is split into independently-terminated segments, each its own
+/// MQ or RAW decoder). `data` is the concatenated cblk bytes; `segments`
+/// gives the per-segment {passes, byte_len} in pass order. The MQ context
+/// states persist across segments (only the MQ registers re-init per MQ
+/// segment); a single MQ segment reduces to plain `decodeCblkPasses`.
+pub fn decodeCblkSegments(
+    cblk: *Cblk,
+    ctxs: *[NUM_CONTEXTS]mq.Context,
+    orient: Orientation,
+    numbps: u5,
+    cblksty: u8,
+    data: []const u8,
+    segments: []const cblk_plan.SegInfo,
+) void {
+    var passtype: u8 = 2; // first pass is CL @ msb
+    var bpno: u5 = numbps;
+    var offset: usize = 0;
+    var pass_index: u32 = 0;
+    for (segments) |seg| {
+        const end = offset + seg.byte_len;
+        if (end > data.len) return; // malformed; bail defensively
+        const seg_bytes = data[offset..end];
+        offset = end;
+        const is_raw = passIsRaw(cblksty, numbps, pass_index);
+        var mq_dec: mq.Decoder = undefined;
+        var raw_dec: mq.RawDecoder = undefined;
+        if (is_raw) {
+            raw_dec = mq.RawDecoder.initDec(seg_bytes);
+        } else {
+            mq_dec = mq.Decoder.initDec(seg_bytes);
+        }
+        var p: u32 = 0;
+        while (p < seg.passes) : (p += 1) {
+            switch (passtype) {
+                0 => if (is_raw) spPassRaw(&raw_dec, cblk, bpno) else spPass(&mq_dec, cblk, ctxs, orient, bpno),
+                1 => if (is_raw) mrPassRaw(&raw_dec, cblk, bpno) else mrPass(&mq_dec, cblk, ctxs, bpno),
+                2 => clPass(&mq_dec, cblk, ctxs, orient, bpno), // cleanup is always MQ
+                else => unreachable,
+            }
+            if (passtype == 2) {
+                passtype = 0;
+                if (bpno > 0) bpno -= 1;
+                resetVisited(cblk);
+            } else {
+                passtype += 1;
+            }
+            pass_index += 1;
+        }
     }
 }
 

@@ -48,7 +48,6 @@ pub fn decodePlan(
     errdefer cblk.deinit(allocator);
     if (plan.data.len == 0 or plan.numbps == 0 or plan.total_passes == 0) return cblk;
     var ctxs = ebcot.initContexts();
-    var dec = mq.Decoder.initDec(plan.data);
     const orient = orientationFromBand(plan.band);
     // OpenJPEG's first bit-plane index is bpno_plus_one = numbps
     // (t1.c: bpno_plus_one = roishift + cblk->numbps). Our `bp` indexing
@@ -56,7 +55,17 @@ pub fn decodePlan(
     // NOT numbps-1. (The lowest bp processed lands at 1, never 0,
     // because a cblk of numbps planes is at most 3*numbps-2 passes.)
     const msb_bp: u5 = @intCast(plan.numbps);
-    ebcot.decodeCblkPasses(&dec, &cblk, &ctxs, orient, msb_bp, plan.total_passes);
+    if (plan.segments.len == 0) {
+        // No per-segment breakdown (synthetic test plans): decode the whole
+        // slice as one continuous MQ stream.
+        var dec = mq.Decoder.initDec(plan.data);
+        ebcot.decodeCblkPasses(&dec, &cblk, &ctxs, orient, msb_bp, plan.total_passes);
+    } else {
+        // Real extracted plans carry the LAZY/TERMALL segment breakdown;
+        // decode segment-by-segment (MQ or RAW per segment). For cblksty=0
+        // this is a single MQ segment == decodeCblkPasses.
+        ebcot.decodeCblkSegments(&cblk, &ctxs, orient, msb_bp, plan.cblksty, plan.data, plan.segments);
+    }
     return cblk;
 }
 

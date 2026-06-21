@@ -993,46 +993,18 @@ test "oracle dump: jp2z extractCblkPlans matches openjpeg per-cblk numbps for c1
     try std.testing.expectEqual(@as(u32, 34), matched);
 }
 
-test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c1_mono" {
-    // GATED: c1_mono.j2c uses cblksty=0x1 (SELECTIVE ARITHMETIC CODING
-    // BYPASS / LAZY mode) — confirmed via `opj_dump`. With numbps=6, the
-    // significance-propagation and magnitude-refinement passes at bit-planes
-    // <= numbps-4 are coded as RAW (bypass) bits, not MQ, and the codeword
-    // is split into terminated segments (the MQ coder is flushed/re-init'd
-    // at each MQ<->RAW boundary). Our tier-1 decoder currently treats the
-    // whole cblk byte slice as ONE continuous MQ stream, so it desyncs at
-    // the first bypass boundary.
-    //
-    // Root cause was localised by a byte-perfect MQ (ctxno,bit,registers)
-    // differential trace against patched OpenJPEG: the first 6438 decodes of
-    // cblk #0 match EXACTLY; divergence is purely a byte-consumption (BYTEIN)
-    // difference where OpenJPEG's MQ segment ends (synthesises the 0xFF
-    // terminator) while we read past into the raw segment.
-    //
-    // The pure-MQ EBCOT path is already proven correct: see the a1_mono test
-    // above (cblksty=0, numlayers=1) which is byte-perfect across all 34 cblks.
-    //
-    // REMAINING WORK (own brick): implement BYPASS/LAZY mode —
-    //   (1) tier-2: split each cblk into coding-pass SEGMENTS with per-segment
-    //       byte lengths + RAW-vs-MQ classification (T.800 D.6 / Annex on
-    //       arithmetic coding bypass), and
-    //   (2) tier-1: a raw bit decoder + a dispatcher that switches MQ/RAW per
-    //       pass per bit-plane and re-inits the MQ coder at each segment.
-    // Then remove this skip and the diagnostic skip below.
-    return error.SkipZigTest;
-}
-
-test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c1_mono — diagnostic" {
-    if (true) return error.SkipZigTest; // gate behind manual flip when investigating
+test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c1_mono (cblksty=0x1 BYPASS/LAZY)" {
+    // c1_mono.j2c uses cblksty=0x1 (selective arithmetic-coding bypass / LAZY)
+    // with 10 quality layers: SP/MR passes at bit-planes <= numbps-4 are RAW
+    // (bypass) coded and the codeword is split into terminated MQ/RAW segments.
+    // This exercises the segment-aware tier-1 decode (decodeCblkSegments) +
+    // RawDecoder, on top of the tier-2 per-segment length capture.
     const allocator = std.testing.allocator;
     const records = try parseOracleDump(allocator, c1_mono_t1_oracle);
     defer freeOracleRecords(allocator, records);
-
     var list = try jp2z.internal.extractCblkPlans(allocator, c1_mono_j2c);
     defer list.deinit(allocator);
-
     var compared: u32 = 0;
-    var first_mismatch: ?u32 = null;
     for (records) |rec| {
         for (list.plans) |plan| {
             if (plan.tile != rec.tile) continue;
@@ -1041,43 +1013,28 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c
             if (plan.band != rec.orient) continue;
             if (plan.sb_x0 != rec.cblk_x0) continue;
             if (plan.sb_y0 != rec.cblk_y0) continue;
-
             var cblk = try jp2z.internal.decodePlan(allocator, plan);
             defer cblk.deinit(allocator);
-
             const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
             const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
             const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
             defer allocator.free(our_buf);
-            for (cblk.coeffs, 0..) |c, i| {
-                our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
-            }
-            // Sanity: dimensions agree (already asserted, but re-check).
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
             try std.testing.expectEqual(rec.data.len, our_buf.len);
             if (!std.mem.eql(i32, our_buf, rec.data)) {
-                if (first_mismatch == null) {
-                    first_mismatch = compared;
-                    std.debug.print(
-                        "\n[oracle] cblk #{d} t={d} c={d} r={d} b={d} ({d}..{d})x({d}..{d}) numbps={d} passes={d} half_bp={d}\n",
-                        .{ compared, plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_x1, plan.sb_y0, plan.sb_y1, plan.numbps, plan.total_passes, half_bp },
-                    );
-                    const show: usize = @min(@as(usize, 12), our_buf.len);
-                    var j: usize = 0;
-                    while (j < show) : (j += 1) {
-                        std.debug.print("  [{d}] ours={d:>6} oj={d:>6} {s}\n", .{ j, our_buf[j], rec.data[j], if (our_buf[j] == rec.data[j]) "" else "<-- diff" });
-                    }
-                }
+                std.debug.print(
+                    "\n[c1 oracle] MISMATCH cblk comp={d} r={d} b={d} ({d},{d}) numbps={d} passes={d} segs={d}\n",
+                    .{ plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.numbps, plan.total_passes, plan.segments.len },
+                );
+                return error.MismatchedCoefficients;
             }
             compared += 1;
             break;
         }
     }
-    if (first_mismatch) |idx| {
-        std.debug.print("\n[oracle] {d}/{d} cblks decoded; first mismatch at cblk index {d}\n", .{ compared, records.len, idx });
-        return error.MismatchedCoefficients;
-    }
     try std.testing.expectEqual(@as(u32, 34), compared);
 }
+
 
 test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for a1_mono (pure MQ, 1 layer)" {
     // a1_mono.j2c is the simplest conformance fixture: single tile, single
@@ -1176,4 +1133,27 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for d
     }
     try std.testing.expectEqual(@as(u32, 174), matched);
     try std.testing.expectEqual(@as(u32, 174), compared);
+}
+
+test "extractCblkPlans: c1_mono LH(0,64) captures LAZY segments [10,2,1,2,1]" {
+    const allocator = std.testing.allocator;
+    var list = try jp2z.internal.extractCblkPlans(allocator, c1_mono_j2c);
+    defer list.deinit(allocator);
+    for (list.plans) |plan| {
+        if (!(plan.resolution == 5 and plan.band == 2 and plan.sb_x0 == 0 and plan.sb_y0 == 64)) continue;
+        // cblksty=0x1 LAZY → segment pass allotments 10,2,1,2,1 (T.800 A.6.1).
+        try std.testing.expectEqual(@as(usize, 5), plan.segments.len);
+        const expect_passes = [_]u32{ 10, 2, 1, 2, 1 };
+        var sum_len: u32 = 0;
+        var sum_passes: u32 = 0;
+        for (plan.segments, 0..) |seg, i| {
+            try std.testing.expectEqual(expect_passes[i], seg.passes);
+            sum_len += seg.byte_len;
+            sum_passes += seg.passes;
+        }
+        try std.testing.expectEqual(@as(u32, 16), sum_passes);
+        try std.testing.expectEqual(plan.data.len, @as(usize, sum_len));
+        return;
+    }
+    return error.CblkNotFound;
 }
