@@ -110,12 +110,23 @@ pub const CodingParams = struct {
     comp_prec: [16]u8 = @splat(8),
     /// Per-component signedness (SIZ Ssiz bit 7) as a bitmask by component.
     comp_signed: u16 = 0,
+    /// Per-subband quantization exponent (irreversible). Index matches
+    /// mb_per_subband / stepsizes order: [0]=LL@r0, then 3 per resolution.
+    qcd_expn: [97]u8 = @splat(0),
+    /// Per-subband quantization mantissa (11-bit) for irreversible dequant.
+    qcd_mant: [97]u16 = @splat(0),
 
     /// Look up M_b for a (resolution, band) pair. `band` follows the
     /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
     pub fn mbForSubband(self: CodingParams, r: u8, band: u8) u8 {
         if (r == 0) return self.mb_per_subband[0];
         return self.mb_per_subband[@as(usize, 3) * (@as(usize, r) - 1) + @as(usize, band)];
+    }
+
+    /// Subband index in QCD/stepsizes order for (resolution, bandno).
+    pub fn subbandIndex(r: u8, band: u8) usize {
+        if (r == 0) return 0;
+        return @as(usize, 3) * (@as(usize, r) - 1) + @as(usize, band);
     }
 };
 
@@ -963,12 +974,30 @@ fn parseQcdBody(
                     const eps: u8 = body[off2] >> 3;
                     const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
                     cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                    cp.qcd_expn[sb] = eps;
+                    cp.qcd_mant[sb] = ((@as(u16, body[off2]) & 0x07) << 8) | @as(u16, body[off2 + 1]);
                 }
             },
-            // Style 1: scalar derived. Only LL's exponent is encoded;
-            // sibling subbands' exponents derive per T.800 E.5. We don't
-            // need style 1 for any current fixture — leaving M_b table
-            // zeroed until a fixture exercises it.
+            // Style 1: scalar derived (irreversible). Only LL's (expn,mant)
+            // is encoded (2 bytes); siblings derive per T.800 E.5:
+            //   expn_b = max(0, expn_0 - floor((b-1)/3)); mant_b = mant_0.
+            1 => {
+                if (body.len < 3) {
+                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+                    return;
+                }
+                const expn0: u8 = body[1] >> 3;
+                const mant0: u16 = ((@as(u16, body[1]) & 0x07) << 8) | @as(u16, body[2]);
+                var sb: u8 = 0;
+                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                    const dec_levels: u8 = if (sb == 0) 0 else @intCast((@as(u16, sb) - 1) / 3);
+                    const e: u8 = if (expn0 > dec_levels) expn0 - dec_levels else 0;
+                    cp.qcd_expn[sb] = e;
+                    cp.qcd_mant[sb] = mant0;
+                    const sum: u16 = @as(u16, guard_bits) + @as(u16, e);
+                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                }
+            },
             else => {},
         }
     }

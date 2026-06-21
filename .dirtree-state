@@ -3,6 +3,8 @@ ver=1.2
 annotate=[
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/reconstruct.zig = Cleanroom image reconstruction: cblk coeffs -> tile assembly -> inverse DWT -> (RCT) -> DC level shift -> samples
+	tests/unit/fixtures/conformance/p0_04.j2k = 9/7 lossy 3-comp+ICT+TERMALL conformance fixture (640x480, PAE<=1)
+	tests/unit/fixtures/conformance/p0_09.j2k = 9/7 lossy mono conformance fixture (17x37, byte-perfect target)
 	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records
 	tests/unit/fixtures/oracles/d1_colr.t1.bin = OpenJPEG t1 oracle for d1_colr.j2c (pure-MQ, 3-comp MCT, multi-precinct, byte-perfect) — 174 cblk records
 ]

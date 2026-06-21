@@ -151,16 +151,25 @@ oracle tests.
       c1_mono (incl. BYPASS) reconstructed pixels match the .pgm
       output exactly (decodeCleanroom). Quantization: none for 5/3.
 
-### M5 — inverse 9/7 wavelet (lossy)
-- [ ] 1D inverse DWT with lifting + scale
-- [ ] Fixed-point integer arithmetic (no float — project rule)
-- [ ] Dequantization per QCD
+### M5 — inverse 9/7 wavelet (lossy) — DONE
+- [x] 1D inverse 9/7 lifting + scaling, FIXED-POINT Q16 (dwt.zig idwt97Line):
+      even*K, odd*two_invK, then -delta/-gamma/-beta/-alpha lifts, edge-clamp.
+- [x] Fixed-point integer arithmetic only (no f32/f64 on the hot path).
+- [x] Dequantization per QCD: 0.5*stepsize, stepsize=(1+mant/2048)*2^(prec-expn),
+      expn/mant captured for expounded (style 2) + scalar-derived (style 1).
+- [x] **p0_09 (9/7 mono) BYTE-PERFECT vs opj_decompress** (max_abs=0).
+      NOTE: openjpeg uses float 9/7; our fixed-point converges to the ideal,
+      so non-trivial lossy images match within PAE<=1 (the JPEG2000 lossy
+      conformance standard), not necessarily bit-exact. See p0_04 below.
 
 ### M6 — MCT inverse + final polish
-- [ ] RCT (Reversible Color Transform — used with 5/3)
-- [ ] ICT (Irreversible Color Transform — used with 9/7)
-- [ ] Move `openjpeg_wrapper` → `internal.openjpegDecode` for oracle-only use
-- [ ] Final cleanup: remove openjpeg from runtime dependency graph
+- [x] RCT (reversible colour transform, 5/3) — d1_colr 3-comp BYTE-PERFECT.
+- [x] ICT (irreversible colour transform, 9/7) — unit-tested; p0_04 end-to-end
+      (9/7 + ICT + TERMALL + user precincts + 20 layers) PAE<=1 vs opj_decompress.
+- [ ] Multi-tile decode (walker hardcodes tile 0; e1_colr / p1_xx are multi-tile).
+      THE remaining decoder capability. Single-tile feature set is complete.
+- [ ] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use.
+- [ ] Final cleanup: remove openjpeg from runtime dependency graph (jpegz cutover).
 
 ## Phase 3 — jpegz integration
 

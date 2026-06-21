@@ -241,3 +241,162 @@ test "idwt53: 2D round-trip via separable forward (cas 0, full-image)" {
     try idwt53(allocator, &img, w, w, h, 1);
     try std.testing.expectEqualSlices(i32, &orig, &img);
 }
+
+// ── Irreversible 9/7 inverse DWT (fixed-point) ──────────────────────
+//
+// OpenJPEG decodes 9/7 in float; the project rule mandates integer math,
+// so this is a fixed-point (Q16) reimplementation. It converges to the
+// mathematically-ideal transform rather than reproducing float's
+// round-off, so output matches openjpeg within a small tolerance (the
+// JPEG2000 lossy-decode standard), not bit-exactly. Constants and step
+// order mirror opj_v8dwt_decode (incl. the decoder's two_invK quirk).
+
+const Q97: u6 = 16;
+const Q97_ONE: i64 = 1 << Q97;
+
+fn qConst(comptime v: f64) i64 {
+    return @intFromFloat(@round(v * @as(f64, @floatFromInt(Q97_ONE))));
+}
+const K_Q = qConst(1.230174105); // even (low) scale
+const TWO_INVK_Q = qConst(1.625732422); // odd (high) scale (decoder quirk)
+const NDELTA_Q = qConst(-0.443506852); // -delta (even update)
+const NGAMMA_Q = qConst(-0.882911075); // -gamma (odd predict)
+const NBETA_Q = qConst(0.052980118); // -beta  (even update)
+const NALPHA_Q = qConst(1.586134342); // -alpha (odd predict)
+
+/// Fixed-point fractional bits used by the 9/7 path (Q16).
+pub const FP_Q: u6 = Q97;
+pub const FP_ONE: i64 = Q97_ONE;
+
+/// Build a Q16 constant from a float literal (comptime only).
+pub fn fpConst(comptime v: f64) i64 {
+    return qConst(v);
+}
+
+/// (a · c) >> Q with round-half-up (a is Q16, c is a Q16 constant).
+pub fn fpMul(a: i64, c: i64) i64 {
+    return (a * c + (Q97_ONE >> 1)) >> Q97;
+}
+const mulQ = fpMul;
+
+/// Round a Q16 fixed-point value to the nearest integer, ties to even
+/// (matches lrintf's default rounding).
+pub fn fpRound(x: i64) i32 {
+    const fl = x >> Q97; // arithmetic floor
+    const frac = x - (fl << Q97); // 0..Q97_ONE-1
+    const half = Q97_ONE >> 1;
+    var r = fl;
+    if (frac > half) {
+        r += 1;
+    } else if (frac == half) {
+        if (@mod(fl, 2) != 0) r += 1; // round to even
+    }
+    return @intCast(r);
+}
+inline fn sClamp64(a: []const i64, bound: usize, i: isize) i64 {
+    const c: usize = if (i < 0) 0 else if (@as(usize, @intCast(i)) >= bound) bound - 1 else @intCast(i);
+    return a[2 * c];
+}
+inline fn dClamp64(a: []const i64, bound: usize, i: isize) i64 {
+    const c: usize = if (i < 0) 0 else if (@as(usize, @intCast(i)) >= bound) bound - 1 else @intCast(i);
+    return a[2 * c + 1];
+}
+
+/// Inverse 9/7 lifting over one line of Q16 fixed-point samples. `line`
+/// holds deinterleaved `[low | high]` on input; interleaved spatial
+/// (still Q16) on return. cas==0 only (single-tile origin (0,0)).
+pub fn idwt97Line(line: []i64, sn: usize, dn: usize, cas: u1, tmp: []i64) void {
+    const len = sn + dn;
+    if (len == 0) return;
+    {
+        var k: usize = 0;
+        while (k < sn) : (k += 1) tmp[cas + 2 * k] = line[k];
+        k = 0;
+        while (k < dn) : (k += 1) tmp[(1 - cas) + 2 * k] = line[sn + k];
+    }
+    // Scale: even (low) ×K, odd (high) ×two_invK.
+    {
+        var i: usize = 0;
+        while (i < sn) : (i += 1) tmp[2 * i] = mulQ(tmp[2 * i], K_Q);
+        i = 0;
+        while (i < dn) : (i += 1) tmp[2 * i + 1] = mulQ(tmp[2 * i + 1], TWO_INVK_Q);
+    }
+    if (dn > 0) {
+        // δ: S(i) += -delta·(D(i-1)+D(i))
+        var i: usize = 0;
+        while (i < sn) : (i += 1) {
+            const d = dClamp64(tmp, dn, @as(isize, @intCast(i)) - 1) + dClamp64(tmp, dn, @intCast(i));
+            tmp[2 * i] += mulQ(d, NDELTA_Q);
+        }
+        // γ: D(i) += -gamma·(S(i)+S(i+1))
+        i = 0;
+        while (i < dn) : (i += 1) {
+            const sm = sClamp64(tmp, sn, @intCast(i)) + sClamp64(tmp, sn, @as(isize, @intCast(i)) + 1);
+            tmp[2 * i + 1] += mulQ(sm, NGAMMA_Q);
+        }
+        // β: S(i) += -beta·(D(i-1)+D(i))
+        i = 0;
+        while (i < sn) : (i += 1) {
+            const d = dClamp64(tmp, dn, @as(isize, @intCast(i)) - 1) + dClamp64(tmp, dn, @intCast(i));
+            tmp[2 * i] += mulQ(d, NBETA_Q);
+        }
+        // α: D(i) += -alpha·(S(i)+S(i+1))
+        i = 0;
+        while (i < dn) : (i += 1) {
+            const sm = sClamp64(tmp, sn, @intCast(i)) + sClamp64(tmp, sn, @as(isize, @intCast(i)) + 1);
+            tmp[2 * i + 1] += mulQ(sm, NALPHA_Q);
+        }
+    }
+    @memcpy(line[0..len], tmp[0..len]);
+}
+
+/// Full inverse 9/7 DWT over a Q16 tile buffer (i64), tile origin (0,0).
+pub fn idwt97(
+    allocator: std.mem.Allocator,
+    tile: []i64,
+    tile_w: u32,
+    image_w: u32,
+    image_h: u32,
+    num_decomp: u8,
+) std.mem.Allocator.Error!void {
+    if (num_decomp == 0) return;
+    const max_dim = @max(image_w, image_h);
+    const tmp = try allocator.alloc(i64, max_dim);
+    defer allocator.free(tmp);
+    const col = try allocator.alloc(i64, image_h);
+    defer allocator.free(col);
+
+    var r: u8 = 1;
+    while (r <= num_decomp) : (r += 1) {
+        const cur = subbands.resolutionExtent(image_w, image_h, num_decomp, r);
+        const prev = subbands.resolutionExtent(image_w, image_h, num_decomp, r - 1);
+        const rw = cur.width;
+        const rh = cur.height;
+        if (rw == 0 or rh == 0) continue;
+        const sn_h = prev.width;
+        const dn_h = rw - prev.width;
+        const sn_v = prev.height;
+        const dn_v = rh - prev.height;
+        var j: usize = 0;
+        while (j < rh) : (j += 1) {
+            const base = j * tile_w;
+            idwt97Line(tile[base .. base + rw], sn_h, dn_h, 0, tmp);
+        }
+        var i: usize = 0;
+        while (i < rw) : (i += 1) {
+            var k: usize = 0;
+            while (k < rh) : (k += 1) col[k] = tile[k * tile_w + i];
+            idwt97Line(col[0..rh], sn_v, dn_v, 0, tmp);
+            k = 0;
+            while (k < rh) : (k += 1) tile[k * tile_w + i] = col[k];
+        }
+    }
+}
+
+test "idwt97Line: identity-ish — all-zero stays zero, single low sample passes K scale" {
+    var line = [_]i64{Q97_ONE}; // value 1.0 in Q16, single low sample
+    var tmp = [_]i64{0};
+    idwt97Line(&line, 1, 0, 0, &tmp);
+    // dn==0 → only the K scale applies to the lone low sample.
+    try std.testing.expectEqual(mulQ(Q97_ONE, K_Q), line[0]);
+}

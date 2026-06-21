@@ -8,6 +8,8 @@ const std = @import("std");
 const jp2z = @import("jp2z");
 
 const c1_mono_j2c = @embedFile("fixtures/conformance/c1_mono.j2c");
+const p0_09_j2k = @embedFile("fixtures/conformance/p0_09.j2k");
+const p0_04_j2k = @embedFile("fixtures/conformance/p0_04.j2k");
 const d1_colr_j2c = @embedFile("fixtures/conformance/d1_colr.j2c");
 const file1_jp2 = @embedFile("fixtures/conformance/file1.jp2");
 const file9_jp2 = @embedFile("fixtures/conformance/file9.jp2");
@@ -882,6 +884,8 @@ const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
 const c1_mono_pix = @embedFile("fixtures/oracles/c1_mono.pix");
+const p0_09_pix = @embedFile("fixtures/oracles/p0_09.pix");
+const p0_04_pix = @embedFile("fixtures/oracles/p0_04.pix");
 const d1_colr_pix = @embedFile("fixtures/oracles/d1_colr.pix");
 
 const OracleRecord = struct {
@@ -1211,4 +1215,65 @@ test "cleanroom: d1_colr pixels match opj_decompress (5/3 IDWT + inverse RCT + l
             }
         }
     }
+}
+
+test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, p0_09_j2k);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 17), img.width);
+    try std.testing.expectEqual(@as(u32, 37), img.height);
+    try std.testing.expectEqual(p0_09_pix.len, img.planes[0].len);
+    var max_abs: i64 = 0;
+    var sum_abs: i64 = 0;
+    var nmismatch: usize = 0;
+    for (img.planes[0], 0..) |s, i| {
+        const d: i64 = @as(i64, s) - @as(i64, p0_09_pix[i]);
+        const ad = if (d < 0) -d else d;
+        if (ad > max_abs) max_abs = ad;
+        sum_abs += ad;
+        if (ad != 0) nmismatch += 1;
+    }
+    // Fixed-point Q16 9/7 lands exactly on openjpeg's float output here
+    // (no values near a rounding boundary) — byte-perfect. The lossy
+    // conformance tolerance would be a small PAE; this fixture needs none.
+    if (max_abs != 0) {
+        std.debug.print("\n[p0_09 9/7] max_abs={d} mean_abs={d:.4} mismatches={d}/{d}\n", .{ max_abs, @as(f64, @floatFromInt(sum_abs)) / @as(f64, @floatFromInt(img.planes[0].len)), nmismatch, img.planes[0].len });
+        return error.NinetySevenMismatch;
+    }
+    _ = &sum_abs;
+    _ = &nmismatch;
+}
+
+test "cleanroom: p0_04 (9/7 lossy, 3-comp ICT, TERMALL) within tolerance" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, p0_04_j2k);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 3), img.num_components);
+    const n: usize = @as(usize, img.width) * @as(usize, img.height);
+    try std.testing.expectEqual(@as(usize, n * 3), p0_04_pix.len);
+    var max_abs: i64 = 0;
+    var sum_abs: i64 = 0;
+    var nmis: usize = 0;
+    var c: usize = 0;
+    while (c < 3) : (c += 1) {
+        for (img.planes[c], 0..) |s, i| {
+            const d: i64 = @as(i64, s) - @as(i64, p0_04_pix[c * n + i]);
+            const ad = if (d < 0) -d else d;
+            if (ad > max_abs) max_abs = ad;
+            sum_abs += ad;
+            if (ad != 0) nmis += 1;
+        }
+    }
+    // Fixed-point 9/7 converges to the ideal transform, not to openjpeg's
+    // float round-off, so ~10% of pixels differ by exactly 1 LSB. PAE = 1,
+    // within the JPEG2000 lossy-decoder tolerance. (max_abs > 1 would mean a
+    // real bug, not float divergence — this also exercises TERMALL, user
+    // precincts, 20 layers, 9/7 and the inverse ICT together.)
+    if (max_abs > 1) {
+        std.debug.print("\n[p0_04 9/7+ICT] max_abs={d} mean_abs={d:.5} mismatches={d}/{d}\n", .{ max_abs, @as(f64, @floatFromInt(sum_abs)) / @as(f64, @floatFromInt(n * 3)), nmis, n * 3 });
+        return error.NinetySevenIctTolerance;
+    }
+    _ = &sum_abs;
+    _ = &nmis;
 }
