@@ -882,6 +882,7 @@ const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
 const c1_mono_pix = @embedFile("fixtures/oracles/c1_mono.pix");
+const d1_colr_pix = @embedFile("fixtures/oracles/d1_colr.pix");
 
 const OracleRecord = struct {
     tile: u32,
@@ -1185,6 +1186,29 @@ test "cleanroom: c1_mono pixels match opj_decompress (BYPASS + 5/3 IDWT + level 
         if (@as(i32, c1_mono_pix[i]) != s) {
             std.debug.print("\n[c1 px] mismatch at {d}: ours={d} oj={d}\n", .{ i, s, c1_mono_pix[i] });
             return error.PixelMismatch;
+        }
+    }
+}
+
+test "cleanroom: d1_colr pixels match opj_decompress (5/3 IDWT + inverse RCT + level shift)" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, d1_colr_j2c);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 256), img.width);
+    try std.testing.expectEqual(@as(u32, 149), img.height);
+    try std.testing.expectEqual(@as(u16, 3), img.num_components);
+    const n: usize = 256 * 149;
+    try std.testing.expectEqual(@as(usize, n * 3), d1_colr_pix.len);
+    var c: usize = 0;
+    while (c < 3) : (c += 1) {
+        const plane = img.planes[c];
+        try std.testing.expectEqual(n, plane.len);
+        for (plane, 0..) |s, i| {
+            const expect: i32 = d1_colr_pix[c * n + i];
+            if (expect != s) {
+                std.debug.print("\n[d1 px] comp {d} mismatch at {d}: ours={d} oj={d}\n", .{ c, i, s, expect });
+                return error.PixelMismatch;
+            }
         }
     }
 }
