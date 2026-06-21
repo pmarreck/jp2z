@@ -879,6 +879,7 @@ test "decodePlan: c1_mono.j2c — every cblk runs through EBCOT without crash" {
 const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
+const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 
 const OracleRecord = struct {
     tile: u32,
@@ -1128,4 +1129,51 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for a
         }
     }
     try std.testing.expectEqual(@as(u32, 34), compared);
+}
+
+test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for d1_colr (pure MQ, multi-precinct, 3 comp)" {
+    // d1_colr.j2c: cblksty=0 (pure MQ), 3 components (MCT), user-defined
+    // 64x64 precincts (multiple precincts per resolution). The t1 oracle is
+    // pre-MCT per-component coefficients, so MCT is irrelevant here. This
+    // exercises multi-component + multi-precinct cblk extraction.
+    const allocator = std.testing.allocator;
+    const records = try parseOracleDump(allocator, d1_colr_t1_oracle);
+    defer freeOracleRecords(allocator, records);
+
+    var list = try jp2z.internal.extractCblkPlans(allocator, d1_colr_j2c);
+    defer list.deinit(allocator);
+
+    var compared: u32 = 0;
+    var matched: u32 = 0;
+    var first_bad: bool = false;
+    for (records) |rec| {
+        for (list.plans) |plan| {
+            if (plan.tile != rec.tile) continue;
+            if (plan.component != rec.component) continue;
+            if (plan.resolution != rec.resno) continue;
+            if (plan.band != rec.orient) continue;
+            if (plan.sb_x0 != rec.cblk_x0) continue;
+            if (plan.sb_y0 != rec.cblk_y0) continue;
+            matched += 1;
+
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
+            const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
+            const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
+            defer allocator.free(our_buf);
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
+
+            if (our_buf.len == rec.data.len and std.mem.eql(i32, our_buf, rec.data)) {
+                compared += 1;
+            } else if (!first_bad) {
+                first_bad = true;
+                std.debug.print("\n[d1 oracle] first MISMATCH cblk comp={d} r={d} b={d} ({d},{d}) numbps={d} passes={d} ourlen={d} ojlen={d}\n",
+                    .{ plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.numbps, plan.total_passes, our_buf.len, rec.data.len });
+            }
+            break;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 174), matched);
+    try std.testing.expectEqual(@as(u32, 174), compared);
 }
