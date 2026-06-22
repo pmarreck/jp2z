@@ -211,6 +211,39 @@ export fn jp2z_findings_sink_get(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Deep strict validation (jp2z's `validate`-facing entry point)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Structural walk PLUS a full entropy decode, emitting deep-integrity
+/// findings that permissive decoders never report. `strict` != 0 escalates
+/// those findings to FAIL. Findings are pushed into `sink` (may be NULL).
+/// Returns the report's overall severity (>= 0: pass/info/warn/fail per the
+/// Severity enum) or a negative status on error.
+export fn jp2z_deep_validate(
+    data: [*c]const u8,
+    len: usize,
+    strict: c_int,
+    sink: ?*jp2z.FindingsSink,
+) c_int {
+    clearLastError();
+    const slice: []const u8 = if (data == null or len == 0) &[_]u8{} else data[0..len];
+    var report = jp2z.internal.deepValidate(c_allocator, slice, strict != 0) catch |err| {
+        setLastError("jp2z_deep_validate failed: {s}", .{@errorName(err)});
+        return toCStatus(err);
+    };
+    defer report.deinit(c_allocator);
+    if (sink) |s| {
+        for (report.findings.items) |f| {
+            s.emit(f.severity, f.code, f.offset, f.detail) catch {
+                setLastError("jp2z_deep_validate: sink out of memory", .{});
+                return -2;
+            };
+        }
+    }
+    return @intCast(@intFromEnum(report.overall));
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Version
 // ─────────────────────────────────────────────────────────────────────
 

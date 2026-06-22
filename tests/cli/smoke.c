@@ -67,6 +67,16 @@ int main(void) {
     jp2z_findings_sink_free(sink);
     jp2z_findings_sink_free(NULL); /* free(NULL) is a no-op */
 
-    printf("PASS: jp2z C FFI smoke (10 assertions, version + decode + findings_sink)\n");
+    /* deep_validate: garbage has no SOC -- structural walk reports a
+     * severity (>= 0) and pushes findings; must not crash. */
+    jp2z_findings_sink_t *dsink = jp2z_findings_sink_create();
+    int dsev = jp2z_deep_validate((const uint8_t *)garbage, strlen(garbage), 1, dsink);
+    ASSERT(dsev >= 0, "deep_validate returns a severity, not an error, on garbage");
+    ASSERT(jp2z_findings_sink_count(dsink) > 0, "deep_validate emits a finding on garbage");
+    int dsev2 = jp2z_deep_validate(NULL, 0, 0, NULL);
+    ASSERT(dsev2 >= 0, "deep_validate(NULL, 0) doesn't crash");
+    jp2z_findings_sink_free(dsink);
+
+    printf("PASS: jp2z C FFI smoke (13 assertions, version + decode + findings_sink + deep_validate)\n");
     return 0;
 }

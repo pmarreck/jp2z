@@ -184,6 +184,17 @@ jp2z_status_t jp2z_decode_with_findings(
     jp2z_image_t                        *out_image
 );
 
+/* Deep strict validation: structural walk + full entropy decode, emitting
+ * deep-integrity findings a permissive decoder never reports. strict != 0
+ * escalates them to FAIL. Findings are pushed into sink (may be NULL).
+ * Returns the overall severity (>= 0) or a negative status on error. */
+int jp2z_deep_validate(
+    const uint8_t        *data,
+    size_t                len,
+    int                   strict,
+    jp2z_findings_sink_t *sink
+);
+
 #ifdef __cplusplus
 }
 #endif
