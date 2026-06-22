@@ -254,24 +254,20 @@ test "idwt53: 2D round-trip via separable forward (cas 0, full-image)" {
 const Q97: u6 = 16;
 const Q97_ONE: i64 = 1 << Q97;
 
-fn qConst(comptime v: f64) i64 {
-    return @intFromFloat(@round(v * @as(f64, @floatFromInt(Q97_ONE))));
-}
-const K_Q = qConst(1.230174105); // even (low) scale
-const TWO_INVK_Q = qConst(1.625732422); // odd (high) scale (decoder quirk)
-const NDELTA_Q = qConst(-0.443506852); // -delta (even update)
-const NGAMMA_Q = qConst(-0.882911075); // -gamma (odd predict)
-const NBETA_Q = qConst(0.052980118); // -beta  (even update)
-const NALPHA_Q = qConst(1.586134342); // -alpha (odd predict)
+// 9/7 lifting constants in Q16 fixed-point. Precomputed integer literals —
+// no comptime float in source (fleet no-float policy). Each = round(coeff *
+// 65536); the byte-perfect p0_09 and PAE<=1 p0_04 oracle tests pin them.
+// Order mirrors opj_v8dwt_decode (incl. the decoder's two_invK quirk).
+const K_Q: i64 = 80621; // round( 1.230174105 * 65536) — even (low) scale
+const TWO_INVK_Q: i64 = 106544; // round( 1.625732422 * 65536) — odd (high) scale (decoder quirk)
+const NDELTA_Q: i64 = -29066; // round(-0.443506852 * 65536) — -delta (even update)
+const NGAMMA_Q: i64 = -57862; // round(-0.882911075 * 65536) — -gamma (odd predict)
+const NBETA_Q: i64 = 3472; // round( 0.052980118 * 65536) — -beta  (even update)
+const NALPHA_Q: i64 = 103949; // round( 1.586134342 * 65536) — -alpha (odd predict)
 
 /// Fixed-point fractional bits used by the 9/7 path (Q16).
 pub const FP_Q: u6 = Q97;
 pub const FP_ONE: i64 = Q97_ONE;
-
-/// Build a Q16 constant from a float literal (comptime only).
-pub fn fpConst(comptime v: f64) i64 {
-    return qConst(v);
-}
 
 /// (a · c) >> Q with round-half-up (a is Q16, c is a Q16 constant).
 pub fn fpMul(a: i64, c: i64) i64 {

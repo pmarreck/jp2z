@@ -261,10 +261,13 @@ pub fn reconstructComponentTile97(
     return buf;
 }
 
-const ICT_CR_R = dwt.fpConst(1.402);
-const ICT_CB_G = dwt.fpConst(0.34413);
-const ICT_CR_G = dwt.fpConst(0.71414);
-const ICT_CB_B = dwt.fpConst(1.772);
+// Inverse ICT coefficients (T.800 G.2) in Q16 fixed-point. Precomputed
+// integer literals — no comptime float in source (fleet no-float policy).
+// Each = round(coeff * 65536); pinned by the p0_04 (9/7+ICT) oracle test.
+const ICT_CR_R: i64 = 91881; // round(1.40200 * 65536)
+const ICT_CB_G: i64 = 22553; // round(0.34413 * 65536)
+const ICT_CR_G: i64 = 46802; // round(0.71414 * 65536)
+const ICT_CB_B: i64 = 116130; // round(1.77200 * 65536)
 
 /// Inverse irreversible colour transform (ICT, T.800 G.3), Q16 in place:
 /// (Y,Cb,Cr) → (R,G,B). R=Y+1.402·Cr; G=Y−0.34413·Cb−0.71414·Cr; B=Y+1.772·Cb.
