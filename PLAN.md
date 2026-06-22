@@ -171,6 +171,27 @@ oracle tests.
       6-part feature; every conformance multi-tile fixture also bundles SOP.
       GROUNDWORK DONE: SIZ now captures tile geometry (image_x0/y0, tile_x0/y0,
       tile_w/h on CodingParams) + tested tileRect/numTilesXY helpers.
+      ── SESSION FINDING (2026-06-21, reverted to keep tree green) ──
+      Attempted increment 1 (SOP skip + per-tile geometry in the validation
+      walker) TDD'd against p0_03.j2k. The SOP-skip + tileRect-driven per-tile
+      dims approach is CORRECT (layer-0 packet of every tile parsed byte-exact),
+      but p0_03 is a BAD first target: it bundles SOP + 4-bit SIGNED + an **RGN
+      (ROI) marker** in each tile-part header (SOT@298→RGN@310→SOD@317). jp2z
+      ignores RGN, so the code-block bitplane structure is wrong and tier-2
+      packet parsing diverges at layer 1+ (under-read/garbage-length). This is
+      exactly reviewer finding I1 (COC/QCC/RGN/POC silently skipped). The "every
+      multi-tile fixture bundles SOP" claim above is ALSO wrong — p0_10 has
+      csty=0 (no SOP). NEXT TIME: pick a clean multi-tile fixture with NO
+      RGN/POC/per-tile-COD and 8-bit-unsigned. Candidates surveyed:
+        p0_10 (2×2, 3c, 8u, 5/3+RCT, NO SOP, but component-SUBSAMPLED 256→64),
+        p1_06 (4×4, 3c, 8u, SOP+EPH, 12×12 tiny). Re-vendor:
+        cp $OPENJPEG_DATA/input/conformance/<f> tests/unit/fixtures/conformance/.
+      Reusable approach (re-apply against the clean fixture): walkTileParts reads
+      Isot@pos+4, computes tileRect(xsiz,ysiz,isot) → per-tile dims, passes them
+      to walkPackets (replaces report.width/height); walkPackets skips the 6-byte
+      FF91 SOP segment per packet when scod&0x02 (EPH FF92 when scod&0x04).
+      Also fixed (lost in revert, redo): stale Scod comment at codestream.zig
+      ~865 says "bit0=SOP,bit1=EPH" — correct is bit0=precincts,bit1=SOP,bit2=EPH.
       REMAINING STEPS (TDD target: p0_03.j2k — mono 5/3, 2x2 128px tiles,
       8 layers, SOP, 4-bit; oracle = opj_decompress .pgm):
         1. SOP/EPH markers: walkPackets must skip FF91 Lsop Nsop (6 bytes)
