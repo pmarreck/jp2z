@@ -166,8 +166,31 @@ oracle tests.
 - [x] RCT (reversible colour transform, 5/3) — d1_colr 3-comp BYTE-PERFECT.
 - [x] ICT (irreversible colour transform, 9/7) — unit-tested; p0_04 end-to-end
       (9/7 + ICT + TERMALL + user precincts + 20 layers) PAE<=1 vs opj_decompress.
-- [ ] Multi-tile decode (walker hardcodes tile 0; e1_colr / p1_xx are multi-tile).
-      THE remaining decoder capability. Single-tile feature set is complete.
+- [ ] Multi-tile decode — THE remaining decoder capability (deferred to the
+      next session per Peter). Single-tile feature set is complete. It is a
+      6-part feature; every conformance multi-tile fixture also bundles SOP.
+      GROUNDWORK DONE: SIZ now captures tile geometry (image_x0/y0, tile_x0/y0,
+      tile_w/h on CodingParams) + tested tileRect/numTilesXY helpers.
+      REMAINING STEPS (TDD target: p0_03.j2k — mono 5/3, 2x2 128px tiles,
+      8 layers, SOP, 4-bit; oracle = opj_decompress .pgm):
+        1. SOP/EPH markers: walkPackets must skip FF91 Lsop Nsop (6 bytes)
+           before each packet when Scod bit1 set, and FF92 (EPH) when bit2.
+           UNTESTED today (no passing fixture uses SOP). Likely needed first.
+        2. Per-tile geometry: walkTileParts reads Isot (currently ignored at
+           data[pos+4]); compute tileRect(isot); pass tile dims+origin down.
+        3. walkPackets keyed on TILE dims (not image_w/h) for the packet
+           iterator + subband/cblk geometry (cblk coords become tile-relative).
+        4. Extractor: tag cblks with the real tile index (CblkKey.tile already
+           exists; walker passes 0 today at the appendContribution call).
+        5. cas≠0 inverse DWT: idwt53/idwt97 currently assume cas=0; pass the
+           tile resolution origin so cas = res_origin%2. idwt53Line HAS cas1;
+           idwt97Line is cas0-only -> add cas1 for 9/7 multi-tile (p1_xx).
+        6. reconstruct: group plans by tile; per tile assemble (tile_w x tile_h)
+           -> inverse DWT (with cas) -> MCT -> level shift -> COMPOSITE into the
+           full image at (tile_x0-image_x0, tile_y0-image_y0). decodeCleanroom
+           loops tiles instead of assuming tile==image.
+      Multi-tile-part-per-tile (TNsot>1): p0_03 is 1 part/tile (simplest); a
+      persistent per-tile iterator across tile-parts is a later refinement.
 - [ ] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use.
 - [ ] Final cleanup: remove openjpeg from runtime dependency graph (jpegz cutover).
 
@@ -196,7 +219,9 @@ DWT and emit on:
       impossible param combinations) beyond what's parsed today.
 - [ ] SOT/Psot tile-part length + ordering consistency; EOC presence;
       trailing-garbage; PTERM predictable-termination check (always-on).
-- [ ] A `strict` mode: any deviation escalates to FAIL (vs lenient: warn).
+- [x] A `strict` mode: any deviation escalates to FAIL (vs lenient: warn).
+- [x] FFI: jp2z_deep_validate(data,len,strict,sink) exposes it to `validate`.
+- [ ] (Future M7 polish) tag-tree monotonicity + deeper marker-field validation.
 Note: strictness comes from DETERMINISTIC integrity checks (independent of
 the 9/7 float tolerance), so it is exact even on the lossy path.
 

@@ -115,6 +115,14 @@ pub const CodingParams = struct {
     qcd_expn: [97]u8 = @splat(0),
     /// Per-subband quantization mantissa (11-bit) for irreversible dequant.
     qcd_mant: [97]u16 = @splat(0),
+    /// SIZ tile-grid geometry (for multi-tile, M6 cont.). Single-tile
+    /// files have tile_w/h >= image and origins 0 (whole image = one tile).
+    image_x0: u32 = 0, // XOsiz
+    image_y0: u32 = 0, // YOsiz
+    tile_x0: u32 = 0, // XTOsiz
+    tile_y0: u32 = 0, // YTOsiz
+    tile_w: u32 = 0, // XTsiz (0 until SIZ parsed)
+    tile_h: u32 = 0, // YTsiz
 
     /// Look up M_b for a (resolution, band) pair. `band` follows the
     /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
@@ -127,6 +135,29 @@ pub const CodingParams = struct {
     pub fn subbandIndex(r: u8, band: u8) usize {
         if (r == 0) return 0;
         return @as(usize, 3) * (@as(usize, r) - 1) + @as(usize, band);
+    }
+
+    pub const TileRect = struct { x0: u32, y0: u32, x1: u32, y1: u32 };
+
+    /// Number of tiles across (x) and down (y). 1x1 for single-tile.
+    pub fn numTilesXY(self: CodingParams, xsiz: u32, ysiz: u32) struct { x: u32, y: u32 } {
+        if (self.tile_w == 0 or self.tile_h == 0) return .{ .x = 1, .y = 1 };
+        const nx = (xsiz - self.tile_x0 + self.tile_w - 1) / self.tile_w;
+        const ny = (ysiz - self.tile_y0 + self.tile_h - 1) / self.tile_h;
+        return .{ .x = @max(1, nx), .y = @max(1, ny) };
+    }
+
+    /// Component-coordinate rect of tile `isot` (T.800 B.3). xsiz/ysiz are
+    /// the absolute SIZ image extents (image_x0+width, image_y0+height).
+    pub fn tileRect(self: CodingParams, xsiz: u32, ysiz: u32, isot: u32) TileRect {
+        const nt = self.numTilesXY(xsiz, ysiz);
+        const p = isot % nt.x; // tile column
+        const q = isot / nt.x; // tile row
+        const x0 = @max(self.tile_x0 + p * self.tile_w, self.image_x0);
+        const y0 = @max(self.tile_y0 + q * self.tile_h, self.image_y0);
+        const x1 = @min(self.tile_x0 + (p + 1) * self.tile_w, xsiz);
+        const y1 = @min(self.tile_y0 + (q + 1) * self.tile_h, ysiz);
+        return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
     }
 };
 
@@ -1301,13 +1332,25 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     const xosiz = std.mem.readInt(u32, body[12..16], .big);
     const yosiz = std.mem.readInt(u32, body[16..20], .big);
     const csiz = std.mem.readInt(u16, body[36..38], .big);
+    const xtsiz = std.mem.readInt(u32, body[20..24], .big);
+    const ytsiz = std.mem.readInt(u32, body[24..28], .big);
+    const xtosiz = std.mem.readInt(u32, body[28..32], .big);
+    const ytosiz = std.mem.readInt(u32, body[32..36], .big);
 
     if (xsiz <= xosiz or ysiz <= yosiz) return; // leave width/height null
     report.width = xsiz - xosiz;
     report.height = ysiz - yosiz;
     // Seed CodingParams with the SIZ-derived field. Remaining
     // fields default until parseCodBody overwrites them.
-    var cp_local: jp2z.CodingParams = .{ .num_components = csiz };
+    var cp_local: jp2z.CodingParams = .{
+        .num_components = csiz,
+        .image_x0 = xosiz,
+        .image_y0 = yosiz,
+        .tile_x0 = xtosiz,
+        .tile_y0 = ytosiz,
+        .tile_w = xtsiz,
+        .tile_h = ytsiz,
+    };
     const ncomp: usize = @min(@as(usize, csiz), 16);
     var ci: usize = 0;
     while (ci < ncomp) : (ci += 1) {
@@ -1424,4 +1467,32 @@ test "CodingParams.mbForSubband: r=0 -> idx 0; r>=1 -> 3*(r-1)+band" {
     try std.testing.expectEqual(@as(u8, 13), cp.mbForSubband(2, 1));
     try std.testing.expectEqual(@as(u8, 14), cp.mbForSubband(2, 2));
     try std.testing.expectEqual(@as(u8, 15), cp.mbForSubband(2, 3));
+}
+
+test "CodingParams.tileRect: 256x256 image, 128x128 tiles -> 2x2 grid" {
+    const cp: jp2z.CodingParams = .{
+        .num_components = 1,
+        .image_x0 = 0, .image_y0 = 0,
+        .tile_x0 = 0, .tile_y0 = 0,
+        .tile_w = 128, .tile_h = 128,
+    };
+    const nt = cp.numTilesXY(256, 256);
+    try std.testing.expectEqual(@as(u32, 2), nt.x);
+    try std.testing.expectEqual(@as(u32, 2), nt.y);
+    // tile 0 = top-left, tile 3 = bottom-right (q=1,p=1).
+    const t0 = cp.tileRect(256, 256, 0);
+    try std.testing.expectEqual(@as(u32, 0), t0.x0);
+    try std.testing.expectEqual(@as(u32, 128), t0.x1);
+    const t3 = cp.tileRect(256, 256, 3);
+    try std.testing.expectEqual(@as(u32, 128), t3.x0);
+    try std.testing.expectEqual(@as(u32, 128), t3.y0);
+    try std.testing.expectEqual(@as(u32, 256), t3.x1);
+    try std.testing.expectEqual(@as(u32, 256), t3.y1);
+}
+
+test "CodingParams.numTilesXY: zero tile dims -> single tile" {
+    const cp: jp2z.CodingParams = .{ .num_components = 1 };
+    const nt = cp.numTilesXY(303, 179);
+    try std.testing.expectEqual(@as(u32, 1), nt.x);
+    try std.testing.expectEqual(@as(u32, 1), nt.y);
 }
