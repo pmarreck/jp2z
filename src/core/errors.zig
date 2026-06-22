@@ -61,6 +61,11 @@ pub const FindingCode = enum(u32) {
     jp2_bad_progression_order    = 142,
     jp2_tile_decode_failed       = 143,
     jp2_codeblock_decode_failed  = 144,
+    /// A per-component/ROI/progression override marker (COC/QCC/RGN/POC)
+    /// was present but jp2z does not yet apply it — decode fell back to
+    /// COD/QCD defaults. Surfaced so consumers aren't silently misled
+    /// (validate's "stricter than openjpeg" contract). See reviewer I1.
+    jp2_unsupported_marker_ignored = 145,
 
     // ── Informational (200..249) — match jpegz numbering ─────────
     jp2_uses_9x7_wavelet     = 207,

@@ -763,6 +763,17 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         switch (marker) {
             @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
             @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
+            // Reviewer I1: COC/QCC/RGN/POC override per-component coding,
+            // quantization, ROI up-shift, or progression. jp2z does not yet
+            // apply them, so decode silently falls back to COD/QCD defaults —
+            // surface a finding so a consumer is told (validate's
+            // stricter-than-openjpeg contract). pos-2 is the marker offset.
+            // (Tile-part-header occurrences get flagged when multi-tile lands.)
+            @intFromEnum(Marker.coc),
+            @intFromEnum(Marker.qcc),
+            @intFromEnum(Marker.rgn),
+            @intFromEnum(Marker.poc),
+            => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos - 2, null),
             else => {},
         }
 

@@ -1381,3 +1381,39 @@ test "deepValidate strict: entropy corruption escalates report to FAIL" {
     }
     try std.testing.expect(any_fail);
 }
+
+test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ignored; baseline does not" {
+    // Reviewer I1: per-component/ROI/progression override markers that jp2z
+    // does not yet apply must be SURFACED (not silently skipped), so a
+    // consumer knows decode fell back to COD/QCD defaults. Tested as a
+    // classifier over the marker set: each of {COC,QCC,RGN,POC} fires the
+    // finding; a baseline header with only COD/QCD does not.
+    const prefix = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00,
+        0xFF, 0x5C, 0x00, 0x03, 0x22,
+    };
+    const suffix = [_]u8{
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0xD9,
+    };
+    const coc = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    const qcc = prefix ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    const rgn = prefix ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ suffix;
+    const poc = prefix ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    inline for (.{ coc, qcc, rgn, poc }) |s| {
+        var report = try jp2z.validate(std.testing.allocator, &s);
+        defer report.deinit(std.testing.allocator);
+        try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
+    }
+    const baseline = prefix ++ suffix;
+    var rep0 = try jp2z.validate(std.testing.allocator, &baseline);
+    defer rep0.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
+}
