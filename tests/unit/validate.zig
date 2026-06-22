@@ -1238,7 +1238,7 @@ test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
     // (no values near a rounding boundary) — byte-perfect. The lossy
     // conformance tolerance would be a small PAE; this fixture needs none.
     if (max_abs != 0) {
-        std.debug.print("\n[p0_09 9/7] max_abs={d} mean_abs={d:.4} mismatches={d}/{d}\n", .{ max_abs, @as(f64, @floatFromInt(sum_abs)) / @as(f64, @floatFromInt(img.planes[0].len)), nmismatch, img.planes[0].len });
+        std.debug.print("\n[p0_09 9/7] max_abs={d} mean_abs(x1000)={d} mismatches={d}/{d}\n", .{ max_abs, @divTrunc(sum_abs * 1000, @as(i64, @intCast(img.planes[0].len))), nmismatch, img.planes[0].len });
         return error.NinetySevenMismatch;
     }
     _ = &sum_abs;
@@ -1271,7 +1271,7 @@ test "cleanroom: p0_04 (9/7 lossy, 3-comp ICT, TERMALL) within tolerance" {
     // real bug, not float divergence — this also exercises TERMALL, user
     // precincts, 20 layers, 9/7 and the inverse ICT together.)
     if (max_abs > 1) {
-        std.debug.print("\n[p0_04 9/7+ICT] max_abs={d} mean_abs={d:.5} mismatches={d}/{d}\n", .{ max_abs, @as(f64, @floatFromInt(sum_abs)) / @as(f64, @floatFromInt(n * 3)), nmis, n * 3 });
+        std.debug.print("\n[p0_04 9/7+ICT] max_abs={d} mean_abs(x1000)={d} mismatches={d}/{d}\n", .{ max_abs, @divTrunc(sum_abs * 1000, @as(i64, @intCast(n * 3))), nmis, n * 3 });
         return error.NinetySevenIctTolerance;
     }
     _ = &sum_abs;
