@@ -1438,3 +1438,29 @@ test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)
     try std.testing.expectEqual(@as(u32, 128), cp.tile_w);
     try std.testing.expectEqual(@as(u32, 128), cp.tile_h);
 }
+
+test "validate: p0_10.j2k multi-tile → 4 tiles walk byte-perfect (TNsot>1)" {
+    // p0_10: 2×2 tiles, each with 2 tile-parts (TNsot=2). LRCP packet
+    // order splits the 2 quality layers across the two tile-parts, so a
+    // per-tile packet iterator must PERSIST across that tile's tile-parts
+    // (resume the packet index where the prior part stopped, not restart).
+    // A fresh iterator per tile-part regenerates the full packet set and
+    // overruns the half-length tile-part body → truncated_stream. Each of
+    // the 4 tiles must walk to its end exactly once; none under-read.
+    var report = try jp2z.validate(std.testing.allocator, p0_10_j2k);
+    defer report.deinit(std.testing.allocator);
+    var walked_to_end: usize = 0;
+    var under_read: usize = 0;
+    var truncated: usize = 0;
+    for (report.findings.items) |f| {
+        switch (f.code) {
+            .jp2_packets_walked_to_end => walked_to_end += 1,
+            .jp2_packets_under_read => under_read += 1,
+            .truncated_stream => truncated += 1,
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), walked_to_end);
+    try std.testing.expectEqual(@as(usize, 0), under_read);
+    try std.testing.expectEqual(@as(usize, 0), truncated);
+}

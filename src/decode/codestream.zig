@@ -805,6 +805,17 @@ fn walkTileParts(
     extractor: ?*cblk_extract.CblkExtractor,
 ) Allocator.Error!void {
     var pos: usize = start;
+    // Persistent per-tile walk state, keyed by Isot (SOT tile index).
+    // A tile with TNsot>1 tile-parts shares ONE TileWalk across them so
+    // the packet iterator + tag-tree states resume rather than restart.
+    // Completed/broken tiles are deinit'd and removed as they finish; the
+    // defer reaps any tile left incomplete by a truncated codestream.
+    var tiles = std.AutoHashMap(u16, TileWalk).init(allocator);
+    defer {
+        var tw_it = tiles.valueIterator();
+        while (tw_it.next()) |tw| tw.deinit(allocator);
+        tiles.deinit();
+    }
     while (true) {
         // Verify SOT marker at pos.
         if (data.len < pos + 12) {
@@ -852,15 +863,30 @@ fn walkTileParts(
                     // component tile dims = ceil(tx1/dx) − ceil(tx0/dx) (all our
                     // fixtures share dx/dy across components, so use comp 0).
                     // Single-tile, non-sub-sampled files reduce to image dims.
-                    const isot: u32 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
-                    const xsiz: u32 = params.image_x0 + report.width.?;
-                    const ysiz: u32 = params.image_y0 + report.height.?;
-                    const tr = params.tileRect(xsiz, ysiz, isot);
-                    const dx: u32 = params.comp_dx[0];
-                    const dy: u32 = params.comp_dy[0];
-                    const tcw: u32 = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
-                    const tch: u32 = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
-                    try walkPackets(report, allocator, tp_body, params, tcw, tch, sod_pos + 2, extractor);
+                    const isot16: u16 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
+                    const gop = try tiles.getOrPut(isot16);
+                    if (!gop.found_existing) {
+                        const isot: u32 = isot16;
+                        const xsiz: u32 = params.image_x0 + report.width.?;
+                        const ysiz: u32 = params.image_y0 + report.height.?;
+                        const tr = params.tileRect(xsiz, ysiz, isot);
+                        const dx: u32 = params.comp_dx[0];
+                        const dy: u32 = params.comp_dy[0];
+                        const tcw: u32 = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
+                        const tch: u32 = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
+                        gop.value_ptr.* = TileWalk.init(allocator, params, tcw, tch, isot) catch |e| {
+                            // Don't leave a half-built entry in the map.
+                            _ = tiles.remove(isot16);
+                            return e;
+                        };
+                    }
+                    // A tile-part body is a whole number of packets; resume
+                    // this tile's iterator across its tile-parts (TNsot>1).
+                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor);
+                    if (res != .incomplete) {
+                        gop.value_ptr.deinit(allocator);
+                        _ = tiles.remove(isot16);
+                    }
                 }
                 // Missing SOD inside a tile-part is already caught
                 // structurally by the main-header walker; no extra
@@ -1095,99 +1121,170 @@ fn findSod(data: []const u8, tp_start: usize, tp_end: usize) ?usize {
 /// `tp_body` = the slice of the codestream between SOD+2 and the
 /// byte after the last packet body (i.e. just before the next SOT
 /// or EOC).
-fn walkPackets(
-    report: *ValidationReport,
-    allocator: Allocator,
-    tp_body: []const u8,
+/// Persistent per-tile packet-walk state, carried ACROSS a tile's
+/// tile-parts (TNsot>1). Holds the LRCP/PCRL packet iterator and the
+/// per-(component,resolution,subband,precinct) tag-tree SubbandStates so
+/// a tile whose quality layers straddle tile-part boundaries resumes
+/// where the prior tile-part stopped instead of restarting the packet
+/// set (T.800 B.10 / Annex B). For single-tile-part tiles this is just a
+/// one-shot container — init, walk once, deinit.
+const TileWalk = struct {
     params: jp2z.CodingParams,
     image_w: u32,
     image_h: u32,
-    body_offset_in_data: usize,
-    extractor: ?*cblk_extract.CblkExtractor,
-) Allocator.Error!void {
-    const num_resolutions: u8 = params.num_decomp_levels + 1;
+    tile_index: u32,
+    precincts_at_r: [33]u32,
+    resolution_offset: [33]usize,
+    slots_per_component: usize,
+    states: []packet_header.SubbandState,
+    initialised: usize,
+    iter: jp2z.PacketIterator,
+    /// Total packets this tile's iterator will yield, and how many have
+    /// been consumed across its tile-parts so far. `packets_seen == total`
+    /// is the progression-order-INDEPENDENT tile-complete signal — unlike
+    /// `iter.done`, which flips on different calls for LRCP vs PCRL/RPCL.
+    total: usize,
+    packets_seen: usize,
 
-    // Per-resolution precinct counts and a prefix-sum offset into
-    // the flat per-component slot array. With per-(component,
-    // resolution, subband, precinct) layout, each component owns
-    //   sum_r (subband_count(r) × precincts_at_r[r])
-    // SubbandStates back-to-back; resolution_offset[r] indexes the
-    // start of resolution r within one component's pool.
-    var precincts_at_r: [33]u32 = @splat(0);
-    var resolution_offset: [33]usize = @splat(0);
-    var slots_per_component: usize = 0;
-    {
-        var r: u8 = 0;
-        while (r < num_resolutions) : (r += 1) {
-            resolution_offset[r] = slots_per_component;
-            const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
-            const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-            const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
-            precincts_at_r[r] = grid.width * grid.height;
-            slots_per_component += @as(usize, subbands.subbandCount(r)) * @as(usize, precincts_at_r[r]);
-        }
-    }
+    /// Build the per-component slot pool (one SubbandState per
+    /// (component, resolution, subband, precinct)) and seed the packet
+    /// iterator. `image_w`/`image_h` are this tile's COMPONENT extent
+    /// (sub-sampled), not the reference grid.
+    fn init(
+        allocator: Allocator,
+        params: jp2z.CodingParams,
+        image_w: u32,
+        image_h: u32,
+        tile_index: u32,
+    ) Allocator.Error!TileWalk {
+        const num_resolutions: u8 = params.num_decomp_levels + 1;
 
-    const total_slots: usize = slots_per_component * @as(usize, params.num_components);
-    if (total_slots == 0) return; // degenerate — nothing to walk
-
-    const states = try allocator.alloc(packet_header.SubbandState, total_slots);
-    var initialised: usize = 0;
-    // Single deinit/free path covers both partial-init failure
-    // (allocator OOM mid-loop) and fully-initialised success.
-    defer {
-        var i: usize = 0;
-        while (i < initialised) : (i += 1) states[i].deinit(allocator);
-        allocator.free(states);
-    }
-
-    // Populate every slot — one SubbandState per
-    // (component, resolution, subband, precinct), sized to that
-    // precinct's cblk count via cblksInPrecinctSubband. Empty
-    // (0×0) precincts get an empty SubbandState (a no-op for
-    // readPacketHeader's inner loop).
-    {
-        var c: u16 = 0;
-        while (c < params.num_components) : (c += 1) {
+        var precincts_at_r: [33]u32 = @splat(0);
+        var resolution_offset: [33]usize = @splat(0);
+        var slots_per_component: usize = 0;
+        {
             var r: u8 = 0;
             while (r < num_resolutions) : (r += 1) {
-                const sb_count = subbands.subbandCount(r);
-                const pcount = precincts_at_r[r];
+                resolution_offset[r] = slots_per_component;
                 const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
                 const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
                 const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
-                var sb: u8 = 0;
-                while (sb < sb_count) : (sb += 1) {
-                    var p: u32 = 0;
-                    while (p < pcount) : (p += 1) {
-                        const prc_x = p % grid.width;
-                        const prc_y = p / grid.width;
-                        const cblks = subbands.cblksInPrecinctSubband(
-                            image_w, image_h, params.num_decomp_levels,
-                            r, sb, prc_x, prc_y, ppx, ppy,
-                            params.cblk_width_exp, params.cblk_height_exp,
-                        );
-                        const slot = slotIndex(@intCast(c), r, sb, p, resolution_offset, precincts_at_r, slots_per_component);
-                        states[slot] = try packet_header.SubbandState.initFromGrid(
-                            allocator,
-                            cblks.width,
-                            cblks.height,
-                        );
-                        initialised = slot + 1;
+                precincts_at_r[r] = grid.width * grid.height;
+                slots_per_component += @as(usize, subbands.subbandCount(r)) * @as(usize, precincts_at_r[r]);
+            }
+        }
+
+        const total_slots: usize = slots_per_component * @as(usize, params.num_components);
+        const states = try allocator.alloc(packet_header.SubbandState, total_slots);
+        errdefer allocator.free(states);
+
+        // slotIndex is monotonic in the (c,r,sb,p) nesting below, so on
+        // OOM mid-loop every slot < `initialised` is live — a single
+        // prefix free covers partial init.
+        var initialised: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < initialised) : (i += 1) states[i].deinit(allocator);
+        }
+        {
+            var c: u16 = 0;
+            while (c < params.num_components) : (c += 1) {
+                var r: u8 = 0;
+                while (r < num_resolutions) : (r += 1) {
+                    const sb_count = subbands.subbandCount(r);
+                    const pcount = precincts_at_r[r];
+                    const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
+                    const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
+                    const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                    var sb: u8 = 0;
+                    while (sb < sb_count) : (sb += 1) {
+                        var p: u32 = 0;
+                        while (p < pcount) : (p += 1) {
+                            const prc_x = p % grid.width;
+                            const prc_y = p / grid.width;
+                            const cblks = subbands.cblksInPrecinctSubband(
+                                image_w, image_h, params.num_decomp_levels,
+                                r, sb, prc_x, prc_y, ppx, ppy,
+                                params.cblk_width_exp, params.cblk_height_exp,
+                            );
+                            const slot = slotIndex(@intCast(c), r, sb, p, resolution_offset, precincts_at_r, slots_per_component);
+                            states[slot] = try packet_header.SubbandState.initFromGrid(
+                                allocator,
+                                cblks.width,
+                                cblks.height,
+                            );
+                            initialised = slot + 1;
+                        }
                     }
                 }
             }
         }
+
+        const iter = jp2z.PacketIterator.init(params, image_w, image_h);
+        return .{
+            .params = params,
+            .image_w = image_w,
+            .image_h = image_h,
+            .tile_index = tile_index,
+            .precincts_at_r = precincts_at_r,
+            .resolution_offset = resolution_offset,
+            .slots_per_component = slots_per_component,
+            .states = states,
+            .initialised = initialised,
+            .iter = iter,
+            .total = iter.total(),
+            .packets_seen = 0,
+        };
     }
 
-    // Walk every packet via the full per-r-variable-precinct iterator.
-    var iter = jp2z.PacketIterator.init(params, image_w, image_h);
+    fn deinit(self: *TileWalk, allocator: Allocator) void {
+        var i: usize = 0;
+        while (i < self.initialised) : (i += 1) self.states[i].deinit(allocator);
+        allocator.free(self.states);
+    }
+};
+
+/// Outcome of walking one tile-part body.
+const TilePartResult = enum {
+    /// The tile's packet iterator exhausted — the tile is fully decoded.
+    complete,
+    /// This tile-part's body was exactly consumed but more tile-parts of
+    /// this tile remain (TNsot>1); keep the TileWalk for the next part.
+    incomplete,
+    /// A structural error (truncated/over-running packet) was found and a
+    /// finding emitted; the tile is abandoned.
+    broken,
+};
+
+/// Walk ONE tile-part's packet bodies, resuming `tw`'s persistent packet
+/// iterator and tag-tree states. Stops when this tile-part's body is
+/// exactly consumed (more parts to come → `.incomplete`) or the iterator
+/// exhausts (`.complete`). The byte-perfect walk findings
+/// (jp2_packets_walked_to_end / _under_read) fire once per TILE, when it
+/// completes — not once per tile-part.
+fn walkTilePartBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    tw: *TileWalk,
+    tp_body: []const u8,
+    body_offset_in_data: usize,
+    extractor: ?*cblk_extract.CblkExtractor,
+) Allocator.Error!TilePartResult {
+    const params = tw.params;
+    const image_w = tw.image_w;
+    const image_h = tw.image_h;
+    const states = tw.states;
+    const resolution_offset = tw.resolution_offset;
+    const precincts_at_r = tw.precincts_at_r;
+    const slots_per_component = tw.slots_per_component;
+
     var body_pos: usize = 0;
-    while (iter.next()) |pi| {
-        if (body_pos >= tp_body.len) {
-            try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
-            return;
-        }
+    // Pull packets from the PERSISTENT iterator until this tile-part's
+    // body is consumed; the iterator's cursor carries to the next part.
+    while (body_pos < tp_body.len) {
+        const pi = tw.iter.next() orelse break;
+        tw.packets_seen += 1;
+
         // Per-packet view: SubbandStates for (component, resolution,
         // all-subbands-at-r, this-precinct). value-copied in (will be
         // copied out after readPacketHeader has mutated state).
@@ -1204,7 +1301,7 @@ fn walkPackets(
         const seg_alloc: ?Allocator = if (extractor != null) allocator else null;
         const contribution_len = (try packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty, seg_alloc)) orelse {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
-            return;
+            return .broken;
         };
 
         // Write back the (mutated) SubbandState entries.
@@ -1258,7 +1355,7 @@ fn walkPackets(
                             gx, gy,
                         );
                         try ex.appendContribution(.{
-                            .tile = 0, // single-tile fixtures only today
+                            .tile = tw.tile_index,
                             .component = @intCast(pi.component),
                             .resolution = pi.resolution,
                             .band = band_for_key,
@@ -1285,21 +1382,33 @@ fn walkPackets(
         const advance = header_bytes + @as(usize, contribution_len);
         if (body_pos + advance > tp_body.len) {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos + advance, null);
-            return;
+            return .broken;
         }
         body_pos += advance;
     }
 
-    // Surface walker-vs-tile-part-body match status as findings.
-    // Only meaningful when COD was fully parsed (num_layers > 0).
-    if (params.num_layers > 0) {
-        if (body_pos == tp_body.len) {
-            try emit(report, allocator, .info, .jp2_packets_walked_to_end, body_offset_in_data, null);
-        } else if (body_pos < tp_body.len) {
-            try emit(report, allocator, .warn, .jp2_packets_under_read, body_offset_in_data + body_pos, null);
+    // Disposition. The iterator only flips `done` once it has yielded the
+    // tile's final packet, so `done` is the authoritative tile-complete
+    // signal across tile-parts.
+    // The iterator yields exactly `tw.total` packets across the tile's
+    // tile-parts; once we've seen them all the tile is complete. This is
+    // order-independent (LRCP/PCRL/RPCL set iter.done on different calls).
+    if (tw.packets_seen >= tw.total) {
+        // Surface walker-vs-tile match status. Only meaningful when COD
+        // was fully parsed (num_layers > 0).
+        if (params.num_layers > 0) {
+            if (body_pos == tp_body.len) {
+                try emit(report, allocator, .info, .jp2_packets_walked_to_end, body_offset_in_data, null);
+            } else {
+                try emit(report, allocator, .warn, .jp2_packets_under_read, body_offset_in_data + body_pos, null);
+            }
         }
+        return .complete;
     }
+    // Body exactly consumed, iterator still has packets → resume next part.
+    return .incomplete;
 }
+
 
 /// 4-D index into the flat per-component SubbandState pool. Layout:
 ///   slot(c, r, sb, p) = c·slots_per_component
