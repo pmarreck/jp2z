@@ -192,6 +192,24 @@ oracle tests.
       FF91 SOP segment per packet when scod&0x02 (EPH FF92 when scod&0x04).
       Also fixed (lost in revert, redo): stale Scod comment at codestream.zig
       ~865 says "bit0=SOP,bit1=EPH" — correct is bit0=precincts,bit1=SOP,bit2=EPH.
+      ── SESSION FINDING (2026-06-22): p0_10 increment ──
+      Re-targeted to p0_10 (cleanest: 5/3+RCT BYTE-PERFECT oracle, 2×2, no SOP,
+      cas=0). DONE+COMMITTED (local, unpushed): SIZ captures comp_dx/comp_dy
+      (XRsiz/YRsiz — were discarded); inspect test pins dx=4. GROUNDWORK
+      (committed, inert for single-tile): walkTileParts reads Isot, computes
+      per-COMPONENT tile dims tcw=ceil(tx1/dx)-ceil(tx0/dx) (=32×32 for p0_10),
+      passes to walkPackets. VALIDATED-CORRECT BY TRACE: layer-0 of every p0_10
+      tile walks byte-EXACT to tplen (tile0 c2/r3/l0 ends bp 1926+10+503=2439=
+      tplen). BUT p0_10 ALSO bundles **TNsot>1** (2 tile-parts/tile; LRCP is
+      layer-outermost so the layers split across parts). walkPackets uses a
+      FRESH full iterator per tile-part → regenerates the layer-0 packet set and
+      overflows on the 2nd part. FIX (the plan's deferred refinement): a
+      PERSISTENT per-tile packet iterator carried across that tile's tile-parts
+      (key by Isot; resume the packet index where the prior part stopped).
+      LESSON: EVERY conformance multi-tile fixture stacks >=2 unimplemented
+      features (subsampling / TNsot>1 / SOP+EPH / RGN / 9/7 / SEGSYM+VSC) — so
+      multi-tile is genuinely multi-session: land supporting features one-by-one.
+      Oracle ready: tests/unit/fixtures/oracles/p0_10.pix (64×64×3, byte-exact).
       REMAINING STEPS (TDD target: p0_03.j2k — mono 5/3, 2x2 128px tiles,
       8 layers, SOP, 4-bit; oracle = opj_decompress .pgm):
         1. SOP/EPH markers: walkPackets must skip FF91 Lsop Nsop (6 bytes)

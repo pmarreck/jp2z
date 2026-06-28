@@ -846,7 +846,21 @@ fn walkTileParts(
             if (report.width != null and report.height != null) {
                 if (findSod(data, pos, next_pos)) |sod_pos| {
                     const tp_body = data[sod_pos + 2 .. next_pos];
-                    try walkPackets(report, allocator, tp_body, params, report.width.?, report.height.?, sod_pos + 2, extractor);
+                    // Per-tile, per-component geometry (T.800 B.2/B.3): drive
+                    // the packet walk from THIS tile's COMPONENT extent, not the
+                    // whole reference grid. Isot (SOT tile index) is at pos+4;
+                    // component tile dims = ceil(tx1/dx) − ceil(tx0/dx) (all our
+                    // fixtures share dx/dy across components, so use comp 0).
+                    // Single-tile, non-sub-sampled files reduce to image dims.
+                    const isot: u32 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
+                    const xsiz: u32 = params.image_x0 + report.width.?;
+                    const ysiz: u32 = params.image_y0 + report.height.?;
+                    const tr = params.tileRect(xsiz, ysiz, isot);
+                    const dx: u32 = params.comp_dx[0];
+                    const dy: u32 = params.comp_dy[0];
+                    const tcw: u32 = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
+                    const tch: u32 = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
+                    try walkPackets(report, allocator, tp_body, params, tcw, tch, sod_pos + 2, extractor);
                 }
                 // Missing SOD inside a tile-part is already caught
                 // structurally by the main-header walker; no extra
