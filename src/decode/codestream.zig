@@ -110,6 +110,11 @@ pub const CodingParams = struct {
     comp_prec: [16]u8 = @splat(8),
     /// Per-component signedness (SIZ Ssiz bit 7) as a bitmask by component.
     comp_signed: u16 = 0,
+    /// Per-component horizontal/vertical sub-sampling (SIZ XRsiz/YRsiz).
+    /// Component samples live on a grid 1/dx × 1/dy of the reference grid
+    /// (T.800 B.2). Default 1 (no sub-sampling). Index = component.
+    comp_dx: [16]u8 = @splat(1),
+    comp_dy: [16]u8 = @splat(1),
     /// Per-subband quantization exponent (irreversible). Index matches
     /// mb_per_subband / stepsizes order: [0]=LL@r0, then 3 per resolution.
     qcd_expn: [97]u8 = @splat(0),
@@ -1365,10 +1370,12 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     const ncomp: usize = @min(@as(usize, csiz), 16);
     var ci: usize = 0;
     while (ci < ncomp) : (ci += 1) {
-        // Each component descriptor is 3 bytes; Ssiz is the first.
+        // Each component descriptor is 3 bytes: Ssiz, XRsiz, YRsiz.
         const ssiz = body[38 + ci * 3];
         cp_local.comp_prec[ci] = (ssiz & 0x7F) + 1;
         if (ssiz & 0x80 != 0) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
+        cp_local.comp_dx[ci] = body[38 + ci * 3 + 1];
+        cp_local.comp_dy[ci] = body[38 + ci * 3 + 2];
     }
     report.coding_params = cp_local;
 }

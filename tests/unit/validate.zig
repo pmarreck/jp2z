@@ -1417,3 +1417,24 @@ test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ign
     defer rep0.deinit(std.testing.allocator);
     try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
 }
+
+const p0_10_j2k = @embedFile("fixtures/conformance/p0_10.j2k");
+
+test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)" {
+    // p0_10: 256×256 ref grid, 3 components each sub-sampled 4× (XRsiz=YRsiz=4
+    // → 64×64 component samples), 2×2 tiles of 128×128 ref (32×32 per
+    // component), 5/3 reversible + RCT. Oracle: opj_dump.
+    const cp = (try jp2z.internal.inspect(std.testing.allocator, p0_10_j2k)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 3), cp.num_components);
+    try std.testing.expectEqual(jp2z.WaveletFilter.reversible_5x3, cp.wavelet);
+    try std.testing.expectEqual(true, cp.mct);
+    var c: usize = 0;
+    while (c < 3) : (c += 1) {
+        try std.testing.expectEqual(@as(u8, 4), cp.comp_dx[c]);
+        try std.testing.expectEqual(@as(u8, 4), cp.comp_dy[c]);
+    }
+    // tile geometry (reference grid): 2×2 tiles of 128×128
+    try std.testing.expectEqual(@as(u32, 128), cp.tile_w);
+    try std.testing.expectEqual(@as(u32, 128), cp.tile_h);
+}
