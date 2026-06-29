@@ -1445,6 +1445,40 @@ test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ign
     try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
 }
 
+test "validate: tile-part-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ignored" {
+    // Reviewer I1 extended to the TILE-PART header (where p0_03's RGN lives).
+    // Same SOC+SIZ+COD+QCD main header as the main-header variant, but the
+    // override marker now sits between SOT and SOD. Classifier over the set:
+    // each of {COC,QCC,RGN,POC} fires; a bare SOT→SOD tile-part does not.
+    const prefix = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00,
+        0xFF, 0x5C, 0x00, 0x03, 0x22,
+    };
+    // SOT (Lsot=10, Isot=0, Psot=0 → to EOC, TPsot=0, TNsot=1).
+    const sot = [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    const sod_eoc = [_]u8{ 0xFF, 0x93, 0xFF, 0xD9 }; // SOD then EOC (empty body)
+    const coc = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    const qcc = prefix ++ sot ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    const rgn = prefix ++ sot ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ sod_eoc;
+    const poc = prefix ++ sot ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    inline for (.{ coc, qcc, rgn, poc }) |s| {
+        var report = try jp2z.validate(std.testing.allocator, &s);
+        defer report.deinit(std.testing.allocator);
+        try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
+    }
+    const baseline = prefix ++ sot ++ sod_eoc;
+    var rep0 = try jp2z.validate(std.testing.allocator, &baseline);
+    defer rep0.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
+}
+
 const p0_10_j2k = @embedFile("fixtures/conformance/p0_10.j2k");
 
 test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)" {

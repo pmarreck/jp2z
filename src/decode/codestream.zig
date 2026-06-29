@@ -851,6 +851,14 @@ fn walkTileParts(
             return;
         } else pos + psot;
 
+
+        // Flag tile-part-header override markers jp2z doesn't apply per-tile
+        // (COC/QCC/RGN/POC) — the tile-part analogue of the main-header I1
+        // scan. Independent of CodingParams; runs even when the packet walk
+        // below is skipped. The SOT segment is 12 bytes (pos..pos+12).
+        if (findSod(data, pos, next_pos)) |sod_pos| {
+            try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
+        }
         // Walk this tile-part's packet headers, if we have enough
         // CodingParams to drive the iterator and width/height.
         if (report.coding_params) |params| {
@@ -913,6 +921,40 @@ fn walkTileParts(
         }
         try emit(report, allocator, .warn, .missing_eoi, next_pos, null);
         return;
+    }
+}
+
+/// Scan a tile-part header — the marker segments between the SOT segment
+/// and SOD — for per-tile override markers jp2z does not yet apply
+/// (COC/QCC/RGN/POC) and surface jp2_unsupported_marker_ignored for each.
+/// The tile-part-header analogue of the main-header I1 scan: a consumer is
+/// told decode fell back to the main-header COD/QCD defaults instead of
+/// silently ignoring the override (validate's stricter-than-openjpeg
+/// contract). `hdr_start` is the first byte after the SOT segment;
+/// `hdr_end` is the SOD offset.
+fn scanTilePartHeaderMarkers(
+    report: *ValidationReport,
+    allocator: Allocator,
+    data: []const u8,
+    hdr_start: usize,
+    hdr_end: usize,
+) Allocator.Error!void {
+    var p = hdr_start;
+    while (p + 4 <= hdr_end) {
+        if (data[p] != 0xFF) return; // not a marker boundary — stop
+        const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[p + 1]);
+        if (marker == @intFromEnum(Marker.sod)) return;
+        const lseg = std.mem.readInt(u16, data[p + 2 ..][0..2], .big);
+        if (lseg < 2 or p + 2 + lseg > hdr_end) return; // malformed length — bail
+        switch (marker) {
+            @intFromEnum(Marker.coc),
+            @intFromEnum(Marker.qcc),
+            @intFromEnum(Marker.rgn),
+            @intFromEnum(Marker.poc),
+            => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, p, null),
+            else => {},
+        }
+        p += 2 + @as(usize, lseg);
     }
 }
 
