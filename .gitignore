@@ -36,3 +36,7 @@ CLAUDE.md
 
 # session handoff docs (skill: handoff)
 HANDOFF*
+
+# dirtree per-subdir state is contentless noise — keep only root annotations
+**/.dirtree-state
+!/.dirtree-state
