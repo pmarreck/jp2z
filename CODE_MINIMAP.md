@@ -1,7 +1,7 @@
 # jp2z — Code Minimap
 
 A grep-friendly inventory of every important file. Same convention
-jpegz uses. Update as the cleanroom milestones land.
+jpegz uses. Update as the pure-Zig decode milestones land.
 
 ## Top level
 
@@ -9,7 +9,7 @@ jpegz uses. Update as the cleanroom milestones land.
 |---|---|
 | `README.md` | Project overview, status, integration plan |
 | `PROJECT_OVERVIEW.md` | Goals, scope (Part 1 only), terminology, conventions |
-| `PLAN.md` | Phase-1 punch list + Phase-2 cleanroom milestones |
+| `PLAN.md` | Phase-1 punch list + Phase-2 pure-Zig decode milestones |
 | `CODE_MINIMAP.md` | This file |
 | `NEXT_SESSION.md` | Handoff doc for the LLM picking up next |
 | `flake.nix` | Nix build with openjpeg as Phase 1 dependency |
@@ -33,7 +33,7 @@ jpegz uses. Update as the cleanroom milestones land.
 | `src/core/types.zig` | `ColorSpace`, `PixelLayout`, `Image`, `ImageMetadata` | Identical shape to jpegz |
 | `src/core/last_error.zig` | `clear`, `set`, `current`, `cPtr` | Thread-local per-error preservation (same backing as C ABI) |
 
-## Decode (cleanroom + helpers)
+## Decode (pure-Zig + helpers)
 
 | Path | Defines | Notes |
 |---|---|---|

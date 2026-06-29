@@ -19,7 +19,7 @@
 - [ ] `tests/unit/fixtures/` — small JP2/J2K test fixtures
 - [ ] CI green on Garnix (auto-detects `flake.nix`)
 
-## Phase 2 — cleanroom milestones
+## Phase 2 — pure-Zig decode milestones
 
 Each milestone retires part of the openjpeg dependency. After M6 the
 wrapper moves to `jp2z.internal.openjpegDecode` for byte-perfect
@@ -30,7 +30,7 @@ oracle tests.
 - [x] Walk all main-header markers (COD/QCD/COC/QCC/RGN/POC/TLM/PLM/PPM/CRG/COM) — length validation, body skip
 - [x] Tile-part walk via Psot through to EOC
 - [x] JP2 file-format box walker (Annex I) — ihdr → width/height, dispatch jp2c to J2K walker
-- [x] `validate(...)` cleanroom (structural integrity, no decode-through)
+- [x] `validate(...)` pure-Zig (structural integrity, no decode-through)
 - [x] Known-good fixtures: 8 vendored ISO 15444-4 + full corpus via openjpeg-data flake input
 - [ ] COD/QCD body field-level validation (prog. order, wavelet filter, decomp. levels) — optional refinement
 - [ ] Known-bad fixtures (truncations, bad markers, garbage fields) — defensive coverage
@@ -62,7 +62,7 @@ oracle tests.
           bits set, XRsiz=0 / YRsiz=0, Rsiz reserved)
         - Per-tile-part `Psot` mismatch (declared vs actual SOT-to-next
           distance)
-        - Per-packet contribution length mismatch (when fully cleanroom)
+        - Per-packet contribution length mismatch (when pure-Zig decode is complete)
         - `jp2_trailing_data_after_eoc` (currently partial — warn only)
         - Per-component descriptor info findings (sign / precision /
           sample period) so consumers can show per-component metadata
@@ -229,7 +229,7 @@ the 9/7 float tolerance), so it is exact even on the lossy path.
 - [ ] In jpegz: replace `pub const jpeg2000` body with thin re-export shim to jp2z
 - [ ] In jpegz: delete `src/ffi/openjpeg_wrapper.zig`
 - [ ] In jpegz: remove openjpeg from `flake.nix`
-- [ ] jpegz becomes "100% cleanroom JPEG family decoder at runtime — no exceptions"
+- [ ] jpegz becomes "JPEG-family decoder with no third-party decoder at runtime — pure Zig, no exceptions"
 
 ## Completed
 - Multi-tile decode (5/3): p0_10.j2k BYTE-PERFECT — TNsot>1 persistent
@@ -242,6 +242,6 @@ the 9/7 float tolerance), so it is exact even on the lossy path.
 
 - Phase 1 wrapper backend + decode tests against vendored conformance fixtures
 - Phase 1 C CLI binary + end-to-end test with byte-perfect oracle comparison vs opj_decompress
-- Phase 2 M1 (core scope): cleanroom codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
+- Phase 2 M1 (core scope): pure-Zig codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
 - Phase 2 M2 (tier-2 packet headers): walker BYTE-PERFECT against opj_t2 on every vendored ISO 15444-4 conformance fixture (c1_mono, d1_colr, file1, file9). All 5 progression orders + per-resolution variable precinct counts + reference-grid iteration for PCRL/CPRL + per-precinct SubbandState + T.800 A.6.1 cblk-cap-by-precinct.
 - Phase 2 M3 (tier-1 EBCOT core): MQ arithmetic decoder (T.800 Annex C) + EBCOT context model (19 contexts, ZC/SC/MR formation per T.800 Table D-1/D-3/D.3.3) + three coding passes (SP/MR/CL with RLC sub-path) + bit-plane orchestrator (decodeCblk). 97 inline tests passing. Pending: walker integration to feed real cblk byte slices, then OpenJPEG oracle byte-perfect verification.

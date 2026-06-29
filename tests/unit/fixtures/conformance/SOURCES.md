@@ -17,7 +17,7 @@ the `COPYRIGHT` notice must travel with any copy (which it does, here).
 ## Why these 8 specific files?
 
 A curated subset that fits in ~1 MB while still covering the major
-shapes the Phase 2 cleanroom decoder will need to handle. The full
+shapes the Phase 2 pure-Zig decoder will need to handle. The full
 59-file conformance set is also pulled in at CI time as a Nix flake
 input (see `flake.nix` → `inputs.openjpeg-data`) so the broader
 oracle suite stays accessible without bloating the repo.
@@ -34,6 +34,6 @@ oracle suite stays accessible without bloating the repo.
 | `file9.jp2` | 300,208 | JP2 file format, exercises additional metadata box types |
 
 Phase 1 (openjpeg wrapper) decode tests target these via
-`@embedFile`. Phase 2 cleanroom milestones use them as both
+`@embedFile`. Phase 2 pure-Zig decode milestones use them as both
 positive ("should decode") and oracle ("byte-perfect vs openjpeg")
 fixtures.

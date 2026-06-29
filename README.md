@@ -1,6 +1,10 @@
 # jp2z
 
-Cleanroom JPEG 2000 (T.800) decoder in pure Zig with a C FFI surface.
+A from-scratch, integer-only JPEG 2000 (T.800) decoder in pure Zig with a
+C FFI surface. openjpeg (BSD-2) is used only as a build-time differential
+oracle and the Phase-1 backend — never a shipped runtime dependency. See
+PROJECT_OVERVIEW.md for why we reimplement (cross-platform integer
+determinism, rich validation diagnostics, WASM, Zig-fleet embeddability).
 
 Sister project to [`jpegz`](https://github.com/pmarreck/jpegz) — same
 architecture (Zig core + C FFI + C CLI dogfooding the boundary, Nix
@@ -13,10 +17,10 @@ or T.87 JPEG-LS.
 
 **Phase 1 (now)**: thin wrapper over [openjpeg](https://github.com/uclouvain/openjpeg)
 (BSD-2). Decodes JP2 (file format) and J2K (raw codestream). Same
-pattern jpegz used pre-cleanroom — gets users a working library
-today; the cleanroom retires the dependency milestone by milestone.
+pattern jpegz used pre-rewrite — gets users a working library
+today; the pure-Zig path retires the dependency milestone by milestone.
 
-**Phase 2 (multi-month)**: pure-Zig cleanroom replacement, planned
+**Phase 2 (multi-month)**: pure-Zig from-scratch replacement, planned
 in six sub-milestones (see `PLAN.md`):
 
 | Milestone | Scope |
@@ -28,7 +32,7 @@ in six sub-milestones (see `PLAN.md`):
 | M5 | Inverse wavelet 9/7 (lossy) |
 | M6 | Multiple Component Transform (MCT) inverse |
 
-At M6 jp2z is fully cleanroom; the openjpeg wrapper moves to
+At M6 jp2z decodes fully in pure Zig; the openjpeg wrapper moves to
 `internal.*` as a build-time oracle for byte-perfect regression
 testing (same pattern jpegz uses for libjpeg-turbo and charls today).
 
@@ -38,7 +42,7 @@ testing (same pattern jpegz uses for libjpeg-turbo and charls today).
 Any consumer ──► C FFI boundary ──► Zig core (pure logic, no I/O)
                                     │
                                     ├── ffi/openjpeg_wrapper.zig (Phase 1)
-                                    └── decode/* (Phase 2 cleanroom, milestone by milestone)
+                                    └── decode/* (Phase 2 pure-Zig, milestone by milestone)
 ```
 
 Mirrors jpegz's hexagonal layout. The C FFI is the real public
@@ -47,7 +51,7 @@ dogfood the boundary every test run.
 
 ## Integration with jpegz
 
-Once jp2z reaches M6 (cleanroom complete), jpegz's existing
+Once jp2z reaches M6 (pure-Zig decode complete), jpegz's existing
 `pub const jpeg2000 = struct { ... }` namespace becomes a thin
 re-export shim:
 
@@ -60,7 +64,7 @@ pub const jpeg2000 = struct {
 };
 ```
 
-At that moment jpegz is 100% cleanroom at runtime — no asterisks.
+At that moment jpegz has no openjpeg (nor any third-party decoder) at runtime — pure Zig, no asterisks.
 jp2z stays consumable on its own for callers that only need T.800.
 
 ## Patent posture
