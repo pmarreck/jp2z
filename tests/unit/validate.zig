@@ -1473,10 +1473,17 @@ test "validate: tile-part-header COC/QCC/RGN/POC each emit jp2_unsupported_marke
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
     }
+    // Negatives: neither an EMPTY tile-part header nor one carrying a BENIGN
+    // marker (COM 0xFF64 — not a coding override) may fire the finding. The
+    // benign case bites the over-flagging mutation (else=>{} → else=>emit),
+    // which an empty header alone cannot (its scanned range is empty).
     const baseline = prefix ++ sot ++ sod_eoc;
-    var rep0 = try jp2z.validate(std.testing.allocator, &baseline);
-    defer rep0.deinit(std.testing.allocator);
-    try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
+    const benign = prefix ++ sot ++ [_]u8{ 0xFF, 0x64, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    inline for (.{ baseline, benign }) |s| {
+        var rep0 = try jp2z.validate(std.testing.allocator, &s);
+        defer rep0.deinit(std.testing.allocator);
+        try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
+    }
 }
 
 test "validate: malformed SIZ geometry → invalid_siz finding, never a crash (C1/C2/C4)" {

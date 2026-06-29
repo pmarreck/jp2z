@@ -852,18 +852,20 @@ fn walkTileParts(
         } else pos + psot;
 
 
+        // Locate SOD once (reused for the marker scan and the packet walk).
+        const sod = findSod(data, pos, next_pos);
         // Flag tile-part-header override markers jp2z doesn't apply per-tile
         // (COC/QCC/RGN/POC) — the tile-part analogue of the main-header I1
         // scan. Independent of CodingParams; runs even when the packet walk
         // below is skipped. The SOT segment is 12 bytes (pos..pos+12).
-        if (findSod(data, pos, next_pos)) |sod_pos| {
+        if (sod) |sod_pos| {
             try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
         }
         // Walk this tile-part's packet headers, if we have enough
         // CodingParams to drive the iterator and width/height.
         if (report.coding_params) |params| {
             if (report.width != null and report.height != null) {
-                if (findSod(data, pos, next_pos)) |sod_pos| {
+                if (sod) |sod_pos| {
                     const tp_body = data[sod_pos + 2 .. next_pos];
                     // Per-tile, per-component geometry (T.800 B.2/B.3): drive
                     // the packet walk from THIS tile's COMPONENT extent, not the
@@ -1463,10 +1465,7 @@ fn walkTilePartBody(
         body_pos += advance;
     }
 
-    // Disposition. The iterator only flips `done` once it has yielded the
-    // tile's final packet, so `done` is the authoritative tile-complete
-    // signal across tile-parts.
-    // The iterator yields exactly `tw.total` packets across the tile's
+    // Disposition. The iterator yields exactly `tw.total` packets across the tile's
     // tile-parts; once we've seen them all the tile is complete. This is
     // order-independent (LRCP/PCRL/RPCL set iter.done on different calls).
     if (tw.packets_seen >= tw.total) {
@@ -1613,6 +1612,10 @@ fn emit(
     offset: ?u64,
     detail: ?[]const u8,
 ) Allocator.Error!void {
+    // Ownership note (A3): emit() DUPES `detail` — the caller keeps ownership
+    // of its slice (callers pass string literals / stack buffers). This is the
+    // opposite of reconstruct.zig's appendFinding, which TAKES ownership of an
+    // allocPrint'd `detail`. Both free the stored copy in report.deinit.
     const stored: ?[]const u8 = if (detail) |d| try allocator.dupe(u8, d) else null;
     errdefer if (stored) |s| allocator.free(s);
     try report.findings.append(allocator, .{
