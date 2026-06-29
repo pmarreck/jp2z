@@ -37,12 +37,19 @@ pub const Image = struct {
     }
 };
 
+
+/// Ceiling division for component-grid geometry (T.800 B.2): a component
+/// coordinate is ceil(reference_coordinate / sub_sampling_factor).
+inline fn ceilDiv(a: u32, b: u32) u32 {
+    return (a + b - 1) / b;
+}
 /// Assemble + inverse-DWT one component's tile buffer from its plans.
 /// Returns an `image_w × image_h` i32 buffer of spatial samples
 /// (pre level-shift, pre-MCT). Caller owns it.
 pub fn reconstructComponentTile(
     allocator: Allocator,
     plans: []const cblk_plan.CblkDecodePlan,
+    tile_index: u32,
     component: u16,
     image_w: u32,
     image_h: u32,
@@ -54,6 +61,7 @@ pub fn reconstructComponentTile(
     errdefer allocator.free(buf);
 
     for (plans) |plan| {
+        if (plan.tile != tile_index) continue;
         if (plan.component != component) continue;
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
 
@@ -113,6 +121,10 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     const params = report.coding_params orelse return error.NoCodingParams;
     const image_w = report.width orelse return error.NoDimensions;
     const image_h = report.height orelse return error.NoDimensions;
+    // Output dims. For the multi-tile/sub-sampled 5/3 path these become the
+    // component-grid dims (set in that branch); otherwise the ref-grid dims.
+    var out_w: u32 = image_w;
+    var out_h: u32 = image_h;
     const ncomp = params.num_components;
 
     var list = try codestream.extractCblkPlans(allocator, data);
@@ -129,18 +141,94 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     while (c < ncomp) : (c += 1) precs[c] = params.comp_prec[@min(c, 15)];
 
     if (params.wavelet == .reversible_5x3) {
-        // ── Lossless 5/3 path (integer) ──
+        // ── Lossless 5/3 path (integer), multi-tile + sub-sampling aware ──
+        // Reconstruct each tile at COMPONENT resolution (sub-sampled grid,
+        // T.800 B.2/B.3), apply inverse MCT + DC level shift PER TILE (tiles
+        // are independent), then composite into the full per-component
+        // planes. For a single, non-sub-sampled tile this reduces to the
+        // whole image at (0,0).
+        const xsiz = params.image_x0 + image_w;
+        const ysiz = params.image_y0 + image_h;
+
+        // Per-component sample-plane dimensions on the sub-sampled grid.
+        var comp_w: [16]u32 = @splat(0);
+        var comp_h: [16]u32 = @splat(0);
         c = 0;
         while (c < ncomp) : (c += 1) {
-            planes[c] = try reconstructComponentTile(allocator, list.plans, c, image_w, image_h, params.num_decomp_levels);
+            const ci = @min(c, 15);
+            const dx: u32 = params.comp_dx[ci];
+            const dy: u32 = params.comp_dy[ci];
+            comp_w[ci] = ceilDiv(xsiz, dx) - ceilDiv(params.image_x0, dx);
+            comp_h[ci] = ceilDiv(ysiz, dy) - ceilDiv(params.image_y0, dy);
+        }
+
+        // Allocate + zero every component plane up front.
+        c = 0;
+        while (c < ncomp) : (c += 1) {
+            const ci = @min(c, 15);
+            const plane = try allocator.alloc(i32, @as(usize, comp_w[ci]) * @as(usize, comp_h[ci]));
+            @memset(plane, 0);
+            planes[c] = plane;
             done += 1;
         }
-        if (params.mct and ncomp >= 3) inverseRct(planes[0], planes[1], planes[2]);
-        c = 0;
-        while (c < ncomp) : (c += 1) {
-            const is_signed = (params.comp_signed >> @intCast(@min(c, 15))) & 1 != 0;
-            levelShift(planes[c], precs[c], is_signed);
+
+        const nt = params.numTilesXY(xsiz, ysiz);
+        const num_tiles = nt.x * nt.y;
+        var t: u32 = 0;
+        while (t < num_tiles) : (t += 1) {
+            const tr = params.tileRect(xsiz, ysiz, t);
+
+            // Per-tile, per-component spatial buffers (freed at iter end).
+            var tbufs: [16][]i32 = undefined;
+            const TileDim = struct { w: u32, h: u32, ox: u32, oy: u32 };
+            var tdims: [16]TileDim = undefined;
+            var tb_done: u16 = 0;
+            defer {
+                var k: u16 = 0;
+                while (k < tb_done) : (k += 1) allocator.free(tbufs[k]);
+            }
+
+            c = 0;
+            while (c < ncomp) : (c += 1) {
+                const ci = @min(c, 15);
+                const dx: u32 = params.comp_dx[ci];
+                const dy: u32 = params.comp_dy[ci];
+                const tcx0 = ceilDiv(tr.x0, dx);
+                const tcy0 = ceilDiv(tr.y0, dy);
+                const tcw = ceilDiv(tr.x1, dx) - tcx0;
+                const tch = ceilDiv(tr.y1, dy) - tcy0;
+                tdims[c] = .{
+                    .w = tcw,
+                    .h = tch,
+                    .ox = tcx0 - ceilDiv(params.image_x0, dx),
+                    .oy = tcy0 - ceilDiv(params.image_y0, dy),
+                };
+                tbufs[c] = try reconstructComponentTile(allocator, list.plans, t, c, tcw, tch, params.num_decomp_levels);
+                tb_done += 1;
+            }
+
+            // Inverse MCT then DC level shift, per tile, before compositing.
+            if (params.mct and ncomp >= 3) inverseRct(tbufs[0], tbufs[1], tbufs[2]);
+            c = 0;
+            while (c < ncomp) : (c += 1) {
+                const ci = @min(c, 15);
+                const is_signed = (params.comp_signed >> @intCast(ci)) & 1 != 0;
+                levelShift(tbufs[c], precs[c], is_signed);
+                const d = tdims[c];
+                const stride = comp_w[ci];
+                var ty: u32 = 0;
+                while (ty < d.h) : (ty += 1) {
+                    const src = tbufs[c][ty * d.w ..][0..d.w];
+                    const dst_off = (d.oy + ty) * stride + d.ox;
+                    @memcpy(planes[c][dst_off..][0..d.w], src);
+                }
+            }
         }
+
+        // RCT requires uniform sub-sampling across the colour components, so
+        // all component planes share dimensions; report component-0's.
+        out_w = comp_w[0];
+        out_h = comp_h[0];
     } else {
         // ── Lossy 9/7 path (Q16 fixed-point) ──
         const qplanes = try allocator.alloc([]i64, ncomp);
@@ -172,8 +260,8 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     }
 
     return .{
-        .width = image_w,
-        .height = image_h,
+        .width = out_w,
+        .height = out_h,
         .num_components = ncomp,
         .planes = planes,
         .precs = precs,

@@ -887,6 +887,7 @@ const c1_mono_pix = @embedFile("fixtures/oracles/c1_mono.pix");
 const p0_09_pix = @embedFile("fixtures/oracles/p0_09.pix");
 const p0_04_pix = @embedFile("fixtures/oracles/p0_04.pix");
 const d1_colr_pix = @embedFile("fixtures/oracles/d1_colr.pix");
+const p0_10_pix = @embedFile("fixtures/oracles/p0_10.pix");
 
 const OracleRecord = struct {
     tile: u32,
@@ -1211,6 +1212,31 @@ test "cleanroom: d1_colr pixels match opj_decompress (5/3 IDWT + inverse RCT + l
             const expect: i32 = d1_colr_pix[c * n + i];
             if (expect != s) {
                 std.debug.print("\n[d1 px] comp {d} mismatch at {d}: ours={d} oj={d}\n", .{ c, i, s, expect });
+                return error.PixelMismatch;
+            }
+        }
+    }
+}
+
+test "cleanroom: p0_10 multi-tile sub-sampled pixels match opj_decompress (4 tiles, 5/3 + RCT)" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, p0_10_j2k);
+    defer img.deinit(allocator);
+    // 256×256 ref grid, 2×2 tiles, 4× sub-sampled → 64×64 component samples,
+    // 3 comps, 5/3 reversible + RCT → byte-EXACT vs opj_decompress.
+    try std.testing.expectEqual(@as(u32, 64), img.width);
+    try std.testing.expectEqual(@as(u32, 64), img.height);
+    try std.testing.expectEqual(@as(u16, 3), img.num_components);
+    const n: usize = 64 * 64;
+    try std.testing.expectEqual(@as(usize, n * 3), p0_10_pix.len);
+    var c: usize = 0;
+    while (c < 3) : (c += 1) {
+        const plane = img.planes[c];
+        try std.testing.expectEqual(n, plane.len);
+        for (plane, 0..) |s, i| {
+            const expect: i32 = p0_10_pix[c * n + i];
+            if (expect != s) {
+                std.debug.print("\n[p0_10 px] comp {d} mismatch at {d}: ours={d} oj={d}\n", .{ c, i, s, expect });
                 return error.PixelMismatch;
             }
         }
