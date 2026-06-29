@@ -166,70 +166,30 @@ oracle tests.
 - [x] RCT (reversible colour transform, 5/3) — d1_colr 3-comp BYTE-PERFECT.
 - [x] ICT (irreversible colour transform, 9/7) — unit-tested; p0_04 end-to-end
       (9/7 + ICT + TERMALL + user precincts + 20 layers) PAE<=1 vs opj_decompress.
-- [ ] Multi-tile decode — THE remaining decoder capability (deferred to the
-      next session per Peter). Single-tile feature set is complete. It is a
-      6-part feature; every conformance multi-tile fixture also bundles SOP.
-      GROUNDWORK DONE: SIZ now captures tile geometry (image_x0/y0, tile_x0/y0,
-      tile_w/h on CodingParams) + tested tileRect/numTilesXY helpers.
-      ── SESSION FINDING (2026-06-21, reverted to keep tree green) ──
-      Attempted increment 1 (SOP skip + per-tile geometry in the validation
-      walker) TDD'd against p0_03.j2k. The SOP-skip + tileRect-driven per-tile
-      dims approach is CORRECT (layer-0 packet of every tile parsed byte-exact),
-      but p0_03 is a BAD first target: it bundles SOP + 4-bit SIGNED + an **RGN
-      (ROI) marker** in each tile-part header (SOT@298→RGN@310→SOD@317). jp2z
-      ignores RGN, so the code-block bitplane structure is wrong and tier-2
-      packet parsing diverges at layer 1+ (under-read/garbage-length). This is
-      exactly reviewer finding I1 (COC/QCC/RGN/POC silently skipped). The "every
-      multi-tile fixture bundles SOP" claim above is ALSO wrong — p0_10 has
-      csty=0 (no SOP). NEXT TIME: pick a clean multi-tile fixture with NO
-      RGN/POC/per-tile-COD and 8-bit-unsigned. Candidates surveyed:
-        p0_10 (2×2, 3c, 8u, 5/3+RCT, NO SOP, but component-SUBSAMPLED 256→64),
-        p1_06 (4×4, 3c, 8u, SOP+EPH, 12×12 tiny). Re-vendor:
-        cp $OPENJPEG_DATA/input/conformance/<f> tests/unit/fixtures/conformance/.
-      Reusable approach (re-apply against the clean fixture): walkTileParts reads
-      Isot@pos+4, computes tileRect(xsiz,ysiz,isot) → per-tile dims, passes them
-      to walkPackets (replaces report.width/height); walkPackets skips the 6-byte
-      FF91 SOP segment per packet when scod&0x02 (EPH FF92 when scod&0x04).
-      Also fixed (lost in revert, redo): stale Scod comment at codestream.zig
-      ~865 says "bit0=SOP,bit1=EPH" — correct is bit0=precincts,bit1=SOP,bit2=EPH.
-      ── SESSION FINDING (2026-06-22): p0_10 increment ──
-      Re-targeted to p0_10 (cleanest: 5/3+RCT BYTE-PERFECT oracle, 2×2, no SOP,
-      cas=0). DONE+COMMITTED (local, unpushed): SIZ captures comp_dx/comp_dy
-      (XRsiz/YRsiz — were discarded); inspect test pins dx=4. GROUNDWORK
-      (committed, inert for single-tile): walkTileParts reads Isot, computes
-      per-COMPONENT tile dims tcw=ceil(tx1/dx)-ceil(tx0/dx) (=32×32 for p0_10),
-      passes to walkPackets. VALIDATED-CORRECT BY TRACE: layer-0 of every p0_10
-      tile walks byte-EXACT to tplen (tile0 c2/r3/l0 ends bp 1926+10+503=2439=
-      tplen). BUT p0_10 ALSO bundles **TNsot>1** (2 tile-parts/tile; LRCP is
-      layer-outermost so the layers split across parts). walkPackets uses a
-      FRESH full iterator per tile-part → regenerates the layer-0 packet set and
-      overflows on the 2nd part. FIX (the plan's deferred refinement): a
-      PERSISTENT per-tile packet iterator carried across that tile's tile-parts
-      (key by Isot; resume the packet index where the prior part stopped).
-      LESSON: EVERY conformance multi-tile fixture stacks >=2 unimplemented
-      features (subsampling / TNsot>1 / SOP+EPH / RGN / 9/7 / SEGSYM+VSC) — so
-      multi-tile is genuinely multi-session: land supporting features one-by-one.
-      Oracle ready: tests/unit/fixtures/oracles/p0_10.pix (64×64×3, byte-exact).
-      REMAINING STEPS (TDD target: p0_03.j2k — mono 5/3, 2x2 128px tiles,
-      8 layers, SOP, 4-bit; oracle = opj_decompress .pgm):
-        1. SOP/EPH markers: walkPackets must skip FF91 Lsop Nsop (6 bytes)
-           before each packet when Scod bit1 set, and FF92 (EPH) when bit2.
-           UNTESTED today (no passing fixture uses SOP). Likely needed first.
-        2. Per-tile geometry: walkTileParts reads Isot (currently ignored at
-           data[pos+4]); compute tileRect(isot); pass tile dims+origin down.
-        3. walkPackets keyed on TILE dims (not image_w/h) for the packet
-           iterator + subband/cblk geometry (cblk coords become tile-relative).
-        4. Extractor: tag cblks with the real tile index (CblkKey.tile already
-           exists; walker passes 0 today at the appendContribution call).
-        5. cas≠0 inverse DWT: idwt53/idwt97 currently assume cas=0; pass the
-           tile resolution origin so cas = res_origin%2. idwt53Line HAS cas1;
-           idwt97Line is cas0-only -> add cas1 for 9/7 multi-tile (p1_xx).
-        6. reconstruct: group plans by tile; per tile assemble (tile_w x tile_h)
-           -> inverse DWT (with cas) -> MCT -> level shift -> COMPOSITE into the
-           full image at (tile_x0-image_x0, tile_y0-image_y0). decodeCleanroom
-           loops tiles instead of assuming tile==image.
-      Multi-tile-part-per-tile (TNsot>1): p0_03 is 1 part/tile (simplest); a
-      persistent per-tile iterator across tile-parts is a later refinement.
+- [x] Multi-tile decode (5/3 path) — **p0_10.j2k BYTE-PERFECT** (2026-06-28).
+      DONE: SIZ comp_dx/comp_dy capture; per-tile/per-component walk geometry;
+      TNsot>1 persistent per-tile packet iterator (TileWalk: iterator + tag-tree
+      states keyed by Isot, resumed across tile-parts; completion by packet
+      count, order-independent); cblk tile-tagging (real Isot in CblkKey.tile);
+      sub-sampled reconstruction — decodeCleanroom loops tiles, reconstructs each
+      tile-component at COMPONENT res, per-tile inverse-MCT + level-shift, then
+      composites into the sub-sampled component planes (output at component dims,
+      64×64×3 for p0_10). Single/non-sub-sampled tiles reduce to the old path
+      (c1/a1/d1_colr stay byte-perfect). Oracle p0_10.pix regenerated PLANAR to
+      match the fleet .pix convention.
+      REMAINING multi-tile pieces (next fixtures):
+        - cas≠0 inverse DWT for ODD tile origins. p0_10 has even origins (cas=0).
+          idwt53Line HAS cas1; idwt97Line is cas0-only → add cas1 for 9/7
+          multi-tile (p1_xx). Thread the tile resolution origin so cas=origin%2.
+        - Marker semantics (RGN/COC/QCC/POC APPLY, not just flag) + tile-part-
+          header marker scan. Needed for p0_03/p0_15 (RGN max-shift). NOTE those
+          fixtures ALSO stack SOP/EPH + 4-bit-signed → multi-feature sequence.
+        - SOP/EPH packet-marker skipping in the walker (no clean fixture uses it
+          yet that we pass; p0_10 has csty=0).
+      KEY LESSON (still true): every conformance multi-tile fixture stacks ≥2
+      unimplemented features (subsampling / TNsot>1 / SOP+EPH / RGN / 9/7 /
+      SEGSYM+VSC), so multi-tile is a multi-fixture sequence — land supporting
+      features one at a time. p0_10 (subsampling + TNsot>1) is now fully landed.
 - [ ] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use.
 - [ ] Final cleanup: remove openjpeg from runtime dependency graph (jpegz cutover).
 
@@ -272,6 +232,13 @@ the 9/7 float tolerance), so it is exact even on the lossy path.
 - [ ] jpegz becomes "100% cleanroom JPEG family decoder at runtime — no exceptions"
 
 ## Completed
+- Multi-tile decode (5/3): p0_10.j2k BYTE-PERFECT — TNsot>1 persistent
+  per-tile packet iterator + sub-sampled per-tile reconstruction/compositing
+  (2026-06-28 ~8:30pm EDT). 217 tests green.
+- Reviewer C1 (CRITICAL): appendFinding `detail` OOM-leak fixed + FailingAllocator
+  bite-proven test; stale Scod doc comment fixed (2026-06-28 ~8:33pm EDT).
+- Housekeeping: deleted stale NEXT_SESSION.md; gitignored per-subdir .dirtree-state
+  (kept root annotations) (2026-06-28 ~8:00pm EDT).
 
 - Phase 1 wrapper backend + decode tests against vendored conformance fixtures
 - Phase 1 C CLI binary + end-to-end test with byte-perfect oracle comparison vs opj_decompress
