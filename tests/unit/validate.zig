@@ -1570,6 +1570,36 @@ test "cleanroom: MCT + non-uniform sub-sampling is rejected, not a heap OOB (C3)
     try std.testing.expectError(error.MctNonUniformSubsampling, jp2z.internal.decodeCleanroom(std.testing.allocator, &stream));
 }
 
+test "validate: tile delivering fewer packets than COD geometry → truncated_stream (I1)" {
+    // Reviewer I1: the persistent per-tile iterator returns .incomplete when a
+    // tile-part body is consumed exactly on a packet boundary but
+    // packets_seen < total (legit for TNsot>1: "next tile-part coming").
+    // A stream that ends (valid EOC) with such a tile under-delivered must NOT
+    // pass clean — the old walkPackets emitted .truncated_stream for it. Here
+    // the tile-part body is empty while COD requires 1 packet → 0 < total.
+    const stream = [_]u8{
+        0xFF, 0x4F, // SOC
+        // SIZ: 4×4, single tile, 1 comp (Lsiz=41)
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        // COD: num_layers=1, decomp=0 (→ 1 resolution, total=1 packet), 5/3
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        // SOT (Psot=0 → to EOC), SOD, EOC — empty tile-part body (0 packets)
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0x93,
+        0xFF, 0xD9,
+    };
+    var report = try jp2z.validate(std.testing.allocator, &stream);
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(report, .truncated_stream));
+    // (Complete fixtures NOT flagged is covered by the clean-walk tests above,
+    //  which assert no .fail finding for c1_mono/file1/file9/d1_colr.)
+}
+
 const p0_10_j2k = @embedFile("fixtures/conformance/p0_10.j2k");
 
 test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)" {

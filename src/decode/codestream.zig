@@ -913,6 +913,9 @@ fn walkTileParts(
             if (next_pos + 2 != data.len) {
                 try emit(report, allocator, .warn, .truncated_stream, next_pos + 2, null);
             }
+            // I1: a valid EOC doesn't excuse a tile that delivered fewer whole
+            // packets than its COD geometry requires — flag those before exit.
+            try flagIncompleteTiles(report, allocator, &tiles, next_pos);
             return;
         }
         if (data[next_pos] == 0xFF and data[next_pos + 1] == 0x90) {
@@ -921,6 +924,37 @@ fn walkTileParts(
         }
         try emit(report, allocator, .warn, .missing_eoi, next_pos, null);
         return;
+    }
+}
+
+/// At codestream end, flag any tile still in the walk map whose packet
+/// iterator never reached `total` — the stream delivered fewer whole packets
+/// than the COD geometry requires. The persistent per-tile-part walk returns
+/// `.incomplete` for both "more tile-parts coming" (TNsot>1, legit) and "stream
+/// ended short" (truncation); the difference only resolves at stream end, so
+/// the truncation finding lives here. Sorted by Isot so finding order is
+/// deterministic (AutoHashMap iteration order is unspecified).
+fn flagIncompleteTiles(
+    report: *ValidationReport,
+    allocator: Allocator,
+    tiles: *std.AutoHashMap(u16, TileWalk),
+    offset: usize,
+) Allocator.Error!void {
+    const n = tiles.count();
+    if (n == 0) return;
+    const keys = try allocator.alloc(u16, n);
+    defer allocator.free(keys);
+    var ki: usize = 0;
+    var it = tiles.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.packets_seen < kv.value_ptr.total) {
+            keys[ki] = kv.key_ptr.*;
+            ki += 1;
+        }
+    }
+    std.mem.sort(u16, keys[0..ki], {}, std.sort.asc(u16));
+    for (keys[0..ki]) |_| {
+        try emit(report, allocator, .fail, .truncated_stream, offset, null);
     }
 }
 
