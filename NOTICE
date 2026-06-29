@@ -1,0 +1,24 @@
+jp2z — third-party attribution
+==============================
+
+OpenJPEG (BSD-2-Clause)
+-----------------------
+jp2z contains code ported/translated from OpenJPEG (© its authors —
+Université catholique de Louvain et al.; BSD-2-Clause) and links the OpenJPEG
+binary as its Phase-1 decode backend. The full upstream license text and the
+complete list of copyright holders are retained verbatim at:
+
+    THIRD_PARTY/openjpeg-LICENSE.txt
+
+OpenJPEG's role in jp2z:
+  - build-time differential-test oracle (correctness reference), and
+  - the Phase-1 runtime decode backend, linked as `libopenjp2` and retired
+    by Phase 2 (pure-Zig decode).
+
+The pure-Zig decode paths are a from-scratch reimplementation that references
+OpenJPEG's algorithms under its permissive BSD-2-Clause terms. Should any jp2z
+source file become a close translation of an OpenJPEG function, that file
+carries a `// ported from openjpeg <file>, BSD-2-Clause` header in addition to
+this NOTICE.
+
+Upstream: https://github.com/uclouvain/openjpeg

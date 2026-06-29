@@ -82,6 +82,17 @@ have murkier IP — **jp2z targets Part 1 only**.
 ./build_all   # native + cross for all 5 supported platforms
 ```
 
+## Third-party attribution
+
+jp2z contains code ported/translated from [OpenJPEG](https://github.com/uclouvain/openjpeg)
+(© its authors, BSD-2-Clause) and links it as the Phase-1 decode backend. The
+full upstream license text and copyright holders are retained verbatim in
+[`THIRD_PARTY/openjpeg-LICENSE.txt`](THIRD_PARTY/openjpeg-LICENSE.txt); see also
+[`NOTICE`](NOTICE).
+
 ## License
 
-BSD-2 (same as openjpeg, for license compatibility during Phase 1).
+jp2z's own license is **TBD — pending Peter's decision** (jp2z sits in the paid
+Mecha Validate chain and the choice has open-core implications). OpenJPEG's
+permissive BSD-2-Clause means jp2z may be licensed however Peter chooses,
+provided the OpenJPEG attribution above is retained.

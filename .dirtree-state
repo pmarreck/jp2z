@@ -1,6 +1,9 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
+	NOTICE = Third-party attribution (OpenJPEG BSD-2); jp2z own license TBD pending Peter
+	THIRD_PARTY/openjpeg-LICENSE.txt = OpenJPEG BSD-2 license, verbatim copy (attribution for the linked Phase-1 backend / ported algorithms)
+	docs/INTERFACE_CONTRACT.md = Frozen v1 public interface (Zig surface + C ABI + finding registry) consumers pin against; Einstein-gated
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/reconstruct.zig = Cleanroom reconstruct (5/3 + 9/7 + RCT/ICT + level shift) AND deepValidate strict-findings entry point (M7)
 	tests/unit/fixtures/conformance/p0_04.j2k = 9/7 lossy 3-comp+ICT+TERMALL conformance fixture (640x480, PAE<=1)
