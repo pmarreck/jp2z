@@ -714,7 +714,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         try emit(report, allocator, .fail, .bad_marker_length, 4, null);
         return;
     }
-    parseSizBody(report, data[4 .. 4 + lsiz]);
+    try parseSizBody(report, allocator, data[4 .. 4 + lsiz], 2);
 
     // Walk the remaining main-header markers up to SOT/SOD/EOC.
     var pos: usize = 4 + lsiz;
@@ -1507,7 +1507,7 @@ fn isKnownMainHeaderMarker(marker: u16) bool {
 ///   32 YTOsiz u32  tile origin Y
 ///   36 Csiz   u16  component count
 ///   38 ...    3·Csiz bytes of component descriptors
-fn parseSizBody(report: *ValidationReport, body: []const u8) void {
+fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u8, pos: usize) Allocator.Error!void {
     const xsiz = std.mem.readInt(u32, body[4..8], .big);
     const ysiz = std.mem.readInt(u32, body[8..12], .big);
     const xosiz = std.mem.readInt(u32, body[12..16], .big);
@@ -1518,11 +1518,27 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
     const xtosiz = std.mem.readInt(u32, body[28..32], .big);
     const ytosiz = std.mem.readInt(u32, body[32..36], .big);
 
-    if (xsiz <= xosiz or ysiz <= yosiz) return; // leave width/height null
-    report.width = xsiz - xosiz;
-    report.height = ysiz - yosiz;
-    // Seed CodingParams with the SIZ-derived field. Remaining
-    // fields default until parseCodBody overwrites them.
+    // T.800 A.5.1 geometry validation. A hostile-input validator must FLAG
+    // malformed SIZ and bail (leaving coding_params null) BEFORE any
+    // downstream code divides by / indexes with a bad value — never crash:
+    //   C2: descriptor table must fit the marker (Lsiz == 38 + 3·Csiz).
+    //   C4: jp2z's per-component arrays hold 16 → Csiz ∈ [1, 16].
+    //   numTilesXY underflow: tile grid non-degenerate, tile origin ≤ image origin.
+    //   image extent must be positive.
+    if (csiz == 0 or csiz > 16 or
+        body.len < 38 + @as(usize, 3) * @as(usize, csiz) or
+        xtsiz == 0 or ytsiz == 0 or
+        xtosiz > xosiz or ytosiz > yosiz or
+        xsiz <= xosiz or ysiz <= yosiz)
+    {
+        try emit(report, allocator, .fail, .invalid_siz, pos, null);
+        return;
+    }
+
+    // Seed CodingParams with the SIZ-derived fields. Remaining fields default
+    // until parseCodBody overwrites them. width/height/coding_params are only
+    // published after the per-component descriptors validate (C1), so a bad
+    // XRsiz leaves the report un-seeded rather than half-seeded.
     var cp_local: jp2z.CodingParams = .{
         .num_components = csiz,
         .image_x0 = xosiz,
@@ -1532,18 +1548,28 @@ fn parseSizBody(report: *ValidationReport, body: []const u8) void {
         .tile_w = xtsiz,
         .tile_h = ytsiz,
     };
-    const ncomp: usize = @min(@as(usize, csiz), 16);
     var ci: usize = 0;
-    while (ci < ncomp) : (ci += 1) {
+    while (ci < csiz) : (ci += 1) {
         // Each component descriptor is 3 bytes: Ssiz, XRsiz, YRsiz.
         const ssiz = body[38 + ci * 3];
+        const xrsiz = body[38 + ci * 3 + 1];
+        const yrsiz = body[38 + ci * 3 + 2];
+        // C1: sub-sampling factors are divisors (component grid = 1/dx × 1/dy).
+        // T.800 A.5.1 Table A.10 requires XRsiz, YRsiz ∈ [1, 255].
+        if (xrsiz == 0 or yrsiz == 0) {
+            try emit(report, allocator, .fail, .invalid_siz, pos, null);
+            return;
+        }
         cp_local.comp_prec[ci] = (ssiz & 0x7F) + 1;
         if (ssiz & 0x80 != 0) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
-        cp_local.comp_dx[ci] = body[38 + ci * 3 + 1];
-        cp_local.comp_dy[ci] = body[38 + ci * 3 + 2];
+        cp_local.comp_dx[ci] = xrsiz;
+        cp_local.comp_dy[ci] = yrsiz;
     }
+    report.width = xsiz - xosiz;
+    report.height = ysiz - yosiz;
     report.coding_params = cp_local;
 }
+
 
 fn emit(
     report: *ValidationReport,
@@ -1593,7 +1619,7 @@ test "parseSizBody: 41-byte minimum SIZ yields width/height" {
         .findings = .empty,
     };
     defer report.deinit(std.testing.allocator);
-    parseSizBody(&report, &body);
+    try parseSizBody(&report, std.testing.allocator, &body, 0);
     try std.testing.expectEqual(@as(?u32, 303), report.width);
     try std.testing.expectEqual(@as(?u32, 179), report.height);
 }

@@ -54,6 +54,7 @@ pub const FindingCode = enum(u32) {
     truncated_stream         = 3,
     bad_marker_length        = 4,
     unknown_marker           = 5,
+    invalid_siz              = 6,  // SIZ geometry malformed (zero subsampling, bad Lsiz/Csiz, degenerate tile grid)
 
     // ── JPEG 2000 specifics (140..179) — match jpegz numbering ──
     jp2_invalid_signature        = 140,
