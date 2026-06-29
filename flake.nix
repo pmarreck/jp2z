@@ -91,7 +91,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ zigPkg pkgs.hyperfine ];
+          packages = [ zigPkg pkgs.hyperfine pkgs.jq pkgs.coreutils ];
           buildInputs = commonBuildInputs;
           shellHook = ''
             echo "jp2z devShell — zig ${zigPkg.version}, openjpeg ${openjpegLib.version} (Phase 1 backend)"

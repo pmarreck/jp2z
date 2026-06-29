@@ -2,7 +2,22 @@
 
 ## In progress
 
-- [ ] Initial scaffolding (this commit)
+- [x] **Conformance-sweep harness** (2026-06-30). `tools/sweep_one.zig` decodes
+      one fixture per process with `internal.decodeCleanroom` and grades it vs
+      the in-process openjpeg oracle; `./sweep` runs all 57 ISO 15444-4 fixtures
+      and writes `conformance/sweep.ndjson` + `conformance/SCORECARD.md`. Result
+      is deterministic (integer decoder + fixed oracle) so the committed
+      artifacts are a regression net — `jj diff` after re-running surfaces drift.
+      Baseline: **PASS 12, NEAR 1, FAIL 22, skip 21, ERROR 1, CRASH 0**.
+- [ ] **Next Phase-2 target (from the scorecard gap ranking):** the 8-bit FAIL
+      cluster — mono `a3/a5/b1/b3/c2/f1/f2` (303×179×1, max_abs ~180–228) and
+      color `d2/e1/g1–g4` (256×149×3, max_abs ~252–254) — all near-catastrophic,
+      while sibling `a1/a2/c1/d1` PASS byte-exact. The tight clustering implies a
+      small number of shared codec features (codeblock-coding style / precinct /
+      transform variant) whose fix could flip a whole cluster FAIL→PASS. Pick the
+      single shared differentiator next (opj_dump the FAIL vs PASS pair to find
+      it), TDD it. `p1_04` (max_abs 3782) is the separate >8-bit-depth gap tiffz
+      needs; `p0_13` ERROR=NoCodingParams is a header-parse gap.
 
 ## Phase 1 — openjpeg wrapper (working v1)
 

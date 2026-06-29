@@ -69,6 +69,30 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", "Run the jp2z CLI").dependOn(&run_cmd.step);
 
+    // ── Conformance sweep worker (zig build sweep-one) ──────────────
+    // One fixture per process so a panic on an unsupported profile is
+    // isolated; the ./sweep driver builds this then runs the installed
+    // zig-out/bin/jp2z-sweep-one per file with SWEEP_FIXTURE set.
+    const sweep_mod = b.createModule(.{
+        .root_source_file = b.path("tools/sweep_one.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    sweep_mod.addImport("jp2z", jp2z_mod);
+    sweep_mod.addIncludePath(.{ .cwd_relative = openjpeg_include });
+    sweep_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
+    sweep_mod.linkSystemLibrary("openjp2", .{});
+    const sweep_one = b.addExecutable(.{
+        .name = "jp2z-sweep-one",
+        .root_module = sweep_mod,
+    });
+    // Dev/conformance tool — NOT in the default (shipped) install, so
+    // `nix build`/Garnix stay lean. Input arrives via the SWEEP_FIXTURE env
+    // var (0.16 dropped std.process.argsAlloc); the step only builds+installs.
+    const sweep_install = b.addInstallArtifact(sweep_one, .{});
+    b.step("sweep-one", "Build the conformance-sweep worker (input: SWEEP_FIXTURE=<abs-path>)").dependOn(&sweep_install.step);
+
     // ── Tests ──────────────────────────────────────────────────────
     const test_step = b.step("test", "Run unit + CLI tests");
 

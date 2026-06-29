@@ -3,11 +3,15 @@ ver=1.2
 annotate=[
 	NOTICE = Third-party attribution (OpenJPEG BSD-2); jp2z own license TBD pending Peter
 	THIRD_PARTY/openjpeg-LICENSE.txt = OpenJPEG BSD-2 license, verbatim copy (attribution for the linked Phase-1 backend / ported algorithms)
+	conformance/SCORECARD.md = Generated conformance scorecard (by ./sweep): PASS/NEAR/FAIL/skip tally + ranked decode-gap list for Phase-2 prioritization
+	conformance/sweep.ndjson = Generated per-fixture sweep records (self-describing NDJSON, _meta header); committed as the deterministic regression baseline
 	docs/INTERFACE_CONTRACT.md = Frozen v1 public interface (Zig surface + C ABI + finding registry) consumers pin against; Einstein-gated
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/reconstruct.zig = Cleanroom reconstruct (5/3 + 9/7 + RCT/ICT + level shift) AND deepValidate strict-findings entry point (M7)
+	sweep = Conformance-sweep driver: runs sweep_one over all 57 ISO 15444-4 fixtures, writes conformance/{sweep.ndjson,SCORECARD.md}; deterministic regression net
 	tests/unit/fixtures/conformance/p0_04.j2k = 9/7 lossy 3-comp+ICT+TERMALL conformance fixture (640x480, PAE<=1)
 	tests/unit/fixtures/conformance/p0_09.j2k = 9/7 lossy mono conformance fixture (17x37, byte-perfect target)
 	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records
 	tests/unit/fixtures/oracles/d1_colr.t1.bin = OpenJPEG t1 oracle for d1_colr.j2c (pure-MQ, 3-comp MCT, multi-precinct, byte-perfect) — 174 cblk records
+	tools/sweep_one.zig = Conformance-sweep worker: decode+classify ONE fixture per process (decodeCleanroom vs openjpeg oracle); input via SWEEP_FIXTURE env; one JSON record to stderr
 ]
