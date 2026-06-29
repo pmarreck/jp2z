@@ -140,6 +140,21 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     var c: u16 = 0;
     while (c < ncomp) : (c += 1) precs[c] = params.comp_prec[@min(c, 15)];
 
+    // C3 (T.800 Annex G): the inverse MCT mixes the first 3 components
+    // sample-for-sample, so MCT REQUIRES uniform sub-sampling across them.
+    // Non-uniform comp_dx/dy makes the per-component tile buffers different
+    // lengths → inverseRct/inverseIct would read+write past the shorter
+    // planes (silent heap corruption in ReleaseFast). Reject, don't corrupt.
+    if (params.mct and ncomp >= 3) {
+        const dx0 = params.comp_dx[0];
+        const dy0 = params.comp_dy[0];
+        var k: u16 = 1;
+        while (k < 3) : (k += 1) {
+            if (params.comp_dx[@min(k, 15)] != dx0 or params.comp_dy[@min(k, 15)] != dy0)
+                return error.MctNonUniformSubsampling;
+        }
+    }
+
     if (params.wavelet == .reversible_5x3) {
         // ── Lossless 5/3 path (integer), multi-tile + sub-sampling aware ──
         // Reconstruct each tile at COMPONENT resolution (sub-sampled grid,

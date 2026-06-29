@@ -1541,6 +1541,35 @@ test "validate: malformed SIZ geometry → invalid_siz finding, never a crash (C
     try std.testing.expect(!hasFinding(rep0, .invalid_siz));
 }
 
+test "cleanroom: MCT + non-uniform sub-sampling is rejected, not a heap OOB (C3)" {
+    // Reviewer C3: with MCT on, the 3 colour components must share sub-sampling
+    // (T.800 Annex G). The multi-tile commit made per-component tile buffers
+    // component-sized, so comp_dx=[1,2,2] gives tbufs of different lengths →
+    // inverseRct would read/write past the shorter planes. decodeCleanroom
+    // must REJECT, never corrupt the heap. Crafted: 4×4, 3 comps, comp0 dx=1
+    // and comp1/comp2 dx=2, COD mct=1 + 5/3, empty tile-part body.
+    const stream = [_]u8{
+        0xFF, 0x4F, // SOC
+        // SIZ: Lsiz=0x2F=47, 3 comps, dx=[1,2,2]
+        0xFF, 0x51, 0x00, 0x2F, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, // Xsiz/Ysiz=4
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // XOsiz/YOsiz=0
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, // XTsiz/YTsiz=4
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // XTOsiz/YTOsiz=0
+        0x00, 0x03, // Csiz=3
+        0x07, 0x01, 0x01, // comp0: 8-bit, dx=dy=1
+        0x07, 0x02, 0x02, // comp1: 8-bit, dx=dy=2
+        0x07, 0x02, 0x02, // comp2: 8-bit, dx=dy=2
+        // COD: Lcod=0x0C=12, mct=1 (body[4]), 5/3 (qmfbid=1)
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x04, 0x04, 0x00, 0x01,
+        // SOT (Psot=0 → to EOC), SOD, EOC
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0x93,
+        0xFF, 0xD9,
+    };
+    try std.testing.expectError(error.MctNonUniformSubsampling, jp2z.internal.decodeCleanroom(std.testing.allocator, &stream));
+}
+
 const p0_10_j2k = @embedFile("fixtures/conformance/p0_10.j2k");
 
 test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)" {
