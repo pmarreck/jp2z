@@ -395,8 +395,34 @@ test "dequantScaleQ: stepsize=1 (mant=0, expn=prec) gives 0.5 in Q16" {
 
 /// Append a finding to a report and escalate its overall severity.
 fn appendFinding(report: *codestream.ValidationReport, allocator: Allocator, sev: codestream.Severity, code: codestream.FindingCode, detail: ?[]const u8) Allocator.Error!void {
+    // Take ownership of `detail`: on success the finding owns it (freed by
+    // report.deinit); on append-OOM free it here so the caller's allocPrint'd
+    // string never leaks (reviewer C1, mirrors codestream.emit's errdefer).
+    errdefer if (detail) |d| allocator.free(d);
     try report.findings.append(allocator, .{ .severity = sev, .code = code, .offset = null, .detail = detail });
     if (@intFromEnum(sev) > @intFromEnum(report.overall)) report.overall = sev;
+}
+
+test "appendFinding frees caller detail when findings.append OOMs (reviewer C1)" {
+    const testing = std.testing;
+    var report = codestream.ValidationReport{
+        .overall = .pass,
+        .variant = .unknown,
+        .width = null,
+        .height = null,
+        .findings = .empty,
+    };
+    defer report.deinit(testing.allocator);
+    // Fail the SECOND allocation: index 0 = the detail dupe (succeeds, as
+    // deepValidate's allocPrint would), index 1 = findings.append's grow
+    // (fails). appendFinding must free `detail` on that unwind — otherwise
+    // std.testing.allocator reports a leak when this test ends.
+    var fa = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    const a = fa.allocator();
+    const detail = try a.dupe(u8, "caller-owned detail");
+    const r = appendFinding(&report, a, .warn, .coding_pass_overflow, detail);
+    try testing.expectError(error.OutOfMemory, r);
+    try testing.expectEqual(@as(usize, 0), report.findings.items.len);
 }
 
 /// Strict deep validation: the structural walk PLUS a full entropy decode

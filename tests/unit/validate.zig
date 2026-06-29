@@ -1408,6 +1408,7 @@ test "deepValidate strict: entropy corruption escalates report to FAIL" {
     try std.testing.expect(any_fail);
 }
 
+
 test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ignored; baseline does not" {
     // Reviewer I1: per-component/ROI/progression override markers that jp2z
     // does not yet apply must be SURFACED (not silently skipped), so a

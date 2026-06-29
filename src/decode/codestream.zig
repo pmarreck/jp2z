@@ -918,7 +918,7 @@ fn walkTileParts(
 
 /// Parse a COD (Coding Style Default) marker body. T.800 A.6.1:
 ///
-///   Scod   u8   coding style flags (bit 0 = SOP, bit 1 = EPH, …)
+///   Scod   u8   coding style (bit 0 = user precincts, bit 1 = SOP, bit 2 = EPH)
 ///   SGcod  5 bytes  (progression order, num_layers, MCT)
 ///   SPcod  ≥5 bytes (decomp, cblkw, cblkh, cblksty, qmfbid, ...)
 ///
