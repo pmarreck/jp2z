@@ -43,14 +43,47 @@ pub const Image = struct {
 inline fn ceilDiv(a: u32, b: u32) u32 {
     return (a + b - 1) / b;
 }
+
+/// Order plans by (tile, component) so they can be bucketed by a single
+/// forward sweep instead of an O(tiles·components·plans) re-scan.
+fn planTileCompLess(_: void, a: cblk_plan.CblkDecodePlan, b: cblk_plan.CblkDecodePlan) bool {
+    if (a.tile != b.tile) return a.tile < b.tile;
+    return a.component < b.component;
+}
+
+/// True if `plan` sorts strictly before (tile, component).
+fn planBeforeTileComp(plan: cblk_plan.CblkDecodePlan, tile: u32, component: u16) bool {
+    if (plan.tile != tile) return plan.tile < tile;
+    return plan.component < component;
+}
+
+/// Bucket lookup over plans sorted by planTileCompLess: return the contiguous
+/// run matching (tile, component), advancing `cursor` past it. Visiting every
+/// (tile, component) in ascending order touches each plan exactly once, so the
+/// whole reconstruction sweep is O(plans) — not O(tiles·components·plans).
+/// complexity: O(plans) amortized across a full ascending sweep.
+fn planRangeFor(
+    plans: []const cblk_plan.CblkDecodePlan,
+    cursor: *usize,
+    tile: u32,
+    component: u16,
+) []const cblk_plan.CblkDecodePlan {
+    // Defensive: skip any plan ordered before (tile, component) (none, given an
+    // ascending sweep over valid tags — guards against a stuck cursor).
+    while (cursor.* < plans.len and planBeforeTileComp(plans[cursor.*], tile, component)) cursor.* += 1;
+    const start = cursor.*;
+    while (cursor.* < plans.len and plans[cursor.*].tile == tile and plans[cursor.*].component == component) cursor.* += 1;
+    return plans[start..cursor.*];
+}
 /// Assemble + inverse-DWT one component's tile buffer from its plans.
 /// Returns an `image_w × image_h` i32 buffer of spatial samples
 /// (pre level-shift, pre-MCT). Caller owns it.
 pub fn reconstructComponentTile(
     allocator: Allocator,
+    // Pre-filtered to a single (tile, component) — the caller buckets plans by
+    // (tile, component) once so each plan is visited O(1) times (was a
+    // quadratic full re-scan per tile×component).
     plans: []const cblk_plan.CblkDecodePlan,
-    tile_index: u32,
-    component: u16,
     image_w: u32,
     image_h: u32,
     num_decomp: u8,
@@ -61,8 +94,6 @@ pub fn reconstructComponentTile(
     errdefer allocator.free(buf);
 
     for (plans) |plan| {
-        if (plan.tile != tile_index) continue;
-        if (plan.component != component) continue;
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
 
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
@@ -129,6 +160,11 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
 
     var list = try codestream.extractCblkPlans(allocator, data);
     defer list.deinit(allocator);
+    // Bucket plans by (tile, component) once. The reconstruction sweep then
+    // visits each plan O(1) times via a forward cursor (planRangeFor), instead
+    // of re-scanning the whole flat list per tile×component — which was
+    // quadratic in tile count (the fleet Big-O gate). complexity: O(plans).
+    std.mem.sort(cblk_plan.CblkDecodePlan, list.plans, {}, planTileCompLess);
 
     const planes = try allocator.alloc([]i32, ncomp);
     errdefer allocator.free(planes);
@@ -189,6 +225,9 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
 
         const nt = params.numTilesXY(xsiz, ysiz);
         const num_tiles = nt.x * nt.y;
+        // Forward cursor over the (tile, component)-sorted plans. The tile×comp
+        // loops below visit keys in ascending order, so this touches each plan once.
+        var plan_cursor: usize = 0;
         var t: u32 = 0;
         while (t < num_tiles) : (t += 1) {
             const tr = params.tileRect(xsiz, ysiz, t);
@@ -218,7 +257,8 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
                     .ox = tcx0 - ceilDiv(params.image_x0, dx),
                     .oy = tcy0 - ceilDiv(params.image_y0, dy),
                 };
-                tbufs[c] = try reconstructComponentTile(allocator, list.plans, t, c, tcw, tch, params.num_decomp_levels);
+                const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
+                tbufs[c] = try reconstructComponentTile(allocator, tc_plans, tcw, tch, params.num_decomp_levels);
                 tb_done += 1;
             }
 
@@ -438,6 +478,49 @@ test "appendFinding frees caller detail when findings.append OOMs (reviewer C1)"
     const r = appendFinding(&report, a, .warn, .coding_pass_overflow, detail);
     try testing.expectError(error.OutOfMemory, r);
     try testing.expectEqual(@as(usize, 0), report.findings.items.len);
+}
+
+test "planRangeFor buckets sorted plans, visiting each exactly once (reviewer I2: O(plans))" {
+    const Plan = cblk_plan.CblkDecodePlan;
+    var empty = [_]u8{};
+    const e: []u8 = &empty;
+    const mk = struct {
+        fn f(tile: u32, comp: u16, data: []u8) Plan {
+            return .{
+                .tile = tile, .component = comp, .resolution = 0, .band = 0,
+                .precinct = 0, .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 0, .sb_y1 = 0,
+                .zero_bitplanes = 0, .numbps = 0, .total_passes = 0, .cblksty = 0,
+                .data = data,
+            };
+        }
+    }.f;
+    // 3 tiles × 2 components, uneven counts, incl. an EMPTY (tile=1,comp=0) bucket.
+    var plans = [_]Plan{
+        mk(0, 0, e), mk(0, 0, e), mk(0, 1, e),
+        mk(1, 1, e),
+        mk(2, 0, e), mk(2, 1, e), mk(2, 1, e),
+    };
+    std.mem.sort(Plan, &plans, {}, planTileCompLess);
+
+    // Sweep (tile, component) ascending — the order decodeCleanroom uses.
+    var cursor: usize = 0;
+    var total_visited: usize = 0;
+    var tile: u32 = 0;
+    while (tile < 3) : (tile += 1) {
+        var comp: u16 = 0;
+        while (comp < 2) : (comp += 1) {
+            const r = planRangeFor(&plans, &cursor, tile, comp);
+            for (r) |pl| {
+                try std.testing.expectEqual(tile, pl.tile);
+                try std.testing.expectEqual(comp, pl.component);
+            }
+            total_visited += r.len;
+        }
+    }
+    // Every plan landed in exactly its bucket; the cursor consumed the whole
+    // list once → O(plans), not O(tiles·components·plans).
+    try std.testing.expectEqual(@as(usize, plans.len), total_visited);
+    try std.testing.expectEqual(plans.len, cursor);
 }
 
 /// Strict deep validation: the structural walk PLUS a full entropy decode
