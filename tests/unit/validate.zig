@@ -1486,7 +1486,7 @@ test "validate: tile-part-header COC/QCC/RGN/POC each emit jp2_unsupported_marke
     }
 }
 
-test "validate: malformed SIZ geometry → invalid_siz finding, never a crash (C1/C2/C4)" {
+test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a crash (C1/C2/C4)" {
     // A hostile-input validator must FLAG malformed SIZ, never divide-by-zero
     // (XRsiz=0), OOB-read the descriptor table (Lsiz<38+3·Csiz), or overflow a
     // [16] array (Csiz>16). Classifier over the malformed set; the well-formed
@@ -1539,13 +1539,13 @@ test "validate: malformed SIZ geometry → invalid_siz finding, never a crash (C
     inline for (malformed) |stream| {
         var report = try jp2z.validate(std.testing.allocator, &stream);
         defer report.deinit(std.testing.allocator);
-        try std.testing.expect(hasFinding(report, .invalid_siz));
+        try std.testing.expect(hasFinding(report, .jp2_invalid_siz));
     }
-    // Well-formed SIZ: no invalid_siz.
+    // Well-formed SIZ: no jp2_invalid_siz.
     const ok = soc ++ siz_ok ++ eoc;
     var rep0 = try jp2z.validate(std.testing.allocator, &ok);
     defer rep0.deinit(std.testing.allocator);
-    try std.testing.expect(!hasFinding(rep0, .invalid_siz));
+    try std.testing.expect(!hasFinding(rep0, .jp2_invalid_siz));
 }
 
 test "cleanroom: MCT + non-uniform sub-sampling is rejected, not a heap OOB (C3)" {

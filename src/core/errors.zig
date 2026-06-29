@@ -54,7 +54,6 @@ pub const FindingCode = enum(u32) {
     truncated_stream         = 3,
     bad_marker_length        = 4,
     unknown_marker           = 5,
-    invalid_siz              = 6,  // SIZ geometry malformed (zero subsampling, bad Lsiz/Csiz, degenerate tile grid)
 
     // ── JPEG 2000 specifics (140..179) — match jpegz numbering ──
     jp2_invalid_signature        = 140,
@@ -67,15 +66,19 @@ pub const FindingCode = enum(u32) {
     /// COD/QCD defaults. Surfaced so consumers aren't silently misled
     /// (validate's "stricter than openjpeg" contract). See reviewer I1.
     jp2_unsupported_marker_ignored = 145,
+    /// SIZ geometry malformed — zero subsampling (XRsiz/YRsiz=0), bad
+    /// Lsiz/Csiz, or degenerate tile grid. Renumbered 6→146 per Einstein
+    /// registry reconciliation (6 collided with jpegz duplicate_sof).
+    jp2_invalid_siz                = 146,
 
     // ── Informational (200..249) — match jpegz numbering ─────────
     jp2_uses_9x7_wavelet     = 207,
     jp2_uses_5x3_wavelet     = 208,
-    jp2_packets_walked_to_end = 209,  // walker consumed every byte of every tile-part body
 
     // ── Tier-2 / packet integrity (250..299) ─────────────────────
     jp2_packets_under_read   = 250,  // walker stopped before tp_body.len — possible per-cblk decode bug
     entropy_over_read        = 251,  // MQ/RAW decoder synthesized >2 past-end 0xFF — truncated entropy data
     entropy_under_read       = 252,  // cblk had leftover unconsumed bytes — length/data inconsistency
     coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2 (impossible — corrupt header)
+    jp2_packets_walked_to_end = 254,  // walker consumed every tile-part body byte (renumbered 209→254 per Einstein: 209 collided with jpegz jfif_metadata_present)
 };

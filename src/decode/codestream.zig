@@ -1564,7 +1564,7 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         xtosiz > xosiz or ytosiz > yosiz or
         xsiz <= xosiz or ysiz <= yosiz)
     {
-        try emit(report, allocator, .fail, .invalid_siz, pos, null);
+        try emit(report, allocator, .fail, .jp2_invalid_siz, pos, null);
         return;
     }
 
@@ -1590,7 +1590,7 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         // C1: sub-sampling factors are divisors (component grid = 1/dx × 1/dy).
         // T.800 A.5.1 Table A.10 requires XRsiz, YRsiz ∈ [1, 255].
         if (xrsiz == 0 or yrsiz == 0) {
-            try emit(report, allocator, .fail, .invalid_siz, pos, null);
+            try emit(report, allocator, .fail, .jp2_invalid_siz, pos, null);
             return;
         }
         cp_local.comp_prec[ci] = (ssiz & 0x7F) + 1;

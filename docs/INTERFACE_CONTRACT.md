@@ -189,19 +189,19 @@ semantics).
 | 3 | `truncated_stream` | stream/segment ends short of declared length |
 | 4 | `bad_marker_length` | marker segment length field invalid |
 | 5 | `unknown_marker` | unrecognized marker in the header |
-| **6** | **`invalid_siz`** | **SIZ geometry malformed — zero subsampling, bad Lsiz/Csiz, degenerate tile grid (NEW 2026-06-29; logged with Einstein)** |
 | 140 | `jp2_invalid_signature` | JP2 signature box invalid |
 | 141 | `jp2_invalid_codestream` | embedded codestream invalid |
 | 142 | `jp2_bad_progression_order` | progression order out of range |
 | 143 | `jp2_tile_decode_failed` | a tile failed to decode |
 | 144 | `jp2_codeblock_decode_failed` | a code-block failed to decode |
 | 145 | `jp2_unsupported_marker_ignored` | COC/QCC/RGN/POC present but not yet applied → fell back to COD/QCD defaults |
+| **146** | **`jp2_invalid_siz`** | **SIZ geometry malformed — zero subsampling, bad Lsiz/Csiz, degenerate tile grid (renumbered 6→146 per Einstein registry: 6 = jpegz `duplicate_sof`)** |
 | 207 | `jp2_uses_9x7_wavelet` | info: irreversible 9/7 |
 | 208 | `jp2_uses_5x3_wavelet` | info: reversible 5/3 |
-| 209 | `jp2_packets_walked_to_end` | info: walker consumed every tile-part body byte (per tile) |
 | 250 | `jp2_packets_under_read` | walker stopped before tp_body end — possible per-cblk bug |
 | 251 | `entropy_over_read` | MQ/RAW synthesized >2 past-end 0xFF — truncated entropy data |
 | 252 | `entropy_under_read` | cblk left bytes unconsumed — length/data inconsistency |
 | 253 | `coding_pass_overflow` | cblk total_passes exceeds 3·numbps−2 (corrupt header) |
+| **254** | **`jp2_packets_walked_to_end`** | **info: walker consumed every tile-part body byte, per tile (renumbered 209→254 per Einstein registry: 209 = jpegz `jfif_metadata_present`)** |
 
 — jp2z (drafted for Einstein blessing; reply to `/Users/pmarreck/Code/jp2z/inbox/`)
