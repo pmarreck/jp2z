@@ -9,15 +9,22 @@
       is deterministic (integer decoder + fixed oracle) so the committed
       artifacts are a regression net — `jj diff` after re-running surfaces drift.
       Baseline: **PASS 12, NEAR 1, FAIL 22, skip 21, ERROR 1, CRASH 0**.
-- [ ] **Next Phase-2 target (from the scorecard gap ranking):** the 8-bit FAIL
-      cluster — mono `a3/a5/b1/b3/c2/f1/f2` (303×179×1, max_abs ~180–228) and
-      color `d2/e1/g1–g4` (256×149×3, max_abs ~252–254) — all near-catastrophic,
-      while sibling `a1/a2/c1/d1` PASS byte-exact. The tight clustering implies a
-      small number of shared codec features (codeblock-coding style / precinct /
-      transform variant) whose fix could flip a whole cluster FAIL→PASS. Pick the
-      single shared differentiator next (opj_dump the FAIL vs PASS pair to find
-      it), TDD it. `p1_04` (max_abs 3782) is the separate >8-bit-depth gap tiffz
-      needs; `p0_13` ERROR=NoCodingParams is a header-parse gap.
+- [ ] **Next Phase-2 target — general multi-tile 5/3 reconstruction (TNsot=1
+      grids).** opj_dump diff (a1 PASS vs a3 FAIL) confirmed the dominant FAIL
+      cause: every 8-bit PASS fixture is **single-tile** (`tw=1,th=1`), and the
+      mono `a3/a5/b1/f1` + color `d2/e1/g1` FAILs are **multi-tile grids**
+      (e.g. a3 = 3×2 tiles, tdx=137 tdy=131; b1 = 5×3) with `qntsty=0` (5/3
+      reversible). The existing multi-tile path is byte-perfect only for p0_10
+      (subsampling + TNsot>1, **even** tile origins / cas=0); these plain TNsot=1
+      grids have non-origin tiles at odd coords (x=137, y=131) → the inverse DWT
+      needs `cas = tile_resolution_origin % 2` threaded per tile (M6 remaining
+      item). Likely flips ~7 fixtures at once. TDD vs opj_decompress planar.
+- [ ] **Separate single-tile bug — c2_mono** (303×179, `tw=1,th=1`, FAIL
+      max_abs 180). NOT multi-tile, so a distinct second cause from c1 (PASS).
+      opj_dump c1 vs c2 to isolate before lumping it with the tile work.
+- [ ] **>8-bit depth — p1_04** (max_abs 3782, the tiffz/pathology gap) and
+      **p0_13** ERROR=NoCodingParams (header-parse gap) — both lower priority
+      than the tile cluster but tracked.
 
 ## Phase 1 — openjpeg wrapper (working v1)
 
