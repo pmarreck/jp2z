@@ -26,6 +26,17 @@
           but still off; image-origin handling in tile geometry needs a look.
 - [ ] **Next: unblock a stacked feature** — SOP/EPH markers (a5 + others) or tier-1
       VSC/RESET/SEGSYM (c2). Both independent of the now-correct tiling. TDD vs openjpeg.
+- [x] **Reviewer catch — reject user-precinct PPx/PPy=0 at r>0** (2026-06-30, commit
+      ba313895). jp2z-reviewer's audit of the multi-tile commit found a reachable crash
+      on the shipped validate() path (u6 underflow in TileWalk.init). `parseCodBody` now
+      flags `.jp2_invalid_codestream` + un-publishes coding_params; `precinctCblkGeom`
+      guards pdx/pdy==0. TDD classifier fixture; 224 tests; existing code 141 (no registry
+      change).
+- [ ] **Sweep upgrade — prefer committed `.pix` planar oracle** (reviewer minor). The
+      sweep's in-process wrapper oracle upsamples+interleaves, so sub-sampled byte-exact
+      fixtures (p0_10) report DECODED not PASS → PASS is a conservative undercount. When a
+      fixture has `tests/unit/fixtures/oracles/<name>.pix`, have `sweep_one` diff THAT
+      (planar, component-res) instead. Reclassifies p0_10 as a true PASS.
 - [ ] **>8-bit depth — p1_04** (max_abs 3782, the tiffz/pathology gap) and
       **p0_13** ERROR=NoCodingParams (header-parse gap) — both lower priority
       than the tile cluster but tracked.
