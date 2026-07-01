@@ -1,6 +1,7 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
+	LICENSE = MIT License (c) 2026 Peter Marreck + OpenJPEG BSD-2 third-party notice (Einstein/Peter ruling 2026-06-30)
 	NOTICE = Third-party attribution (OpenJPEG BSD-2); jp2z own license TBD pending Peter
 	THIRD_PARTY/openjpeg-LICENSE.txt = OpenJPEG BSD-2 license, verbatim copy (attribution for the linked Phase-1 backend / ported algorithms)
 	conformance/SCORECARD.md = Generated conformance scorecard (by ./sweep): PASS/NEAR/FAIL/skip tally + ranked decode-gap list for Phase-2 prioritization

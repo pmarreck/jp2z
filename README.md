@@ -92,7 +92,8 @@ full upstream license text and copyright holders are retained verbatim in
 
 ## License
 
-jp2z's own license is **TBD — pending Peter's decision** (jp2z sits in the paid
-Mecha Validate chain and the choice has open-core implications). OpenJPEG's
-permissive BSD-2-Clause means jp2z may be licensed however Peter chooses,
-provided the OpenJPEG attribution above is retained.
+jp2z is licensed under the **MIT License** (© 2026 Peter Marreck) — see
+[`LICENSE`](LICENSE). It is Peter's own from-scratch reimplementation. OpenJPEG's
+permissive BSD-2-Clause is fully compatible; its attribution above, in
+[`THIRD_PARTY/openjpeg-LICENSE.txt`](THIRD_PARTY/openjpeg-LICENSE.txt), and in
+[`NOTICE`](NOTICE) is retained as required.
