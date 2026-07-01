@@ -47,3 +47,19 @@ port): `std.process.argsAlloc` (read args/env via `std.c.getenv` + `std.mem.span
 with link_libc, exactly like `tests/unit/decode.zig` reads OPENJPEG_DATA), and
 `std.io.getStdOut` / `std.io.fixedBufferStream` (route simple output through
 `std.debug.print`, which writes stderr — have the consumer grep for it).
+
+## codescan edits: line hashes recompute on EVERY edit (2026-06-30)
+
+`codescan replace-lines --from <line:hash>` validates the target by hashline,
+but a single edit anywhere in the file **re-salts every line's hash** (not just
+changed lines). So you cannot pre-fetch a batch of `line:hash` pairs and chain
+`replace-lines` calls — the second call fails "hashline mismatch". Two working
+patterns for multi-site mechanical edits in one file:
+  - Prefer **`replace-content '<needle>'`** (content-addressed, needs only
+    `--version`, not per-line hashes). Chain by capturing the new `version:`
+    from each call's output. Use `--all` for intended duplicates.
+  - `replace-symbol <name>` for whole-function swaps (also `--version`).
+Both `replace-lines` and `replace-content`/`replace-symbol` REQUIRE `--version`
+(re-fetch after every edit). `replace-content` takes the replacement on **stdin**
+(`printf '%s' "$repl" | codescan replace-content ...`) — omitting stdin deletes
+the match.
