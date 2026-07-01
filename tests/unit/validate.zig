@@ -880,6 +880,7 @@ test "decodePlan: c1_mono.j2c — every cblk runs through EBCOT without crash" {
 /// produced inside `opj_t1_decode_cblk`, BEFORE dequantisation.
 const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
+const f1_mono_j2c = @embedFile("fixtures/conformance/f1_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
@@ -1243,6 +1244,29 @@ test "cleanroom: p0_10 multi-tile sub-sampled pixels match opj_decompress (4 til
     }
 }
 
+test "cleanroom: f1_mono multi-tile (3x3 grid, odd X tile origin) byte-exact vs openjpeg" {
+    // f1_mono is 303x179, image origin (0,0), 3x3 tiles (tdx=101, tdy=70): the
+    // MIDDLE tile column starts at the ODD reference-grid x=101. 5/3 reversible
+    // ⇒ byte-EXACT. Exercises the origin-aware inverse-DWT parity (cas=res.x0%2)
+    // AND the absolute-coordinate code-block partition — an interior tile whose
+    // band crosses a code-block boundary yields a different (correct) cblk count
+    // than a naive subband-internal split, the bug that desynced multi-tile
+    // packet parsing. Non-sub-sampled mono ⇒ the wrapper oracle is comparable.
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, f1_mono_j2c);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, f1_mono_j2c);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 1), img.num_components);
+    try std.testing.expectEqual(oracle.pixels.len, img.planes[0].len);
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, s) != @as(i32, oracle.pixels[i])) {
+            const w = img.width;
+            std.debug.print("\n[f1] mismatch at ({d},{d}): ours={d} oj={d}\n", .{ i % w, i / w, s, oracle.pixels[i] });
+            return error.PixelMismatch;
+        }
+    }
+}
 test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
     const allocator = std.testing.allocator;
     var img = try jp2z.internal.decodeCleanroom(allocator, p0_09_j2k);

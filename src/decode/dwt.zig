@@ -97,6 +97,8 @@ pub fn idwt53(
     allocator: std.mem.Allocator,
     tile: []i32,
     tile_w: u32,
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp: u8,
@@ -110,8 +112,8 @@ pub fn idwt53(
 
     var r: u8 = 1;
     while (r <= num_decomp) : (r += 1) {
-        const cur = subbands.resolutionExtent(image_w, image_h, num_decomp, r);
-        const prev = subbands.resolutionExtent(image_w, image_h, num_decomp, r - 1);
+        const cur = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, r);
+        const prev = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, r - 1);
         const rw = cur.width;
         const rh = cur.height;
         if (rw == 0 or rh == 0) continue;
@@ -119,9 +121,11 @@ pub fn idwt53(
         const dn_h = rw - prev.width;
         const sn_v = prev.height;
         const dn_v = rh - prev.height;
-        // Tile origin (0,0): resolution origins are 0 ⇒ cas = 0 on both axes.
-        const cas_x: u1 = 0;
-        const cas_y: u1 = 0;
+        // Inverse-DWT parity = parity of the resolution being computed, in
+        // tile-component coords (T.800 / openjpeg opj_dwt_decode: cas = tr->x0 % 2).
+        // Interior tiles at odd origins ⇒ cas = 1; only origin-(0,0) gives cas 0.
+        const cas_x: u1 = @intCast(cur.x0 & 1);
+        const cas_y: u1 = @intCast(cur.y0 & 1);
 
         // Horizontal pass: every row, transform its first `rw` samples.
         var j: usize = 0;
@@ -141,6 +145,7 @@ pub fn idwt53(
         }
     }
 }
+
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -238,7 +243,7 @@ test "idwt53: 2D round-trip via separable forward (cas 0, full-image)" {
         while (k < h) : (k += 1) img[k * w + i] = coltmp[k];
     }
     // Now `img` is the 1-level Mallat buffer. Invert (num_decomp=1).
-    try idwt53(allocator, &img, w, w, h, 1);
+    try idwt53(allocator, &img, w, 0, 0, w, h, 1);
     try std.testing.expectEqualSlices(i32, &orig, &img);
 }
 
@@ -351,6 +356,8 @@ pub fn idwt97(
     allocator: std.mem.Allocator,
     tile: []i64,
     tile_w: u32,
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp: u8,
@@ -364,8 +371,8 @@ pub fn idwt97(
 
     var r: u8 = 1;
     while (r <= num_decomp) : (r += 1) {
-        const cur = subbands.resolutionExtent(image_w, image_h, num_decomp, r);
-        const prev = subbands.resolutionExtent(image_w, image_h, num_decomp, r - 1);
+        const cur = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, r);
+        const prev = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, r - 1);
         const rw = cur.width;
         const rh = cur.height;
         if (rw == 0 or rh == 0) continue;
@@ -373,21 +380,25 @@ pub fn idwt97(
         const dn_h = rw - prev.width;
         const sn_v = prev.height;
         const dn_v = rh - prev.height;
+        // Parity of the resolution being computed (tile-component coords).
+        const cas_x: u1 = @intCast(cur.x0 & 1);
+        const cas_y: u1 = @intCast(cur.y0 & 1);
         var j: usize = 0;
         while (j < rh) : (j += 1) {
             const base = j * tile_w;
-            idwt97Line(tile[base .. base + rw], sn_h, dn_h, 0, tmp);
+            idwt97Line(tile[base .. base + rw], sn_h, dn_h, cas_x, tmp);
         }
         var i: usize = 0;
         while (i < rw) : (i += 1) {
             var k: usize = 0;
             while (k < rh) : (k += 1) col[k] = tile[k * tile_w + i];
-            idwt97Line(col[0..rh], sn_v, dn_v, 0, tmp);
+            idwt97Line(col[0..rh], sn_v, dn_v, cas_y, tmp);
             k = 0;
             while (k < rh) : (k += 1) tile[k * tile_w + i] = col[k];
         }
     }
 }
+
 
 test "idwt97Line: identity-ish — all-zero stays zero, single low sample passes K scale" {
     var line = [_]i64{Q97_ONE}; // value 1.0 in Q16, single low sample

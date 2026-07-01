@@ -9,19 +9,23 @@
       is deterministic (integer decoder + fixed oracle) so the committed
       artifacts are a regression net — `jj diff` after re-running surfaces drift.
       Baseline: **PASS 12, NEAR 1, FAIL 22, skip 21, ERROR 1, CRASH 0**.
-- [ ] **Next Phase-2 target — general multi-tile 5/3 reconstruction (TNsot=1
-      grids).** opj_dump diff (a1 PASS vs a3 FAIL) confirmed the dominant FAIL
-      cause: every 8-bit PASS fixture is **single-tile** (`tw=1,th=1`), and the
-      mono `a3/a5/b1/f1` + color `d2/e1/g1` FAILs are **multi-tile grids**
-      (e.g. a3 = 3×2 tiles, tdx=137 tdy=131; b1 = 5×3) with `qntsty=0` (5/3
-      reversible). The existing multi-tile path is byte-perfect only for p0_10
-      (subsampling + TNsot>1, **even** tile origins / cas=0); these plain TNsot=1
-      grids have non-origin tiles at odd coords (x=137, y=131) → the inverse DWT
-      needs `cas = tile_resolution_origin % 2` threaded per tile (M6 remaining
-      item). Likely flips ~7 fixtures at once. TDD vs opj_decompress planar.
-- [ ] **Separate single-tile bug — c2_mono** (303×179, `tw=1,th=1`, FAIL
-      max_abs 180). NOT multi-tile, so a distinct second cause from c1 (PASS).
-      opj_dump c1 vs c2 to isolate before lumping it with the tile work.
+- [x] **Multi-tile 5/3 origin-aware geometry + absolute cblk anchoring** (2026-06-30).
+      Root-caused the FAIL cluster: geometry assumed tile origin (0,0). Two fixes, both
+      matching openjpeg: (1) the whole subband/resolution geometry threads the
+      tile-component origin — inverse-DWT parity `cas = res.x0 % 2` + the per-level
+      `sn/dn` split (`subbands`/`dwt`/`reconstruct`/`codestream`.zig); (2) the code-block
+      partition now anchors to ABSOLUTE band coords (`precinctCblkGeom`), so an interior
+      tile whose band crosses a cblk boundary gets the correct cblk COUNT — the
+      off-by-one that desynced packet parsing. **a3 + f1 now byte-EXACT** vs openjpeg
+      (sweep PASS 12→14); f1 is the committed TDD test; 223 tests, no regressions.
+      The other "cluster" fixtures each STACK another unimplemented feature (the M6 KEY
+      LESSON), so they still FAIL on THAT, not tiling:
+        - `a5`, some `g*`: SOP/EPH packet markers (`csty=0x6`).
+        - `c2` (single-tile): VSC/RESET/SEGSYM coding styles (`cblksty=0x2f`).
+        - `b1`: non-zero IMAGE origin (XOsiz=3097)+tile-grid origin — improved 223→195
+          but still off; image-origin handling in tile geometry needs a look.
+- [ ] **Next: unblock a stacked feature** — SOP/EPH markers (a5 + others) or tier-1
+      VSC/RESET/SEGSYM (c2). Both independent of the now-correct tiling. TDD vs openjpeg.
 - [ ] **>8-bit depth — p1_04** (max_abs 3782, the tiffz/pathology gap) and
       **p0_13** ERROR=NoCodingParams (header-parse gap) — both lower priority
       than the tile cluster but tracked.

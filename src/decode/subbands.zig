@@ -44,16 +44,33 @@ pub const GridSize = struct {
     height: u32,
 };
 
-/// Full extent (the LL "image" plus accumulated HF detail) at the
-/// given resolution. For r = num_decomp_levels (= R), this returns
-/// the original image size.
-pub fn resolutionExtent(image_w: u32, image_h: u32, num_decomp_levels: u8, r: u8) GridSize {
+/// Resolution rectangle in tile-component coordinates (origin-aware).
+/// x0/x1/y0/y1 are absolute tile-component coords; width/height are the
+/// sample extents. Needed because the inverse DWT parity (cas) and the
+/// per-level subband split depend on the ABSOLUTE origin, not just the size.
+pub const ResRect = struct {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    width: u32,
+    height: u32,
+};
+
+/// Full extent (the LL "image" plus accumulated HF detail) at the given
+/// resolution, in tile-component coordinates. `tile_x0`/`tile_y0` are the
+/// tile-component ORIGIN (0,0 for a single tile at image origin, non-zero
+/// for interior tiles of a multi-tile image). T.800 B.5:
+///   res.x0 = ceildiv(tile_x0, 2^(R-r)); res.x1 = ceildiv(tile_x0+w, 2^(R-r)).
+/// For r = num_decomp_levels this returns the full tile-component size.
+pub fn resolutionExtent(tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32, num_decomp_levels: u8, r: u8) ResRect {
     std.debug.assert(r <= num_decomp_levels);
     const shift: u5 = @intCast(num_decomp_levels - r);
-    return .{
-        .width = ceilShift(image_w, shift),
-        .height = ceilShift(image_h, shift),
-    };
+    const x0 = ceilShift(tile_x0, shift);
+    const y0 = ceilShift(tile_y0, shift);
+    const x1 = ceilShift(tile_x0 + image_w, shift);
+    const y1 = ceilShift(tile_y0 + image_h, shift);
+    return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1, .width = x1 - x0, .height = y1 - y0 };
 }
 
 /// Number of subbands at resolution r: 1 (LL) at r=0, 3 (HL/LH/HH) at r>=1.
@@ -65,6 +82,8 @@ pub fn subbandCount(r: u8) u8 {
 /// At r == 0, only i == 0 is valid (LL). At r >= 1, i == 0/1/2 maps
 /// to HL/LH/HH respectively.
 pub fn subbandDims(
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp_levels: u8,
@@ -73,11 +92,11 @@ pub fn subbandDims(
 ) SubbandInfo {
     std.debug.assert(i < subbandCount(r));
     if (r == 0) {
-        const ext = resolutionExtent(image_w, image_h, num_decomp_levels, 0);
+        const ext = resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, 0);
         return .{ .kind = .ll, .width = ext.width, .height = ext.height };
     }
-    const cur = resolutionExtent(image_w, image_h, num_decomp_levels, r);
-    const prev = resolutionExtent(image_w, image_h, num_decomp_levels, r - 1);
+    const cur = resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r);
+    const prev = resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r - 1);
     return switch (i) {
         0 => .{ .kind = .hl, .width = cur.width - prev.width, .height = prev.height },
         1 => .{ .kind = .lh, .width = prev.width, .height = cur.height - prev.height },
@@ -85,6 +104,7 @@ pub fn subbandDims(
         else => unreachable,
     };
 }
+
 
 /// Code-block grid size for one precinct's portion of a subband,
 /// assuming default precincts (one precinct per subband).
@@ -106,6 +126,8 @@ pub fn codeBlockGrid(subband: SubbandInfo, cblk_w_exp: u8, cblk_h_exp: u8) GridS
 /// numprecincts_y = ceil(try1 / 2^PPy_r). Returns (0, 0) on a
 /// degenerate (zero-extent) resolution.
 pub fn numPrecincts(
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp_levels: u8,
@@ -113,15 +135,17 @@ pub fn numPrecincts(
     ppx: u4,
     ppy: u4,
 ) GridSize {
-    const ext = resolutionExtent(image_w, image_h, num_decomp_levels, r);
+    const ext = resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r);
     if (ext.width == 0 or ext.height == 0) return .{ .width = 0, .height = 0 };
     const px: u32 = @as(u32, 1) << @intCast(ppx);
     const py: u32 = @as(u32, 1) << @intCast(ppy);
+    // T.800 B.6 (origin-aware): ceildiv(res.x1, 2^PPx) - floordiv(res.x0, 2^PPx).
     return .{
-        .width = ceilDivU32(ext.width, px),
-        .height = ceilDivU32(ext.height, py),
+        .width = ceilDivU32(ext.x1, px) - ext.x0 / px,
+        .height = ceilDivU32(ext.y1, py) - ext.y0 / py,
     };
 }
+
 
 /// Stride (in reference-grid units) of one precinct at resolution
 /// `r`. Resolution-r data sits at scale 2^(R - r) of the reference
@@ -146,6 +170,8 @@ pub fn referenceGridStride(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4) GridS
 /// extent. Useful for PCRL/CPRL: at each outer-loop (x, y), call
 /// this for each (r, c) to learn which precinct to emit packets for.
 pub fn precinctIndexAt(
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp_levels: u8,
@@ -156,11 +182,16 @@ pub fn precinctIndexAt(
     y: u32,
 ) u32 {
     const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
-    const pwidth = numPrecincts(image_w, image_h, num_decomp_levels, r, ppx, ppy).width;
+    const pwidth = numPrecincts(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r, ppx, ppy).width;
+    // NOTE: for a non-origin tile under PCRL/CPRL the absolute precinct
+    // column/row must be offset by the tile's first precinct index. No
+    // conformance fixture exercises PCRL on an interior tile yet, so this
+    // keeps the origin-(0,0) mapping; revisit with a failing PCRL fixture.
     const px = x / stride.width;
     const py = y / stride.height;
     return py * pwidth + px;
 }
+
 
 /// Is reference-grid `(x, y)` aligned to a precinct boundary at
 /// resolution `r`? Used by PCRL/CPRL outer iteration to avoid
@@ -171,6 +202,142 @@ pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u
     return (x % stride.width == 0) and (y % stride.height == 0);
 }
 
+// ── Absolute-coordinate code-block partition (openjpeg opj_tcd_init_tile) ──
+// Code-blocks anchor to ABSOLUTE resolution/band coordinates, not to a
+// subband-internal 0 origin. For an interior tile whose band spans a range
+// crossing a code-block boundary, this yields a different (correct) cblk COUNT
+// than a naive 0-based split — the mismatch that desynced multi-tile packet
+// parsing. HF band x0 is computed from a momentarily-negative numerator, so
+// everything is i64.
+fn ceilDivPow2I(a: i64, s: u6) i64 {
+    return (a + (@as(i64, 1) << s) - 1) >> s;
+}
+fn floorDivPow2I(a: i64, s: u6) i64 {
+    return a >> s;
+}
+
+const CblkGeom = struct {
+    band_x0: i64,
+    band_y0: i64,
+    prc_x0: i64,
+    prc_y0: i64,
+    prc_x1: i64,
+    prc_y1: i64,
+    tlcblkx: i64,
+    tlcblky: i64,
+    cblk_wexpn: u6,
+    cblk_hexpn: u6,
+    cw: u32,
+    ch: u32,
+    empty: bool,
+};
+
+fn precinctCblkGeom(
+    tile_x0: u32,
+    tile_y0: u32,
+    image_w: u32,
+    image_h: u32,
+    num_decomp_levels: u8,
+    r: u8,
+    sb_idx: u8,
+    precinct_x: u32,
+    precinct_y: u32,
+    ppx: u4,
+    ppy: u4,
+    cblk_w_exp: u8,
+    cblk_h_exp: u8,
+) CblkGeom {
+    const tcx0: i64 = tile_x0;
+    const tcy0: i64 = tile_y0;
+    const tcx1: i64 = @as(i64, tile_x0) + image_w;
+    const tcy1: i64 = @as(i64, tile_y0) + image_h;
+    const level: u6 = @intCast(num_decomp_levels - r);
+
+    // Resolution rect (tile-component coords).
+    const res_x0 = ceilDivPow2I(tcx0, level);
+    const res_y0 = ceilDivPow2I(tcy0, level);
+    const res_x1 = ceilDivPow2I(tcx1, level);
+    const res_y1 = ceilDivPow2I(tcy1, level);
+
+    // Band rect (absolute). LL at r=0 is the resolution; HF shifted by 2^level·x0b.
+    var band_x0: i64 = undefined;
+    var band_y0: i64 = undefined;
+    var band_x1: i64 = undefined;
+    var band_y1: i64 = undefined;
+    if (r == 0) {
+        band_x0 = res_x0;
+        band_y0 = res_y0;
+        band_x1 = res_x1;
+        band_y1 = res_y1;
+    } else {
+        const x0b: i64 = if (sb_idx == 0 or sb_idx == 2) 1 else 0;
+        const y0b: i64 = if (sb_idx == 1 or sb_idx == 2) 1 else 0;
+        const off: i64 = @as(i64, 1) << level;
+        band_x0 = ceilDivPow2I(tcx0 - off * x0b, level + 1);
+        band_y0 = ceilDivPow2I(tcy0 - off * y0b, level + 1);
+        band_x1 = ceilDivPow2I(tcx1 - off * x0b, level + 1);
+        band_y1 = ceilDivPow2I(tcy1 - off * y0b, level + 1);
+    }
+    var g: CblkGeom = .{
+        .band_x0 = band_x0, .band_y0 = band_y0,
+        .prc_x0 = 0, .prc_y0 = 0, .prc_x1 = 0, .prc_y1 = 0,
+        .tlcblkx = 0, .tlcblky = 0, .cblk_wexpn = 0, .cblk_hexpn = 0,
+        .cw = 0, .ch = 0, .empty = true,
+    };
+    if (band_x0 >= band_x1 or band_y0 >= band_y1) return g;
+
+    // Precinct grid, anchored to resolution coords.
+    const pdx: u6 = @intCast(ppx);
+    const pdy: u6 = @intCast(ppy);
+    const tl_prc_x = floorDivPow2I(res_x0, pdx) << pdx;
+    const tl_prc_y = floorDivPow2I(res_y0, pdy) << pdy;
+
+    // Code-block-group origin + exponent (halved for HF bands).
+    var tlcbgx: i64 = undefined;
+    var tlcbgy: i64 = undefined;
+    var cbg_wexpn: u6 = undefined;
+    var cbg_hexpn: u6 = undefined;
+    if (r == 0) {
+        tlcbgx = tl_prc_x;
+        tlcbgy = tl_prc_y;
+        cbg_wexpn = pdx;
+        cbg_hexpn = pdy;
+    } else {
+        tlcbgx = ceilDivPow2I(tl_prc_x, 1);
+        tlcbgy = ceilDivPow2I(tl_prc_y, 1);
+        cbg_wexpn = pdx - 1;
+        cbg_hexpn = pdy - 1;
+    }
+    const cblk_wexpn: u6 = @intCast(@min(@as(u8, cblk_w_exp) + 2, @as(u8, cbg_wexpn)));
+    const cblk_hexpn: u6 = @intCast(@min(@as(u8, cblk_h_exp) + 2, @as(u8, cbg_hexpn)));
+    g.cblk_wexpn = cblk_wexpn;
+    g.cblk_hexpn = cblk_hexpn;
+
+    // This precinct's rect (absolute), clipped to the band.
+    const cbgx0 = tlcbgx + @as(i64, precinct_x) * (@as(i64, 1) << cbg_wexpn);
+    const cbgy0 = tlcbgy + @as(i64, precinct_y) * (@as(i64, 1) << cbg_hexpn);
+    const prc_x0 = @max(cbgx0, band_x0);
+    const prc_y0 = @max(cbgy0, band_y0);
+    const prc_x1 = @min(cbgx0 + (@as(i64, 1) << cbg_wexpn), band_x1);
+    const prc_y1 = @min(cbgy0 + (@as(i64, 1) << cbg_hexpn), band_y1);
+    g.prc_x0 = prc_x0;
+    g.prc_y0 = prc_y0;
+    g.prc_x1 = prc_x1;
+    g.prc_y1 = prc_y1;
+    if (prc_x0 >= prc_x1 or prc_y0 >= prc_y1) return g;
+
+    // Code-block grid over the precinct, anchored to absolute cblk boundaries.
+    const tlcblkx = floorDivPow2I(prc_x0, cblk_wexpn) << cblk_wexpn;
+    const tlcblky = floorDivPow2I(prc_y0, cblk_hexpn) << cblk_hexpn;
+    const brcblkx = ceilDivPow2I(prc_x1, cblk_wexpn) << cblk_wexpn;
+    const brcblky = ceilDivPow2I(prc_y1, cblk_hexpn) << cblk_hexpn;
+    g.tlcblkx = tlcblkx;
+    g.tlcblky = tlcblky;
+    g.cw = @intCast((brcblkx - tlcblkx) >> cblk_wexpn);
+    g.ch = @intCast((brcblky - tlcblky) >> cblk_hexpn);
+    g.empty = false;
+    return g;
+}
 /// Code-block count inside one precinct's portion of one subband.
 /// Mirrors OpenJPEG `opj_tcd_init_tile` / opj_tcd_alloc_precincts
 /// for the cblk-grid math; that's the byte-perfect reference for
@@ -189,6 +356,8 @@ pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u
 /// Returns (0, 0) when the precinct lies outside the subband (the
 /// rare case where px·prc_w ≥ band_w).
 pub fn cblksInPrecinctSubband(
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp_levels: u8,
@@ -201,58 +370,12 @@ pub fn cblksInPrecinctSubband(
     cblk_w_exp: u8,
     cblk_h_exp: u8,
 ) GridSize {
-    // 1. Subband-internal dims via OpenJPEG opj_tcd_init_tile formula.
-    //    For single-tile origin (0, 0):
-    //      LL@r=0:    band dim = ceil(image / 2^N)
-    //      HF@r≥1:    band.x1 = ceil((image_w - 2^level · x0b) / 2^(level+1))
-    //                 where level = N − r and (x0b, y0b) per subband:
-    //                   HL: (1, 0)   LH: (0, 1)   HH: (1, 1)
-    var band_w: u32 = 0;
-    var band_h: u32 = 0;
-    if (r == 0) {
-        const ext = resolutionExtent(image_w, image_h, num_decomp_levels, 0);
-        band_w = ext.width;
-        band_h = ext.height;
-    } else {
-        const level_no: u5 = @intCast(num_decomp_levels - r);
-        const x0b: u32 = if (sb_idx == 0 or sb_idx == 2) 1 else 0;
-        const y0b: u32 = if (sb_idx == 1 or sb_idx == 2) 1 else 0;
-        const lvl_pow: u32 = @as(u32, 1) << level_no;
-        const lvl_pow_plus_1: u32 = @as(u32, 1) << (level_no + 1);
-        const x_num: u32 = if (image_w > lvl_pow * x0b) image_w - lvl_pow * x0b else 0;
-        const y_num: u32 = if (image_h > lvl_pow * y0b) image_h - lvl_pow * y0b else 0;
-        band_w = (x_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
-        band_h = (y_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
-    }
-    if (band_w == 0 or band_h == 0) return .{ .width = 0, .height = 0 };
-
-    // 2. Precinct dim in subband-internal coords (halved for HF).
-    const prec_w_exp: u8 = if (r == 0) @as(u8, @intCast(ppx)) else @as(u8, @intCast(ppx)) - 1;
-    const prec_h_exp: u8 = if (r == 0) @as(u8, @intCast(ppy)) else @as(u8, @intCast(ppy)) - 1;
-    const prec_w: u32 = @as(u32, 1) << @intCast(prec_w_exp);
-    const prec_h: u32 = @as(u32, 1) << @intCast(prec_h_exp);
-
-    // 3. Precinct rect in subband-internal coords, clipped to band.
-    const prc_x0 = precinct_x * prec_w;
-    const prc_y0 = precinct_y * prec_h;
-    if (prc_x0 >= band_w or prc_y0 >= band_h) return .{ .width = 0, .height = 0 };
-    const prc_x1 = @min(prc_x0 + prec_w, band_w);
-    const prc_y1 = @min(prc_y0 + prec_h, band_h);
-
-    // 4. T.800 A.6.1 cap + OpenJPEG overlap-rounded cblk count.
-    const cblk_w_exp_actual: u8 = @min(cblk_w_exp + 2, prec_w_exp);
-    const cblk_h_exp_actual: u8 = @min(cblk_h_exp + 2, prec_h_exp);
-    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp_actual);
-    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp_actual);
-    const tlcblkx = (prc_x0 / cblk_w) * cblk_w;
-    const brcblkx = ((prc_x1 + cblk_w - 1) / cblk_w) * cblk_w;
-    const tlcblky = (prc_y0 / cblk_h) * cblk_h;
-    const brcblky = ((prc_y1 + cblk_h - 1) / cblk_h) * cblk_h;
-    return .{
-        .width = (brcblkx - tlcblkx) / cblk_w,
-        .height = (brcblky - tlcblky) / cblk_h,
-    };
+    const g = precinctCblkGeom(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r, sb_idx, precinct_x, precinct_y, ppx, ppy, cblk_w_exp, cblk_h_exp);
+    if (g.empty) return .{ .width = 0, .height = 0 };
+    return .{ .width = g.cw, .height = g.ch };
 }
+
+
 
 /// A rectangle in subband-internal coordinates.
 pub const Rect = struct {
@@ -276,6 +399,8 @@ pub const Rect = struct {
 /// Returns an empty rect (x1 == x0 or y1 == y0) when the precinct
 /// doesn't intersect the band — caller should treat that as "skip".
 pub fn cblkSubbandRect(
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp_levels: u8,
@@ -290,64 +415,26 @@ pub fn cblkSubbandRect(
     grid_x: u32,
     grid_y: u32,
 ) Rect {
-    // Subband-internal band dims via the same derivation as
-    // cblksInPrecinctSubband (kept duplicated for now; sharing would
-    // mean a private helper that returns both band_w/h and the
-    // precinct rect — a refactor for later).
-    var band_w: u32 = 0;
-    var band_h: u32 = 0;
-    if (r == 0) {
-        const ext = resolutionExtent(image_w, image_h, num_decomp_levels, 0);
-        band_w = ext.width;
-        band_h = ext.height;
-    } else {
-        const level_no: u5 = @intCast(num_decomp_levels - r);
-        const x0b: u32 = if (sb_idx == 0 or sb_idx == 2) 1 else 0;
-        const y0b: u32 = if (sb_idx == 1 or sb_idx == 2) 1 else 0;
-        const lvl_pow: u32 = @as(u32, 1) << level_no;
-        const lvl_pow_plus_1: u32 = @as(u32, 1) << (level_no + 1);
-        const x_num: u32 = if (image_w > lvl_pow * x0b) image_w - lvl_pow * x0b else 0;
-        const y_num: u32 = if (image_h > lvl_pow * y0b) image_h - lvl_pow * y0b else 0;
-        band_w = (x_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
-        band_h = (y_num + lvl_pow_plus_1 - 1) / lvl_pow_plus_1;
-    }
-    if (band_w == 0 or band_h == 0) return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
-
-    const prec_w_exp: u8 = if (r == 0) @as(u8, @intCast(ppx)) else @as(u8, @intCast(ppx)) - 1;
-    const prec_h_exp: u8 = if (r == 0) @as(u8, @intCast(ppy)) else @as(u8, @intCast(ppy)) - 1;
-    const prec_w: u32 = @as(u32, 1) << @intCast(prec_w_exp);
-    const prec_h: u32 = @as(u32, 1) << @intCast(prec_h_exp);
-
-    const prc_x0 = precinct_x * prec_w;
-    const prc_y0 = precinct_y * prec_h;
-    if (prc_x0 >= band_w or prc_y0 >= band_h) return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
-    const prc_x1 = @min(prc_x0 + prec_w, band_w);
-    const prc_y1 = @min(prc_y0 + prec_h, band_h);
-
-    const cblk_w_exp_actual: u8 = @min(cblk_w_exp + 2, prec_w_exp);
-    const cblk_h_exp_actual: u8 = @min(cblk_h_exp + 2, prec_h_exp);
-    const cblk_w: u32 = @as(u32, 1) << @intCast(cblk_w_exp_actual);
-    const cblk_h: u32 = @as(u32, 1) << @intCast(cblk_h_exp_actual);
-    const tlcblkx = (prc_x0 / cblk_w) * cblk_w;
-    const tlcblky = (prc_y0 / cblk_h) * cblk_h;
-
-    const raw_x0 = tlcblkx + grid_x * cblk_w;
-    const raw_y0 = tlcblky + grid_y * cblk_h;
-    const raw_x1 = raw_x0 + cblk_w;
-    const raw_y1 = raw_y0 + cblk_h;
-
-    const x0 = @max(raw_x0, prc_x0);
-    const y0 = @max(raw_y0, prc_y0);
-    const x1 = @min(raw_x1, prc_x1);
-    const y1 = @min(raw_y1, prc_y1);
-
+    const g = precinctCblkGeom(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r, sb_idx, precinct_x, precinct_y, ppx, ppy, cblk_w_exp, cblk_h_exp);
+    if (g.empty) return .{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
+    const cw: i64 = @as(i64, 1) << g.cblk_wexpn;
+    const ch: i64 = @as(i64, 1) << g.cblk_hexpn;
+    const raw_x0 = g.tlcblkx + @as(i64, grid_x) * cw;
+    const raw_y0 = g.tlcblky + @as(i64, grid_y) * ch;
+    const ax0 = @max(raw_x0, g.prc_x0);
+    const ay0 = @max(raw_y0, g.prc_y0);
+    const ax1 = @min(raw_x0 + cw, g.prc_x1);
+    const ay1 = @min(raw_y0 + ch, g.prc_y1);
+    // Subband-INTERNAL coords (relative to the band origin) for buffer placement.
     return .{
-        .x0 = @intCast(x0),
-        .y0 = @intCast(y0),
-        .x1 = @intCast(x1),
-        .y1 = @intCast(y1),
+        .x0 = @intCast(ax0 - g.band_x0),
+        .y0 = @intCast(ay0 - g.band_y0),
+        .x1 = @intCast(ax1 - g.band_x0),
+        .y1 = @intCast(ay1 - g.band_y0),
     };
 }
+
+
 
 /// Total code-blocks across every resolution and subband (single
 /// component, single precinct per subband). Useful as a sanity
@@ -366,13 +453,15 @@ pub fn totalCodeBlocksPerLayerPerComponent(
         const n = subbandCount(r);
         var i: u8 = 0;
         while (i < n) : (i += 1) {
-            const sb = subbandDims(image_w, image_h, num_decomp_levels, r, i);
+            // Whole-image single-tile metric: tile origin is (0, 0).
+            const sb = subbandDims(0, 0, image_w, image_h, num_decomp_levels, r, i);
             const grid = codeBlockGrid(sb, cblk_w_exp, cblk_h_exp);
             total += grid.width * grid.height;
         }
     }
     return total;
 }
+
 
 fn ceilShift(n: u32, shift: u5) u32 {
     if (shift == 0) return n;
@@ -387,10 +476,10 @@ fn ceilDivU32(a: u32, b: u32) u32 {
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "resolutionExtent: c1_mono.j2c (303x179, 5 decomp) — LL is 10x6, full is 303x179" {
-    const r0 = resolutionExtent(303, 179, 5, 0);
+    const r0 = resolutionExtent(0, 0, 303, 179, 5, 0);
     try std.testing.expectEqual(@as(u32, 10), r0.width);
     try std.testing.expectEqual(@as(u32, 6), r0.height);
-    const r5 = resolutionExtent(303, 179, 5, 5);
+    const r5 = resolutionExtent(0, 0, 303, 179, 5, 5);
     try std.testing.expectEqual(@as(u32, 303), r5.width);
     try std.testing.expectEqual(@as(u32, 179), r5.height);
 }
@@ -400,22 +489,22 @@ test "subbandDims: r=0 is single LL; r>=1 has HL/LH/HH that sum to delta" {
     // HL_1: width = 19-10 = 9, height = 6.
     // LH_1: width = 10,       height = 12-6 = 6.
     // HH_1: width = 9,        height = 6.
-    const ll = subbandDims(303, 179, 5, 0, 0);
+    const ll = subbandDims(0, 0, 303, 179, 5, 0, 0);
     try std.testing.expectEqual(SubbandKind.ll, ll.kind);
     try std.testing.expectEqual(@as(u32, 10), ll.width);
     try std.testing.expectEqual(@as(u32, 6), ll.height);
 
-    const hl1 = subbandDims(303, 179, 5, 1, 0);
+    const hl1 = subbandDims(0, 0, 303, 179, 5, 1, 0);
     try std.testing.expectEqual(SubbandKind.hl, hl1.kind);
     try std.testing.expectEqual(@as(u32, 9), hl1.width);
     try std.testing.expectEqual(@as(u32, 6), hl1.height);
 
-    const lh1 = subbandDims(303, 179, 5, 1, 1);
+    const lh1 = subbandDims(0, 0, 303, 179, 5, 1, 1);
     try std.testing.expectEqual(SubbandKind.lh, lh1.kind);
     try std.testing.expectEqual(@as(u32, 10), lh1.width);
     try std.testing.expectEqual(@as(u32, 6), lh1.height);
 
-    const hh1 = subbandDims(303, 179, 5, 1, 2);
+    const hh1 = subbandDims(0, 0, 303, 179, 5, 1, 2);
     try std.testing.expectEqual(SubbandKind.hh, hh1.kind);
     try std.testing.expectEqual(@as(u32, 9), hh1.width);
     try std.testing.expectEqual(@as(u32, 6), hh1.height);
@@ -426,13 +515,13 @@ test "subbandDims: r=5 (full res) subbands cover the WxH plus the r=4 LL" {
     // HL_5: 303-152=151 × 90.
     // LH_5: 152 × 179-90=89.
     // HH_5: 151 × 89.
-    const hl = subbandDims(303, 179, 5, 5, 0);
+    const hl = subbandDims(0, 0, 303, 179, 5, 5, 0);
     try std.testing.expectEqual(@as(u32, 151), hl.width);
     try std.testing.expectEqual(@as(u32, 90), hl.height);
-    const lh = subbandDims(303, 179, 5, 5, 1);
+    const lh = subbandDims(0, 0, 303, 179, 5, 5, 1);
     try std.testing.expectEqual(@as(u32, 152), lh.width);
     try std.testing.expectEqual(@as(u32, 89), lh.height);
-    const hh = subbandDims(303, 179, 5, 5, 2);
+    const hh = subbandDims(0, 0, 303, 179, 5, 5, 2);
     try std.testing.expectEqual(@as(u32, 151), hh.width);
     try std.testing.expectEqual(@as(u32, 89), hh.height);
 }
@@ -458,7 +547,7 @@ test "numPrecincts: c1_mono.j2c (default 2^15 precincts) — every resolution ha
     // c1_mono image 303×179, num_decomp_levels=5, all precincts (15, 15).
     var r: u8 = 0;
     while (r <= 5) : (r += 1) {
-        const grid = numPrecincts(303, 179, 5, r, 15, 15);
+        const grid = numPrecincts(0, 0, 303, 179, 5, r, 15, 15);
         try std.testing.expectEqual(@as(u32, 1), grid.width);
         try std.testing.expectEqual(@as(u32, 1), grid.height);
     }
@@ -466,19 +555,19 @@ test "numPrecincts: c1_mono.j2c (default 2^15 precincts) — every resolution ha
 
 test "numPrecincts: d1_colr.j2c (64×64 precincts) — r=5: 4×3, r=4: 2×2, r≤3: 1×1" {
     // d1_colr image 256×149, num_decomp_levels=5, all precincts (6, 6) = 64×64.
-    const r5 = numPrecincts(256, 149, 5, 5, 6, 6);
+    const r5 = numPrecincts(0, 0, 256, 149, 5, 5, 6, 6);
     try std.testing.expectEqual(@as(u32, 4), r5.width);
     try std.testing.expectEqual(@as(u32, 3), r5.height);
 
-    const r4 = numPrecincts(256, 149, 5, 4, 6, 6);
+    const r4 = numPrecincts(0, 0, 256, 149, 5, 4, 6, 6);
     try std.testing.expectEqual(@as(u32, 2), r4.width);
     try std.testing.expectEqual(@as(u32, 2), r4.height);
 
-    const r3 = numPrecincts(256, 149, 5, 3, 6, 6);
+    const r3 = numPrecincts(0, 0, 256, 149, 5, 3, 6, 6);
     try std.testing.expectEqual(@as(u32, 1), r3.width);
     try std.testing.expectEqual(@as(u32, 1), r3.height);
 
-    const r0 = numPrecincts(256, 149, 5, 0, 6, 6);
+    const r0 = numPrecincts(0, 0, 256, 149, 5, 0, 6, 6);
     try std.testing.expectEqual(@as(u32, 1), r0.width);
     try std.testing.expectEqual(@as(u32, 1), r0.height);
 }
@@ -496,11 +585,11 @@ test "precinctIndexAt: d1_colr 256x149, r=5 — finest-resolution positions map 
     // (0,0)→0, (64,0)→1, (128,0)→2, (192,0)→3
     // (0,64)→4, (64,64)→5, ..., (192,64)→7
     // (0,128)→8, (64,128)→9, ..., (192,128)→11
-    try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(256, 149, 5, 5, 6, 6, 0, 0));
-    try std.testing.expectEqual(@as(u32, 1), precinctIndexAt(256, 149, 5, 5, 6, 6, 64, 0));
-    try std.testing.expectEqual(@as(u32, 3), precinctIndexAt(256, 149, 5, 5, 6, 6, 192, 0));
-    try std.testing.expectEqual(@as(u32, 4), precinctIndexAt(256, 149, 5, 5, 6, 6, 0, 64));
-    try std.testing.expectEqual(@as(u32, 11), precinctIndexAt(256, 149, 5, 5, 6, 6, 192, 128));
+    try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(0, 0, 256, 149, 5, 5, 6, 6, 0, 0));
+    try std.testing.expectEqual(@as(u32, 1), precinctIndexAt(0, 0, 256, 149, 5, 5, 6, 6, 64, 0));
+    try std.testing.expectEqual(@as(u32, 3), precinctIndexAt(0, 0, 256, 149, 5, 5, 6, 6, 192, 0));
+    try std.testing.expectEqual(@as(u32, 4), precinctIndexAt(0, 0, 256, 149, 5, 5, 6, 6, 0, 64));
+    try std.testing.expectEqual(@as(u32, 11), precinctIndexAt(0, 0, 256, 149, 5, 5, 6, 6, 192, 128));
 }
 
 test "isOnPrecinctBoundary: PCRL outer iteration determines which (r) fires at each (x,y)" {
@@ -539,7 +628,7 @@ test "cblksInPrecinctSubband: d1_colr r=5 — each precinct holds exactly 1 cblk
         const py = p / 4;
         var sb: u8 = 0;
         while (sb < 3) : (sb += 1) {
-            const g = cblksInPrecinctSubband(256, 149, 5, 5, sb, px, py, 6, 6, 4, 4);
+            const g = cblksInPrecinctSubband(0, 0, 256, 149, 5, 5, sb, px, py, 6, 6, 4, 4);
             try std.testing.expectEqual(@as(u32, 1), g.width);
             try std.testing.expectEqual(@as(u32, 1), g.height);
         }
@@ -550,7 +639,7 @@ test "cblksInPrecinctSubband: precinct outside subband returns 0×0" {
     // Construct a deliberately-out-of-bounds precinct index: at d1_colr
     // r=5 HL band (128 wide internal), precinct index (5, 0) starts at
     // subband_x = 5*32 = 160, past band_w = 128 → returns 0×0.
-    const g = cblksInPrecinctSubband(256, 149, 5, 5, 0, 5, 0, 6, 6, 4, 4);
+    const g = cblksInPrecinctSubband(0, 0, 256, 149, 5, 5, 0, 5, 0, 6, 6, 4, 4);
     try std.testing.expectEqual(@as(u32, 0), g.width);
     try std.testing.expectEqual(@as(u32, 0), g.height);
 }
@@ -560,7 +649,7 @@ test "cblksInPrecinctSubband: c1_mono default precincts → whole subband per pr
     // subband) has exactly one precinct that contains the entire subband.
     // r=5 HL subband internal dims via OpenJPEG: width = ceil(302/2) = 151,
     // height = ceil(179/2) = 90. cblk dim 64; cblk grid = 3×2.
-    const g = cblksInPrecinctSubband(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
+    const g = cblksInPrecinctSubband(0, 0, 303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
     try std.testing.expectEqual(@as(u32, 3), g.width);
     try std.testing.expectEqual(@as(u32, 2), g.height);
 }
@@ -569,7 +658,7 @@ test "cblksInPrecinctSubband: r=0 LL — precinct intersects the LL subband" {
     // d1_colr r=0 LL band internal = 8×5. PPx=6 → precinct dim
     // 2^6 = 64 (LL doesn't halve). cblk = min(64, 64) = 64. precinct
     // (0,0) → 1×1.
-    const g = cblksInPrecinctSubband(256, 149, 5, 0, 0, 0, 0, 6, 6, 4, 4);
+    const g = cblksInPrecinctSubband(0, 0, 256, 149, 5, 0, 0, 0, 0, 6, 6, 4, 4);
     try std.testing.expectEqual(@as(u32, 1), g.width);
     try std.testing.expectEqual(@as(u32, 1), g.height);
 }
@@ -594,7 +683,7 @@ test "cblkSubbandRect: c1_mono r=5 HL grid(0,0) — top-left of band" {
     //   y_num = 179;          band_h = (179 + 1)/2 = 90
     // Precincts cover the entire band (prec_w = 2^14 ≫ band_w). Cblks
     // are 64×64. Grid (0, 0) starts at (0, 0).
-    const rect = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 0, 0);
+    const rect = cblkSubbandRect(0, 0, 303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 0, 0);
     try std.testing.expectEqual(@as(i32, 0), rect.x0);
     try std.testing.expectEqual(@as(i32, 0), rect.y0);
     try std.testing.expectEqual(@as(i32, 64), rect.x1);
@@ -604,7 +693,7 @@ test "cblkSubbandRect: c1_mono r=5 HL grid(0,0) — top-left of band" {
 test "cblkSubbandRect: c1_mono r=5 HL grid(2,1) — last cblk clips at (151, 90)" {
     // HL band is 151×90, cblks 64×64. Grid (2, 1) raw rect = (128, 64)
     // .. (192, 128). Clipped to band right edge x=151, band bottom y=90.
-    const rect = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 2, 1);
+    const rect = cblkSubbandRect(0, 0, 303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, 2, 1);
     try std.testing.expectEqual(@as(i32, 128), rect.x0);
     try std.testing.expectEqual(@as(i32, 64), rect.y0);
     try std.testing.expectEqual(@as(i32, 151), rect.x1);
@@ -615,7 +704,7 @@ test "cblkSubbandRect: every cblk in the grid covers the precinct rect (tile)" {
     // Structural invariant: the union of every grid cell's rect must
     // tile [prc_x0..prc_x1) × [prc_y0..prc_y1) exactly — no gaps, no
     // overlaps, no spillage beyond the precinct.
-    const cblks = cblksInPrecinctSubband(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
+    const cblks = cblksInPrecinctSubband(0, 0, 303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4);
     // Compute the expected precinct bounds (entire HL band).
     const expected_x0: i32 = 0;
     const expected_y0: i32 = 0;
@@ -629,7 +718,7 @@ test "cblkSubbandRect: every cblk in the grid covers the precinct rect (tile)" {
     while (gy < cblks.height) : (gy += 1) {
         var gx: u32 = 0;
         while (gx < cblks.width) : (gx += 1) {
-            const r = cblkSubbandRect(303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, gx, gy);
+            const r = cblkSubbandRect(0, 0, 303, 179, 5, 5, 0, 0, 0, 15, 15, 4, 4, gx, gy);
             if (r.x0 < union_x0) union_x0 = r.x0;
             if (r.y0 < union_y0) union_y0 = r.y0;
             if (r.x1 > union_x1) union_x1 = r.x1;

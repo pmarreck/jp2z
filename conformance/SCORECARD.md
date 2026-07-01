@@ -14,9 +14,9 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 12 | byte-exact vs oracle |
+| PASS | 14 | byte-exact vs oracle |
 | NEAR | 1 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 22 | decoded but diverges (max_abs > 1) |
+| FAIL | 20 | decoded but diverges (max_abs > 1) |
 | skip:* | 21 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -38,16 +38,14 @@ diverge from the oracle. Largest divergence first.
 | g3_colr.j2c | 256×149×3 | 254 |
 | g2_colr.j2c | 256×149×3 | 254 |
 | g1_colr.j2c | 256×149×3 | 254 |
+| d2_colr.j2c | 256×149×3 | 254 |
 | e1_colr.j2c | 256×149×3 | 252 |
-| d2_colr.j2c | 256×149×3 | 252 |
-| f2_mono.j2c | 303×179×1 | 228 |
-| f1_mono.j2c | 303×179×1 | 225 |
-| b1_mono.j2c | 303×179×1 | 223 |
-| a5_mono.j2c | 303×179×1 | 222 |
+| a5_mono.j2c | 303×179×1 | 229 |
+| f2_mono.j2c | 303×179×1 | 225 |
 | file8.jp2 | 700×400×1 | 216 |
-| a3_mono.j2c | 303×179×1 | 213 |
+| b3_mono.j2c | 303×179×1 | 202 |
+| b1_mono.j2c | 303×179×1 | 195 |
 | c2_mono.j2c | 303×179×1 | 180 |
-| b3_mono.j2c | 303×179×1 | 180 |
 | file2.jp2 | 480×640×3 | 158 |
 | p0_01.j2k | 128×128×1 | 149 |
 | p0_11.j2k | 128×1×1 | 139 |
@@ -85,15 +83,13 @@ diverge from the oracle. Largest divergence first.
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
-| a3_mono.j2c | FAIL |  | 303 | 179 | 1 | 213 |
-| a5_mono.j2c | FAIL |  | 303 | 179 | 1 | 222 |
-| b1_mono.j2c | FAIL |  | 303 | 179 | 1 | 223 |
-| b3_mono.j2c | FAIL |  | 303 | 179 | 1 | 180 |
+| a5_mono.j2c | FAIL |  | 303 | 179 | 1 | 229 |
+| b1_mono.j2c | FAIL |  | 303 | 179 | 1 | 195 |
+| b3_mono.j2c | FAIL |  | 303 | 179 | 1 | 202 |
 | c2_mono.j2c | FAIL |  | 303 | 179 | 1 | 180 |
-| d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 252 |
+| d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
 | e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 252 |
-| f1_mono.j2c | FAIL |  | 303 | 179 | 1 | 225 |
-| f2_mono.j2c | FAIL |  | 303 | 179 | 1 | 228 |
+| f2_mono.j2c | FAIL |  | 303 | 179 | 1 | 225 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
 | file8.jp2 | FAIL |  | 700 | 400 | 1 | 216 |
 | g1_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
@@ -110,8 +106,10 @@ diverge from the oracle. Largest divergence first.
 | p0_04.j2k | NEAR |  | 640 | 480 | 3 | 1 |
 | a1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | a2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
+| a3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | c1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | d1_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
+| f1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | file1.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file4.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file5.jp2 | PASS |  | 768 | 512 | 3 | 0 |

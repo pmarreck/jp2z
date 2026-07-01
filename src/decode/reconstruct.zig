@@ -84,6 +84,11 @@ pub fn reconstructComponentTile(
     // (tile, component) once so each plan is visited O(1) times (was a
     // quadratic full re-scan per tile×component).
     plans: []const cblk_plan.CblkDecodePlan,
+    // Tile-component ORIGIN in tile-component coords (0,0 for a single tile at
+    // the image origin; non-zero for interior tiles). Drives the origin-aware
+    // subband split + inverse-DWT parity.
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
     num_decomp: u8,
@@ -102,11 +107,13 @@ pub fn reconstructComponentTile(
         const msb_bp: u5 = @intCast(plan.numbps);
         const half_bp = cblk_dispatch.halfBitPos(msb_bp, plan.total_passes);
 
-        // Subband quadrant base inside the tile buffer (Mallat layout).
+        // Subband quadrant base inside the tile buffer (Mallat layout). The
+        // low-pass width/height (prev resolution) is the quadrant offset, and
+        // must be origin-aware so it matches idwt53's sn/dn split for this tile.
         var base_x: u32 = @intCast(plan.sb_x0);
         var base_y: u32 = @intCast(plan.sb_y0);
         if (plan.resolution >= 1) {
-            const prev = subbands.resolutionExtent(image_w, image_h, num_decomp, plan.resolution - 1);
+            const prev = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, plan.resolution - 1);
             if (plan.band & 1 != 0) base_x += prev.width; // HL / HH → right quadrant
             if (plan.band & 2 != 0) base_y += prev.height; // LH / HH → bottom quadrant
         }
@@ -124,9 +131,10 @@ pub fn reconstructComponentTile(
         }
     }
 
-    try dwt.idwt53(allocator, buf, tile_w, image_w, image_h, num_decomp);
+    try dwt.idwt53(allocator, buf, tile_w, tile_x0, tile_y0, image_w, image_h, num_decomp);
     return buf;
 }
+
 
 /// DC level shift + clamp, in place. Unsigned: `+2^(prec-1)`, clamp to
 /// `[0, 2^prec-1]`. Signed: clamp to `[-2^(prec-1), 2^(prec-1)-1]`.
@@ -258,7 +266,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
                     .oy = tcy0 - ceilDiv(params.image_y0, dy),
                 };
                 const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
-                tbufs[c] = try reconstructComponentTile(allocator, tc_plans, tcw, tch, params.num_decomp_levels);
+                tbufs[c] = try reconstructComponentTile(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.num_decomp_levels);
                 tb_done += 1;
             }
 
@@ -384,7 +392,7 @@ pub fn reconstructComponentTile97(
         var base_x: u32 = @intCast(plan.sb_x0);
         var base_y: u32 = @intCast(plan.sb_y0);
         if (plan.resolution >= 1) {
-            const prev = subbands.resolutionExtent(image_w, image_h, num_decomp, plan.resolution - 1);
+            const prev = subbands.resolutionExtent(0, 0, image_w, image_h, num_decomp, plan.resolution - 1);
             if (plan.band & 1 != 0) base_x += prev.width;
             if (plan.band & 2 != 0) base_y += prev.height;
         }
@@ -400,7 +408,7 @@ pub fn reconstructComponentTile97(
         }
     }
 
-    try dwt.idwt97(allocator, buf, tile_w, image_w, image_h, num_decomp);
+    try dwt.idwt97(allocator, buf, tile_w, 0, 0, image_w, image_h, num_decomp);
     return buf;
 }
 

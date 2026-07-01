@@ -237,7 +237,7 @@ pub const PacketIterator = struct {
             const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
             const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
             const grid = subbands.numPrecincts(
-                image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                0, 0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
             iter.pcw_at_r[r] = grid.width;
             iter.pch_at_r[r] = grid.height;
             iter.precincts_at_r[r] = grid.width * grid.height;
@@ -344,7 +344,7 @@ pub const PacketIterator = struct {
         const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
         const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
         const p_idx = subbands.precinctIndexAt(
-            self.image_w, self.image_h, self.params.num_decomp_levels,
+            0, 0, self.image_w, self.image_h, self.params.num_decomp_levels,
             r, ppx, ppy, self.x, self.y);
         const result: PacketIndex = .{
             .layer = self.layer,
@@ -402,7 +402,7 @@ pub const PacketIterator = struct {
                 const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
                 const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
                 const p_idx = subbands.precinctIndexAt(
-                    self.image_w, self.image_h, self.params.num_decomp_levels,
+                    0, 0, self.image_w, self.image_h, self.params.num_decomp_levels,
                     r, ppx, ppy, self.x, self.y);
                 const result: PacketIndex = .{
                     .layer = self.layer,
@@ -882,9 +882,11 @@ fn walkTileParts(
                         const tr = params.tileRect(xsiz, ysiz, isot);
                         const dx: u32 = params.comp_dx[0];
                         const dy: u32 = params.comp_dy[0];
-                        const tcw: u32 = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
-                        const tch: u32 = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
-                        gop.value_ptr.* = TileWalk.init(allocator, params, tcw, tch, isot) catch |e| {
+                        const tcx0: u32 = (tr.x0 + dx - 1) / dx;
+                        const tcy0: u32 = (tr.y0 + dy - 1) / dy;
+                        const tcw: u32 = (tr.x1 + dx - 1) / dx - tcx0;
+                        const tch: u32 = (tr.y1 + dy - 1) / dy - tcy0;
+                        gop.value_ptr.* = TileWalk.init(allocator, params, tcw, tch, tcx0, tcy0, isot) catch |e| {
                             // Don't leave a half-built entry in the map.
                             _ = tiles.remove(isot16);
                             return e;
@@ -1210,6 +1212,8 @@ const TileWalk = struct {
     params: jp2z.CodingParams,
     image_w: u32,
     image_h: u32,
+    tile_x0: u32,
+    tile_y0: u32,
     tile_index: u32,
     precincts_at_r: [33]u32,
     resolution_offset: [33]usize,
@@ -1233,6 +1237,8 @@ const TileWalk = struct {
         params: jp2z.CodingParams,
         image_w: u32,
         image_h: u32,
+        tile_x0: u32,
+        tile_y0: u32,
         tile_index: u32,
     ) Allocator.Error!TileWalk {
         const num_resolutions: u8 = params.num_decomp_levels + 1;
@@ -1246,7 +1252,7 @@ const TileWalk = struct {
                 resolution_offset[r] = slots_per_component;
                 const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
                 const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-                const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                const grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
                 precincts_at_r[r] = grid.width * grid.height;
                 slots_per_component += @as(usize, subbands.subbandCount(r)) * @as(usize, precincts_at_r[r]);
             }
@@ -1273,7 +1279,7 @@ const TileWalk = struct {
                     const pcount = precincts_at_r[r];
                     const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
                     const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-                    const grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                    const grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
                     var sb: u8 = 0;
                     while (sb < sb_count) : (sb += 1) {
                         var p: u32 = 0;
@@ -1281,7 +1287,7 @@ const TileWalk = struct {
                             const prc_x = p % grid.width;
                             const prc_y = p / grid.width;
                             const cblks = subbands.cblksInPrecinctSubband(
-                                image_w, image_h, params.num_decomp_levels,
+                                tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels,
                                 r, sb, prc_x, prc_y, ppx, ppy,
                                 params.cblk_width_exp, params.cblk_height_exp,
                             );
@@ -1304,6 +1310,8 @@ const TileWalk = struct {
             .image_w = image_w,
             .image_h = image_h,
             .tile_index = tile_index,
+            .tile_x0 = tile_x0,
+            .tile_y0 = tile_y0,
             .precincts_at_r = precincts_at_r,
             .resolution_offset = resolution_offset,
             .slots_per_component = slots_per_component,
@@ -1351,6 +1359,8 @@ fn walkTilePartBody(
     const params = tw.params;
     const image_w = tw.image_w;
     const image_h = tw.image_h;
+    const tile_x0 = tw.tile_x0;
+    const tile_y0 = tw.tile_y0;
     const states = tw.states;
     const resolution_offset = tw.resolution_offset;
     const precincts_at_r = tw.precincts_at_r;
@@ -1401,7 +1411,7 @@ fn walkTilePartBody(
         if (extractor) |ex| {
             const ppx: u4 = @intCast(params.precinct_sizes[pi.resolution].x_exp);
             const ppy: u4 = @intCast(params.precinct_sizes[pi.resolution].y_exp);
-            const prc_grid = subbands.numPrecincts(image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
+            const prc_grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
             const prc_x_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct % prc_grid.width;
             const prc_y_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct / prc_grid.width;
             const data_base = body_pos + header_bytes;
@@ -1425,7 +1435,7 @@ fn walkTilePartBody(
                             break;
                         }
                         const rect = subbands.cblkSubbandRect(
-                            image_w, image_h, params.num_decomp_levels,
+                            tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels,
                             pi.resolution, ex_sb,
                             prc_x_in_grid, prc_y_in_grid,
                             ppx, ppy,
