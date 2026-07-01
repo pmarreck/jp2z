@@ -1054,6 +1054,7 @@ fn parseCodBody(
     }
 
     // Update CodingParams (which parseSizBody seeded with num_components).
+    var invalid_precinct = false;
     if (report.coding_params) |*cp| {
         if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
         cp.num_layers = num_layers;
@@ -1068,12 +1069,23 @@ fn parseCodBody(
             var r: usize = 0;
             while (r < @as(usize, num_resolutions) and r < cp.precinct_sizes.len) : (r += 1) {
                 const byte = body[precinct_byte_offset + r];
-                cp.precinct_sizes[r] = .{
-                    .x_exp = @intCast(byte & 0x0F),
-                    .y_exp = @intCast((byte >> 4) & 0x0F),
-                };
+                const x_exp: u4 = @intCast(byte & 0x0F);
+                const y_exp: u4 = @intCast((byte >> 4) & 0x0F);
+                // T.800 B.6: PPx/PPy must be >= 1 for every resolution ABOVE the
+                // lowest (r>0) — the HF precinct partition halves the exponent, so a
+                // 0 there is non-conformant and would underflow the u6 code-block
+                // geometry (crash in TileWalk.init while sizing the pool).
+                if (r > 0 and (x_exp == 0 or y_exp == 0)) invalid_precinct = true;
+                cp.precinct_sizes[r] = .{ .x_exp = x_exp, .y_exp = y_exp };
             }
         }
+    }
+    if (invalid_precinct) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + precinct_byte_offset, null);
+        // Reject: a non-conformant precinct partition cannot be safely walked. Un-publish
+        // coding_params so the packet walk + decodeCleanroom stop cleanly
+        // (error.NoCodingParams) instead of crashing on the malformed geometry.
+        report.coding_params = null;
     }
 }
 

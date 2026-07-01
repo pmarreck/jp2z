@@ -305,8 +305,8 @@ fn precinctCblkGeom(
     } else {
         tlcbgx = ceilDivPow2I(tl_prc_x, 1);
         tlcbgy = ceilDivPow2I(tl_prc_y, 1);
-        cbg_wexpn = pdx - 1;
-        cbg_hexpn = pdy - 1;
+                cbg_wexpn = if (pdx == 0) 0 else pdx - 1;
+        cbg_hexpn = if (pdy == 0) 0 else pdy - 1;
     }
     const cblk_wexpn: u6 = @intCast(@min(@as(u8, cblk_w_exp) + 2, @as(u8, cbg_wexpn)));
     const cblk_hexpn: u6 = @intCast(@min(@as(u8, cblk_h_exp) + 2, @as(u8, cbg_hexpn)));

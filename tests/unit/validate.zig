@@ -1572,6 +1572,52 @@ test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a cras
     try std.testing.expect(!hasFinding(rep0, .jp2_invalid_siz));
 }
 
+test "validate: user-precinct PPx/PPy=0 at r>0 → jp2_invalid_codestream, never a crash (reviewer)" {
+    // A strict validator must FLAG a non-conformant COD precinct exponent of 0 at
+    // any resolution above the lowest (T.800 requires PP>=1 for r>0 — the HF
+    // precinct partition halves the exponent), and MUST NOT underflow the u6
+    // geometry (crash in TileWalk.init while sizing the code-block pool). Classifier
+    // over the malformed set; the valid-custom-precinct baseline must NOT fire.
+    const soc = [_]u8{ 0xFF, 0x4F };
+    const eoc = [_]u8{ 0xFF, 0xD9 };
+    // 4x4, single-tile, Csiz=1, 8-bit SIZ (same as the SIZ test).
+    const siz = [_]u8{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    };
+    // COD: Lcod=14, Scod=0x01 (user precincts), LRCP, 1 layer, no MCT, 1 decomp
+    // level (⇒ 2 resolutions), 64x64 cblk, 5/3. Two precinct bytes: r0 then r1.
+    const cod_ok = [_]u8{ 0xFF, 0x52, 0x00, 0x0E, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01, 0x88, 0x88 };
+    const cod_bad = [_]u8{ 0xFF, 0x52, 0x00, 0x0E, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01, 0x88, 0x00 }; // r1 PPx=PPy=0
+    // SOT(Psot=0 → to EOC) + SOD → drives the packet walk (TileWalk.init), the crash site.
+    const sot = [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    const sod = [_]u8{ 0xFF, 0x93 };
+
+    // Bad precinct exponent must FLAG jp2_invalid_codestream, and must not crash
+    // whether or not the packet walk runs.
+    const bad_headeronly = soc ++ siz ++ cod_bad ++ eoc;
+    var rep_b0 = try jp2z.validate(std.testing.allocator, &bad_headeronly);
+    defer rep_b0.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_b0, .jp2_invalid_codestream));
+
+    const bad_walk = soc ++ siz ++ cod_bad ++ sot ++ sod ++ eoc;
+    var rep_bw = try jp2z.validate(std.testing.allocator, &bad_walk); // must not panic in TileWalk.init
+    defer rep_bw.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_bw, .jp2_invalid_codestream));
+
+    // Valid custom precincts (PPx=PPy=8 at both resolutions): the finding must NOT
+    // fire for the precinct reason (baseline — a classifier, not a presence check).
+    const ok_walk = soc ++ siz ++ cod_ok ++ sot ++ sod ++ eoc;
+    var rep_ok = try jp2z.validate(std.testing.allocator, &ok_walk);
+    defer rep_ok.deinit(std.testing.allocator);
+    // (ok_walk may still carry other warn findings, but NOT a fail on the codestream
+    //  for the precinct — assert the decode side does not reject it: coding_params kept.)
+    try std.testing.expect(rep_ok.coding_params != null);
+}
 test "cleanroom: MCT + non-uniform sub-sampling is rejected, not a heap OOB (C3)" {
     // Reviewer C3: with MCT on, the 3 colour components must share sub-sampling
     // (T.800 Annex G). The multi-tile commit made per-component tile buffers
