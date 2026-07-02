@@ -202,7 +202,7 @@ pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u
     return (x % stride.width == 0) and (y % stride.height == 0);
 }
 
-// ── Absolute-coordinate code-block partition (openjpeg opj_tcd_init_tile) ──
+// ── Code-block partition — ported from openjpeg opj_tcd.c (opj_tcd_init_tile) ──
 // Code-blocks anchor to ABSOLUTE resolution/band coordinates, not to a
 // subband-internal 0 origin. For an interior tile whose band spans a range
 // crossing a code-block boundary, this yields a different (correct) cblk COUNT

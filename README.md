@@ -84,16 +84,21 @@ have murkier IP — **jp2z targets Part 1 only**.
 
 ## Third-party attribution
 
-jp2z contains code ported/translated from [OpenJPEG](https://github.com/uclouvain/openjpeg)
-(© its authors, BSD-2-Clause) and links it as the Phase-1 decode backend. The
-full upstream license text and copyright holders are retained verbatim in
+jp2z is a pure-Zig **port** of [OpenJPEG](https://github.com/uclouvain/openjpeg)
+(© its authors, BSD-2-Clause) and links it as the Phase-1 decode backend. Most of
+the pure-Zig code is written from scratch against ITU-T T.800; functions actually
+translated from OpenJPEG source carry a `ported from openjpeg <file>` provenance
+note (currently `precinctCblkGeom` ← `opj_tcd.c` `opj_tcd_init_tile`). The full
+upstream license text and copyright holders are retained verbatim in
 [`THIRD_PARTY/openjpeg-LICENSE.txt`](THIRD_PARTY/openjpeg-LICENSE.txt); see also
 [`NOTICE`](NOTICE).
 
 ## License
 
 jp2z is licensed under the **MIT License** (© 2026 Peter Marreck) — see
-[`LICENSE`](LICENSE). It is Peter's own from-scratch reimplementation. OpenJPEG's
+[`LICENSE`](LICENSE). It is Peter's own pure-Zig implementation, developed as a
+port of OpenJPEG: most code is written from scratch against T.800, with a few
+algorithms translated from OpenJPEG source (BSD-2, marked in-file). OpenJPEG's
 permissive BSD-2-Clause is fully compatible; its attribution above, in
 [`THIRD_PARTY/openjpeg-LICENSE.txt`](THIRD_PARTY/openjpeg-LICENSE.txt), and in
 [`NOTICE`](NOTICE) is retained as required.
