@@ -2,6 +2,27 @@
 
 ## In progress
 
+> **WIND-DOWN STATE (fleet migration to Thelio, 2026-07-06).** All work GREEN +
+> pushed: `yolo@origin = 2c0e8728`, 224/224 tests, Garnix 6/6, working copy clean
+> (no uncommitted/WIP). Sweep baseline **PASS 14, NEAR 1, FAIL 20, skip 21, ERROR 1,
+> CRASH 0**. This session shipped, in order: the conformance-sweep harness; the
+> multi-tile 5/3 fix (origin-aware geometry + absolute cblk anchoring → a3+f1
+> byte-exact, PASS 12→14); MIT license (Einstein-blessed); the reviewer-caught
+> precinct-0 crash fix; and the README port-wording reconciliation. Cross-board loop
+> fully settled (jp2z-reviewer ✅ audited the geometry clean, Einstein ✅ signed the
+> license, replies sent + notes archived to `inbox/processed/`).
+>
+> **RESUME HERE (ranked next steps, all independent of the now-correct tiling):**
+> 1. **SOP/EPH packet markers** (`csty=0x6`) — highest leverage, unblocks a5 +
+>    several `g*`. Add SOP/EPH skipping in the packet walker (`codestream.zig`).
+> 2. **Tier-1 VSC/RESET/SEGSYM coding styles** (`cblksty=0x2f`) — unblocks c2_mono
+>    (single-tile, so pure tier-1). Peter had asked for this ("C") before wind-down.
+> 3. **b1_mono** — non-zero IMAGE origin (XOsiz=3097)+tile-grid origin; improved
+>    223→195 but still off. Needs image-origin handling in the tile geometry.
+> 4. **Sweep `.pix`-oracle upgrade** (reviewer minor) — reclassifies p0_10 DECODED→PASS.
+> 5. **>8-bit depth (p1_04, the tiffz gap)** + **p0_13 NoCodingParams** — lower priority.
+> Method for all: TDD, differential-vs-openjpeg on valid files (the reviewer bar);
+> run `./sweep` after each to confirm no PASS→FAIL drift.
 - [x] **Conformance-sweep harness** (2026-06-30). `tools/sweep_one.zig` decodes
       one fixture per process with `internal.decodeCleanroom` and grades it vs
       the in-process openjpeg oracle; `./sweep` runs all 57 ISO 15444-4 fixtures
