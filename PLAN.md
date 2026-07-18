@@ -64,8 +64,19 @@
       NOTE: `segsym_error` surfaces as a FINDING only once tier-1 feeds `validate()`
       (the Phase-2 dispatcher cutover); today validate is tier-2 (packet-walk) so the
       flag is staged for then. The corrupted-`Nsop` SOP path already emits in tier-2.
-- [ ] **Next: b1 image-origin** (XOsiz=3097 tile geometry), then **p1_04 >8-bit** (tiffz
-      gap), then the sweep `.pix`-oracle upgrade + p0_13. TDD vs openjpeg.
+- [ ] **Next: b1_mono image-origin geometry** (FAIL max_abs 195, improved from 223 by the
+      multi-tile fix but not closed). DIAGNOSED as a PURE geometry bug — `csty=0,
+      cblksty=0, qmfbid=1` (no SOP/EPH, no special tier-1), so the ONLY variable is the
+      non-zero IMAGE origin `XOsiz=3097, YOsiz=41` combined with a tile-grid origin
+      `XTOsiz=3003, YTOsiz=33` offset from it (5×3 tiles, tdx=97 tdy=91; tile 0 clips to
+      [3097,3100) width 3). Well-isolated but needs focused per-tile debugging (re-add the
+      3×5 mismatch-grid instrument used for f1) — likely a resolution/precinct/cblk-anchor
+      coordinate that still assumes image origin 0 somewhere the tile path didn't reach.
+      A good FRESH-CONTEXT target. Then **p1_04 >8-bit** (tiffz gap), 9/7 multi-tile
+      `p1_*`, sweep `.pix`-oracle upgrade, p0_13. TDD vs openjpeg.
+- [ ] **Minor (Thelio)**: benign `warning(link): unexpected LLD stderr` in the fast
+      dev-loop build (`zig build test` in the devShell); `nix build`/`./test` are clean.
+      Likely a new-machine LLD version quirk — investigate/silence for clean dev output.
 - [x] **Reviewer catch — reject user-precinct PPx/PPy=0 at r>0** (2026-06-30, commit
       ba313895). jp2z-reviewer's audit of the multi-tile commit found a reachable crash
       on the shipped validate() path (u6 underflow in TileWalk.init). `parseCodBody` now
