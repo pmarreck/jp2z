@@ -882,6 +882,7 @@ const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
 const f1_mono_j2c = @embedFile("fixtures/conformance/f1_mono.j2c");
 const a5_mono_j2c = @embedFile("fixtures/conformance/a5_mono.j2c");
+const c2_mono_j2c = @embedFile("fixtures/conformance/c2_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
@@ -1311,6 +1312,29 @@ test "validate: corrupted SOP Nsop is flagged (jp2z is stricter than openjpeg he
     var rep_bad = try jp2z.validate(allocator, buf);
     defer rep_bad.deinit(allocator);
     try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_codestream));
+}
+test "cleanroom: c2_mono single-tile tier-1 (RESET+VSC+SEGSYM) byte-exact vs openjpeg" {
+    // c2_mono is 303x179, SINGLE tile, cblksty=0x2f = BYPASS|RESET|TERMALL|VSC|SEGSYM.
+    // The ONLY variable vs the passing c1 (cblksty=0x01, BYPASS only) is the extra
+    // tier-1 coding styles: MQ context RESET at coding-pass boundaries, VSC
+    // (vertically-causal contexts — the top row of each 4-row stripe ignores the
+    // stripe above), and the SEGSYM 0xA segmentation symbol decoded+verified at the
+    // end of every cleanup pass. 5/3 reversible ⇒ byte-EXACT. Non-sub-sampled mono
+    // ⇒ the in-process wrapper oracle is directly comparable.
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, c2_mono_j2c);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, c2_mono_j2c);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 1), img.num_components);
+    try std.testing.expectEqual(oracle.pixels.len, img.planes[0].len);
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, s) != @as(i32, oracle.pixels[i])) {
+            const w = img.width;
+            std.debug.print("\n[c2] mismatch at ({d},{d}): ours={d} oj={d}\n", .{ i % w, i / w, s, oracle.pixels[i] });
+            return error.PixelMismatch;
+        }
+    }
 }
 test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
     const allocator = std.testing.allocator;

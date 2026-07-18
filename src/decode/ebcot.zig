@@ -117,6 +117,13 @@ pub const Cblk = struct {
     /// clean segment consumes ~all its bytes; large leftover signals a
     /// byte-budget mismatch (corruption). Strict-validation.
     under_read: u32 = 0,
+    /// SEGSYM (cblksty bit 5): set when a cleanup-pass segmentation symbol
+    /// decoded to something other than 0xA — a built-in corruption tripwire.
+    segsym_error: bool = false,
+    /// VSC (cblksty bit 3): vertically-causal context. When set, a coefficient in
+    /// the bottom row of a 4-row stripe (y % 4 == 3) excludes its south neighbours
+    /// from context formation (openjpeg suppresses the ci==0 north propagation).
+    vsc: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) std.mem.Allocator.Error!Cblk {
         const coeffs = try allocator.alloc(Coeff, @as(usize, width) * @as(usize, height));
@@ -164,18 +171,23 @@ pub const Cblk = struct {
 pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
     const xi: i32 = @intCast(x);
     const yi: i32 = @intCast(y);
-    // Explicit u8 casts on each term: @intFromBool yields u1, and
-    // u1+u1 wraps to 0 in ReleaseFast — not what we want for a sum
-    // that can legitimately reach 2 (H/V) or 4 (D).
+    // VSC (vertically causal): a coefficient in the bottom row of a 4-row stripe
+    // excludes its 3 south neighbours (the next stripe) from context formation.
+    const excl_south = cblk.vsc and (y % 4 == 3);
     const b = struct {
         fn s(c: Cblk, xx: i32, yy: i32) u8 {
             return @intFromBool(c.isSig(xx, yy));
         }
     }.s;
+    const sb = struct {
+        fn s(c: Cblk, xx: i32, yy: i32, excl: bool) u8 {
+            return if (excl) 0 else @intFromBool(c.isSig(xx, yy));
+        }
+    }.s;
     var h: u8 = b(cblk, xi - 1, yi) + b(cblk, xi + 1, yi);
-    var v: u8 = b(cblk, xi, yi - 1) + b(cblk, xi, yi + 1);
+    var v: u8 = b(cblk, xi, yi - 1) + sb(cblk, xi, yi + 1, excl_south);
     const d: u8 = b(cblk, xi - 1, yi - 1) + b(cblk, xi + 1, yi - 1) +
-        b(cblk, xi - 1, yi + 1) + b(cblk, xi + 1, yi + 1);
+        sb(cblk, xi - 1, yi + 1, excl_south) + sb(cblk, xi + 1, yi + 1, excl_south);
 
     // HL subbands: swap H and V (the table for LL/LH is reused).
     if (orient == .hl) {
@@ -185,9 +197,6 @@ pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
     }
 
     if (orient == .hh) {
-        // T.800 Table D-1 HH column (verified vs OpenJPEG
-        // t1_generate_luts.c t1_init_ctxno_zc case 3): primary axis is
-        // the diagonal count d, secondary is hv = h + v.
         const hv = h + v;
         if (d >= 3) return .zc_8;
         if (d == 2) return if (hv >= 1) .zc_7 else .zc_6;
@@ -196,7 +205,6 @@ pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
             if (hv == 1) return .zc_4;
             return .zc_3;
         }
-        // d == 0
         if (hv >= 2) return .zc_2;
         if (hv == 1) return .zc_1;
         return .zc_0;
@@ -209,13 +217,13 @@ pub fn zcContext(cblk: Cblk, x: u32, y: u32, orient: Orientation) CtxIdx {
         if (d >= 1) return .zc_6;
         return .zc_5;
     }
-    // h == 0
     if (v == 2) return .zc_4;
     if (v == 1) return .zc_3;
     if (d >= 2) return .zc_2;
     if (d == 1) return .zc_1;
     return .zc_0;
 }
+
 
 /// Sign-coding context + sign-prediction XOR (T.800 Table D-3).
 /// Per-axis contributions collapse the four (sig × sign) cases into
@@ -243,6 +251,8 @@ fn axisContribution(left_sig: bool, left_sign: u1, right_sig: bool, right_sign: 
 pub fn scContext(cblk: Cblk, x: u32, y: u32) SignContext {
     const xi: i32 = @intCast(x);
     const yi: i32 = @intCast(y);
+    // VSC: bottom-of-stripe coefficients drop the south neighbour (causal).
+    const excl_south = cblk.vsc and (y % 4 == 3);
     const h_contrib = axisContribution(
         cblk.isSig(xi - 1, yi),
         cblk.sign(xi - 1, yi),
@@ -252,17 +262,10 @@ pub fn scContext(cblk: Cblk, x: u32, y: u32) SignContext {
     const v_contrib = axisContribution(
         cblk.isSig(xi, yi - 1),
         cblk.sign(xi, yi - 1),
-        cblk.isSig(xi, yi + 1),
-        cblk.sign(xi, yi + 1),
+        if (excl_south) false else cblk.isSig(xi, yi + 1),
+        if (excl_south) @as(u1, 0) else cblk.sign(xi, yi + 1),
     );
-    // T.800 Table D-3 — closed-form CX + XOR from (H, V):
-    //   CX = 9  + (|H| + |V|? — actually) — table mapping by cases:
-    //   (1,1)=cx13,xor0  (1,0)=cx12,xor0  (1,-1)=cx11,xor0
-    //   (0,1)=cx10,xor0  (0,0)=cx9,xor0   (0,-1)=cx10,xor1
-    //   (-1,1)=cx11,xor1 (-1,0)=cx12,xor1 (-1,-1)=cx13,xor1
     if (h_contrib == 0 and v_contrib == 0) return .{ .cx = .sc_0, .xor = 0 };
-    // Symmetric pairs share a CX with opposite XOR:
-    //   (H>=0): xor=0; (H<0): xor=1, mapped to (-H,-V) equivalent.
     var H = h_contrib;
     var V = v_contrib;
     var xor: u1 = 0;
@@ -271,13 +274,12 @@ pub fn scContext(cblk: Cblk, x: u32, y: u32) SignContext {
         V = -V;
         xor = 1;
     }
-    // Now H >= 0, and if H == 0 then V > 0.
-    if (H == 0) return .{ .cx = .sc_1, .xor = xor }; // (0, 1) → CX 10
-    if (V == 1) return .{ .cx = .sc_4, .xor = xor }; // (1, 1) → CX 13
-    if (V == 0) return .{ .cx = .sc_3, .xor = xor }; // (1, 0) → CX 12
-    // V == -1
-    return .{ .cx = .sc_2, .xor = xor }; // (1, -1) → CX 11
+    if (H == 0) return .{ .cx = .sc_1, .xor = xor };
+    if (V == 1) return .{ .cx = .sc_4, .xor = xor };
+    if (V == 0) return .{ .cx = .sc_3, .xor = xor };
+    return .{ .cx = .sc_2, .xor = xor };
 }
+
 
 /// Magnitude-refinement context (T.800 D.3.3).
 ///   CX 14 (mr_0): first refinement for this coefficient, no
@@ -289,33 +291,44 @@ pub fn mrContext(cblk: Cblk, x: u32, y: u32) CtxIdx {
     if (coeff.refined) return .mr_2;
     const xi: i32 = @intCast(x);
     const yi: i32 = @intCast(y);
+    const excl_south = cblk.vsc and (y % 4 == 3);
     const b = struct {
         fn s(c: Cblk, xx: i32, yy: i32) u8 {
             return @intFromBool(c.isSig(xx, yy));
         }
     }.s;
+    const sb = struct {
+        fn s(c: Cblk, xx: i32, yy: i32, excl: bool) u8 {
+            return if (excl) 0 else @intFromBool(c.isSig(xx, yy));
+        }
+    }.s;
     const sum: u8 = b(cblk, xi - 1, yi) + b(cblk, xi + 1, yi) +
-        b(cblk, xi, yi - 1) + b(cblk, xi, yi + 1) +
+        b(cblk, xi, yi - 1) + sb(cblk, xi, yi + 1, excl_south) +
         b(cblk, xi - 1, yi - 1) + b(cblk, xi + 1, yi - 1) +
-        b(cblk, xi - 1, yi + 1) + b(cblk, xi + 1, yi + 1);
+        sb(cblk, xi - 1, yi + 1, excl_south) + sb(cblk, xi + 1, yi + 1, excl_south);
     return if (sum > 0) .mr_1 else .mr_0;
 }
+
 
 /// True if any of the 8-connected neighbours of (x, y) is currently
 /// significant. Out-of-bounds neighbours count as "not significant".
 fn hasSigNeighbor(cblk: Cblk, x: u32, y: u32) bool {
     const xi: i32 = @intCast(x);
     const yi: i32 = @intCast(y);
+    const excl_south = cblk.vsc and (y % 4 == 3);
     if (cblk.isSig(xi - 1, yi - 1)) return true;
     if (cblk.isSig(xi, yi - 1)) return true;
     if (cblk.isSig(xi + 1, yi - 1)) return true;
     if (cblk.isSig(xi - 1, yi)) return true;
     if (cblk.isSig(xi + 1, yi)) return true;
-    if (cblk.isSig(xi - 1, yi + 1)) return true;
-    if (cblk.isSig(xi, yi + 1)) return true;
-    if (cblk.isSig(xi + 1, yi + 1)) return true;
+    if (!excl_south) {
+        if (cblk.isSig(xi - 1, yi + 1)) return true;
+        if (cblk.isSig(xi, yi + 1)) return true;
+        if (cblk.isSig(xi + 1, yi + 1)) return true;
+    }
     return false;
 }
+
 
 /// Significance propagation pass (T.800 D.3.1). The first of the three
 /// coding passes per bit-plane.
@@ -680,6 +693,7 @@ pub fn decodeCblkSegments(
     data: []const u8,
     segments: []const cblk_plan.SegInfo,
 ) void {
+    cblk.vsc = (cblksty & 0x08) != 0;
     var passtype: u8 = 2; // first pass is CL @ msb
     var bpno: u5 = numbps;
     var offset: usize = 0;
@@ -706,6 +720,23 @@ pub fn decodeCblkSegments(
                 1 => if (is_raw) mrPassRaw(&raw_dec, cblk, bpno) else mrPass(&mq_dec, cblk, ctxs, bpno),
                 2 => clPass(&mq_dec, cblk, ctxs, orient, bpno), // cleanup is always MQ
                 else => unreachable,
+            }
+            // SEGSYM (cblksty bit 5): after every cleanup pass a 4-bit symbol is
+            // MQ-coded with the UNIFORM context and must equal 0xA — a built-in
+            // corruption tripwire. Consume it (keeps the MQ stream synced) and flag
+            // any mismatch for the strict validator.
+            if (passtype == 2 and (cblksty & 0x20) != 0) {
+                var sym: u32 = 0;
+                var b: u3 = 0;
+                while (b < 4) : (b += 1) {
+                    sym = (sym << 1) | mq_dec.decode(&ctxs[@intFromEnum(CtxIdx.uniform)]);
+                }
+                if (sym != 0xA) cblk.segsym_error = true;
+            }
+            // RESET (cblksty bit 1): reset the MQ probability estimator states to
+            // their initial values after every MQ-coded pass (never RAW passes).
+            if ((cblksty & 0x02) != 0 and !is_raw) {
+                ctxs.* = initContexts();
             }
             if (passtype == 2) {
                 passtype = 0;

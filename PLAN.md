@@ -54,8 +54,18 @@
       FF92 presence, emitting `.fail jp2_invalid_codestream` on any mismatch. Fixture
       `a5_mono` added; TDD = byte-exact decode + a corrupted-Nsop detection classifier.
       **Sweep PASS 14→17** (a5 + 2 g*). 226 tests, no regressions.
-- [ ] **Next: tier-1 VSC/RESET/SEGSYM coding styles** (`cblksty=0x2f`) → unblocks c2
-      (single-tile, pure tier-1 — "C"). Then b1 image-origin, then p1_04 >8-bit. TDD vs openjpeg.
+- [x] **Tier-1 VSC/RESET/SEGSYM coding styles** (2026-07-18, Thelio). Implemented the
+      three EBCOT flags c2 stacks over c1 (`cblksty=0x2f`): **RESET** (`ctxs.* =
+      initContexts()` after each MQ pass), **VSC** (vertically-causal — a bottom-of-stripe
+      coefficient `y%4==3` drops its 3 south neighbours from ZC/SC/MR/hasSig context;
+      via a `Cblk.vsc` flag, no pass-signature churn), and **SEGSYM** (decode+verify the
+      `0xA` symbol via UNI context after each cleanup pass; sets `cblk.segsym_error`).
+      **c2_mono byte-EXACT**, sweep **PASS 17→19** (c2 + b3), 227 tests, no regressions.
+      NOTE: `segsym_error` surfaces as a FINDING only once tier-1 feeds `validate()`
+      (the Phase-2 dispatcher cutover); today validate is tier-2 (packet-walk) so the
+      flag is staged for then. The corrupted-`Nsop` SOP path already emits in tier-2.
+- [ ] **Next: b1 image-origin** (XOsiz=3097 tile geometry), then **p1_04 >8-bit** (tiffz
+      gap), then the sweep `.pix`-oracle upgrade + p0_13. TDD vs openjpeg.
 - [x] **Reviewer catch — reject user-precinct PPx/PPy=0 at r>0** (2026-06-30, commit
       ba313895). jp2z-reviewer's audit of the multi-tile commit found a reachable crash
       on the shipped validate() path (u6 underflow in TileWalk.init). `parseCodBody` now
