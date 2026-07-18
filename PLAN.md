@@ -45,8 +45,17 @@
         - `c2` (single-tile): VSC/RESET/SEGSYM coding styles (`cblksty=0x2f`).
         - `b1`: non-zero IMAGE origin (XOsiz=3097)+tile-grid origin — improved 223→195
           but still off; image-origin handling in tile geometry needs a look.
-- [ ] **Next: unblock a stacked feature** — SOP/EPH markers (a5 + others) or tier-1
-      VSC/RESET/SEGSYM (c2). Both independent of the now-correct tiling. TDD vs openjpeg.
+- [x] **SOP/EPH packet markers** (2026-07-18, on Thelio). Walker now consumes the
+      per-packet SOP (FF91 + Lsop + Nsop) and EPH (FF92) delimiters gated by
+      `params.scod` bits 1/2 (`walkTilePartBody`, threading `eph_bytes` into
+      `data_base`/`advance`). Per the corruption-detection mission it validates
+      AGGRESSIVELY: FF91/Lsop==4 + **Nsop packet-sequence** (a check openjpeg
+      explicitly TODOs and skips → a jp2z stricter-than-openjpeg differentiator) and
+      FF92 presence, emitting `.fail jp2_invalid_codestream` on any mismatch. Fixture
+      `a5_mono` added; TDD = byte-exact decode + a corrupted-Nsop detection classifier.
+      **Sweep PASS 14→17** (a5 + 2 g*). 226 tests, no regressions.
+- [ ] **Next: tier-1 VSC/RESET/SEGSYM coding styles** (`cblksty=0x2f`) → unblocks c2
+      (single-tile, pure tier-1 — "C"). Then b1 image-origin, then p1_04 >8-bit. TDD vs openjpeg.
 - [x] **Reviewer catch — reject user-precinct PPx/PPy=0 at r>0** (2026-06-30, commit
       ba313895). jp2z-reviewer's audit of the multi-tile commit found a reachable crash
       on the shipped validate() path (u6 underflow in TileWalk.init). `parseCodBody` now

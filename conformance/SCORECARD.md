@@ -14,9 +14,9 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 14 | byte-exact vs oracle |
+| PASS | 17 | byte-exact vs oracle |
 | NEAR | 1 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 20 | decoded but diverges (max_abs > 1) |
+| FAIL | 17 | decoded but diverges (max_abs > 1) |
 | skip:* | 21 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -31,25 +31,22 @@ diverge from the oracle. Largest divergence first.
 | fixture | w×h×comps | max_abs |
 |---------|-----------|--------:|
 | p1_04.j2k | 1024×1024×1 | 3782 |
-| p1_06.j2k | 12×12×3 | 255 |
-| p1_05.j2k | 512×512×3 | 255 |
 | p1_02.j2k | 640×480×3 | 255 |
-| g4_colr.j2c | 256×149×3 | 254 |
-| g3_colr.j2c | 256×149×3 | 254 |
-| g2_colr.j2c | 256×149×3 | 254 |
 | g1_colr.j2c | 256×149×3 | 254 |
 | d2_colr.j2c | 256×149×3 | 254 |
 | e1_colr.j2c | 256×149×3 | 252 |
-| a5_mono.j2c | 303×179×1 | 229 |
-| f2_mono.j2c | 303×179×1 | 225 |
 | file8.jp2 | 700×400×1 | 216 |
 | b3_mono.j2c | 303×179×1 | 202 |
 | b1_mono.j2c | 303×179×1 | 195 |
 | c2_mono.j2c | 303×179×1 | 180 |
 | file2.jp2 | 480×640×3 | 158 |
 | p0_01.j2k | 128×128×1 | 149 |
-| p0_11.j2k | 128×1×1 | 139 |
-| p0_12.j2k | 3×5×1 | 83 |
+| p1_06.j2k | 12×12×3 | 128 |
+| p1_05.j2k | 512×512×3 | 128 |
+| g4_colr.j2c | 256×149×3 | 127 |
+| g3_colr.j2c | 256×149×3 | 127 |
+| g2_colr.j2c | 256×149×3 | 127 |
+| p0_11.j2k | 128×1×1 | 103 |
 
 ## Unsupported profiles (ERROR / CRASH / TIMEOUT)
 
@@ -83,38 +80,38 @@ diverge from the oracle. Largest divergence first.
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
-| a5_mono.j2c | FAIL |  | 303 | 179 | 1 | 229 |
 | b1_mono.j2c | FAIL |  | 303 | 179 | 1 | 195 |
 | b3_mono.j2c | FAIL |  | 303 | 179 | 1 | 202 |
 | c2_mono.j2c | FAIL |  | 303 | 179 | 1 | 180 |
 | d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
 | e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 252 |
-| f2_mono.j2c | FAIL |  | 303 | 179 | 1 | 225 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
 | file8.jp2 | FAIL |  | 700 | 400 | 1 | 216 |
 | g1_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
-| g2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
-| g3_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
-| g4_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
+| g2_colr.j2c | FAIL |  | 256 | 149 | 3 | 127 |
+| g3_colr.j2c | FAIL |  | 256 | 149 | 3 | 127 |
+| g4_colr.j2c | FAIL |  | 256 | 149 | 3 | 127 |
 | p0_01.j2k | FAIL |  | 128 | 128 | 1 | 149 |
-| p0_11.j2k | FAIL |  | 128 | 1 | 1 | 139 |
-| p0_12.j2k | FAIL |  | 3 | 5 | 1 | 83 |
+| p0_11.j2k | FAIL |  | 128 | 1 | 1 | 103 |
 | p1_02.j2k | FAIL |  | 640 | 480 | 3 | 255 |
 | p1_04.j2k | FAIL |  | 1024 | 1024 | 1 | 3782 |
-| p1_05.j2k | FAIL |  | 512 | 512 | 3 | 255 |
-| p1_06.j2k | FAIL |  | 12 | 12 | 3 | 255 |
+| p1_05.j2k | FAIL |  | 512 | 512 | 3 | 128 |
+| p1_06.j2k | FAIL |  | 12 | 12 | 3 | 128 |
 | p0_04.j2k | NEAR |  | 640 | 480 | 3 | 1 |
 | a1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | a2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | a3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| a5_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | c1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | d1_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | f1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| f2_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | file1.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file4.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file5.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file6.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file7.jp2 | PASS |  | 480 | 640 | 3 | 0 |
 | p0_09.j2k | PASS |  | 17 | 37 | 1 | 0 |
+| p0_12.j2k | PASS |  | 3 | 5 | 1 | 0 |
 | p0_14.j2k | PASS |  | 49 | 49 | 3 | 0 |
 | p0_16.j2k | PASS |  | 128 | 128 | 1 | 0 |

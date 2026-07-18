@@ -14,7 +14,7 @@ permission text — redistribution for the purpose of testing
 conformance to the JPEG 2000 Standard is explicitly permitted, and
 the `COPYRIGHT` notice must travel with any copy (which it does, here).
 
-## Why these 8 specific files?
+## Why these curated files?
 
 A curated subset that fits in ~1 MB while still covering the major
 shapes the Phase 2 pure-Zig decoder will need to handle. The full
@@ -30,6 +30,8 @@ oracle suite stays accessible without bloating the repo.
 | `d1_colr.j2c` | 60,080 | Class D color — multi-component without MCT |
 | `e1_colr.j2c` | 67,792 | Class E color — MCT (RCT or ICT) exercised |
 | `f1_mono.j2c` | 35,107 | Class F monochrome — error-resilience markers |
+| `a5_mono.j2c` | 34747 | Class A monochrome — SOP/EPH packet markers + 2×2 tiling |
+| `p0_04.j2k`, `p0_09.j2k`, `p0_10.j2k` | — | Profile-0 conformance (9/7+ICT, 9/7 mono, multi-tile sub-sampled) |
 | `file1.jp2` | 650,678 | JP2 file format, first reference image — exercises box parser |
 | `file9.jp2` | 300,208 | JP2 file format, exercises additional metadata box types |
 

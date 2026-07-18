@@ -881,6 +881,7 @@ test "decodePlan: c1_mono.j2c — every cblk runs through EBCOT without crash" {
 const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
 const f1_mono_j2c = @embedFile("fixtures/conformance/f1_mono.j2c");
+const a5_mono_j2c = @embedFile("fixtures/conformance/a5_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
 const a1_mono_pix = @embedFile("fixtures/oracles/a1_mono.pix");
@@ -1266,6 +1267,50 @@ test "cleanroom: f1_mono multi-tile (3x3 grid, odd X tile origin) byte-exact vs 
             return error.PixelMismatch;
         }
     }
+}
+test "cleanroom: a5_mono multi-tile + SOP/EPH markers byte-exact vs openjpeg" {
+    // a5_mono is 303x179, 2x2 tiles (tdx=203, tdy=111), Scod=0x6 → the codestream
+    // carries an SOP marker (0xFF91) before every packet and an EPH marker (0xFF92)
+    // after every packet header. 5/3 reversible ⇒ byte-EXACT. The walker must
+    // consume+validate those delimiters, else it misreads them as packet-header
+    // bytes and desyncs. Non-sub-sampled mono ⇒ the wrapper oracle is comparable.
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, a5_mono_j2c);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, a5_mono_j2c);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 1), img.num_components);
+    try std.testing.expectEqual(oracle.pixels.len, img.planes[0].len);
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, s) != @as(i32, oracle.pixels[i])) {
+            const w = img.width;
+            std.debug.print("\n[a5] mismatch at ({d},{d}): ours={d} oj={d}\n", .{ i % w, i / w, s, oracle.pixels[i] });
+            return error.PixelMismatch;
+        }
+    }
+}
+test "validate: corrupted SOP Nsop is flagged (jp2z is stricter than openjpeg here)" {
+    // The downstream mission is corruption DETECTION, so jp2z validates the SOP
+    // packet-sequence number (Nsop) — a check openjpeg explicitly TODOs and skips.
+    // Corrupt the first SOP's Nsop in a5 and confirm validate FLAGS it: a byte a
+    // permissive decoder silently accepts. Classifier: valid → no fail; bad → fail.
+    const allocator = std.testing.allocator;
+    var rep_ok = try jp2z.validate(allocator, a5_mono_j2c);
+    defer rep_ok.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep_ok, .jp2_invalid_codestream));
+
+    const buf = try allocator.dupe(u8, a5_mono_j2c);
+    defer allocator.free(buf);
+    // First SOP marker is FF 91 00 04, with the 2-byte Nsop at +4.
+    var i: usize = 0;
+    const sop = while (i + 6 <= buf.len) : (i += 1) {
+        if (buf[i] == 0xFF and buf[i + 1] == 0x91 and buf[i + 2] == 0x00 and buf[i + 3] == 0x04) break i;
+    } else return error.NoSopInFixture;
+    buf[sop + 4] = 0x7F; // wrong Nsop (the first packet's Nsop must be 0)
+    buf[sop + 5] = 0xFF;
+    var rep_bad = try jp2z.validate(allocator, buf);
+    defer rep_bad.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_codestream));
 }
 test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
     const allocator = std.testing.allocator;

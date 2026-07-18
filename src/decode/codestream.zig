@@ -1385,6 +1385,25 @@ fn walkTilePartBody(
         const pi = tw.iter.next() orelse break;
         tw.packets_seen += 1;
 
+        // SOP marker (Scod bit 1): a per-packet delimiter when enabled. Consume +
+        // validate it. Unlike openjpeg (which TODOs the Nsop check) we ALSO verify
+        // the packet sequence number — the strict corruption-detection mission.
+        if (params.scod & 0x02 != 0) {
+            if (body_pos + 6 > tp_body.len or tp_body[body_pos] != 0xFF or tp_body[body_pos + 1] != 0x91) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + body_pos, null);
+                return .broken;
+            }
+            const lsop = std.mem.readInt(u16, tp_body[body_pos + 2 ..][0..2], .big);
+            const nsop = std.mem.readInt(u16, tp_body[body_pos + 4 ..][0..2], .big);
+            // Nsop = 0-based packet index within the tile, wraps at 65536 (openjpeg packno % 65536).
+            const expected_nsop: u16 = @truncate(tw.packets_seen - 1);
+            if (lsop != 4 or nsop != expected_nsop) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + body_pos + 2, null);
+                return .broken;
+            }
+            body_pos += 6;
+        }
+
         // Per-packet view: SubbandStates for (component, resolution,
         // all-subbands-at-r, this-precinct). value-copied in (will be
         // copied out after readPacketHeader has mutated state).
@@ -1413,6 +1432,17 @@ fn walkTilePartBody(
 
         const header_bytes = reader.bytesConsumed();
 
+        // EPH marker (Scod bit 2): follows the byte-aligned packet header when enabled.
+        var eph_bytes: usize = 0;
+        if (params.scod & 0x04 != 0) {
+            const eph_at = body_pos + header_bytes;
+            if (eph_at + 2 > tp_body.len or tp_body[eph_at] != 0xFF or tp_body[eph_at + 1] != 0x92) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + eph_at, null);
+                return .broken;
+            }
+            eph_bytes = 2;
+        }
+
         // M3 brick 9d: per-cblk byte extraction. When an extractor is
         // wired in, we slice each cblk's contribution bytes out of the
         // tile-part body in the SAME order readPacketHeader walked them
@@ -1426,7 +1456,7 @@ fn walkTilePartBody(
             const prc_grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
             const prc_x_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct % prc_grid.width;
             const prc_y_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct / prc_grid.width;
-            const data_base = body_pos + header_bytes;
+            const data_base = body_pos + header_bytes + eph_bytes;
             var bytes_so_far: u32 = 0;
             var ex_sb: u8 = 0;
             while (ex_sb < sb_count) : (ex_sb += 1) {
@@ -1479,7 +1509,7 @@ fn walkTilePartBody(
             }
         }
 
-        const advance = header_bytes + @as(usize, contribution_len);
+        const advance = header_bytes + eph_bytes + @as(usize, contribution_len);
         if (body_pos + advance > tp_body.len) {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos + advance, null);
             return .broken;
