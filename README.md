@@ -1,5 +1,7 @@
 # jp2z
 
+[![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Fjp2z.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/mechatron-prime/)
+
 A from-scratch, integer-only JPEG 2000 (T.800) decoder in pure Zig with a
 C FFI surface. openjpeg (BSD-2) is used only as a build-time differential
 oracle and the Phase-1 backend — never a shipped runtime dependency. See
@@ -8,7 +10,7 @@ determinism, rich validation diagnostics, WASM, Zig-fleet embeddability).
 
 Sister project to [`jpegz`](https://github.com/pmarreck/jpegz) — same
 architecture (Zig core + C FFI + C CLI dogfooding the boundary, Nix
-flake build, Garnix CI), focused exclusively on the wavelet-based
+flake build, Mechatron Prime CI), focused exclusively on the wavelet-based
 JPEG 2000 codec family that has no shared algorithmic surface with
 T.81 baseline / extended / progressive / lossless / arithmetic JPEG
 or T.87 JPEG-LS.

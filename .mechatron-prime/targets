@@ -1,0 +1,6 @@
+# Mechatron Prime CI — Nix flake attributes the Thelio worker builds on each
+# signed push to yolo. Real attrs (verified via `nix flake show`); the worker is
+# x86_64-linux (thelio-nixos / mechatron-prime). These are exactly what `./test`
+# runs: the unit+CLI test check and the package-build check.
+checks.x86_64-linux.test
+checks.x86_64-linux.build
