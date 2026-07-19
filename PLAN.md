@@ -12,14 +12,11 @@
 > fully settled (jp2z-reviewer ✅ audited the geometry clean, Einstein ✅ signed the
 > license, replies sent + notes archived to `inbox/processed/`).
 >
-> **RESUME HERE (ranked next steps, all independent of the now-correct tiling):**
-> 1. **SOP/EPH packet markers** (`csty=0x6`) — highest leverage, unblocks a5 +
->    several `g*`. Add SOP/EPH skipping in the packet walker (`codestream.zig`).
-> 2. **Tier-1 VSC/RESET/SEGSYM coding styles** (`cblksty=0x2f`) — unblocks c2_mono
->    (single-tile, so pure tier-1). Peter had asked for this ("C") before wind-down.
-> 3. **b1_mono** — non-zero IMAGE origin (XOsiz=3097)+tile-grid origin; improved
->    223→195 but still off. Needs image-origin handling in the tile geometry.
-> 4. **Sweep `.pix`-oracle upgrade** (reviewer minor) — reclassifies p0_10 DECODED→PASS.
+> **DONE since this note:** SOP/EPH markers (`29eb483`), Tier-1 VSC/RESET/SEGSYM
+> (`33c8c22`), and **b1_mono + b3_mono image-origin geometry** (2026-07-19 — the tier-2
+> narrow-tile packet-iterator desync; see the checked box below). Sweep now PASS 21.
+> **RESUME HERE (ranked next steps):**
+> 1. **Sweep `.pix`-oracle upgrade** (reviewer minor) — reclassifies p0_10 DECODED→PASS.
 > 5. **>8-bit depth (p1_04, the tiffz gap)** + **p0_13 NoCodingParams** — lower priority.
 > Method for all: TDD, differential-vs-openjpeg on valid files (the reviewer bar);
 > run `./sweep` after each to confirm no PASS→FAIL drift.
@@ -64,16 +61,27 @@
       NOTE: `segsym_error` surfaces as a FINDING only once tier-1 feeds `validate()`
       (the Phase-2 dispatcher cutover); today validate is tier-2 (packet-walk) so the
       flag is staged for then. The corrupted-`Nsop` SOP path already emits in tier-2.
-- [ ] **Next: b1_mono image-origin geometry** (FAIL max_abs 195, improved from 223 by the
-      multi-tile fix but not closed). DIAGNOSED as a PURE geometry bug — `csty=0,
-      cblksty=0, qmfbid=1` (no SOP/EPH, no special tier-1), so the ONLY variable is the
-      non-zero IMAGE origin `XOsiz=3097, YOsiz=41` combined with a tile-grid origin
-      `XTOsiz=3003, YTOsiz=33` offset from it (5×3 tiles, tdx=97 tdy=91; tile 0 clips to
-      [3097,3100) width 3). Well-isolated but needs focused per-tile debugging (re-add the
-      3×5 mismatch-grid instrument used for f1) — likely a resolution/precinct/cblk-anchor
-      coordinate that still assumes image origin 0 somewhere the tile path didn't reach.
-      A good FRESH-CONTEXT target. Then **p1_04 >8-bit** (tiffz gap), 9/7 multi-tile
-      `p1_*`, sweep `.pix`-oracle upgrade, p0_13. TDD vs openjpeg.
+- [x] **b1_mono image-origin geometry — FIXED byte-EXACT** (2026-07-19, Thelio). Root cause
+      was TWO coordinated bugs in the tier-2 packet iterator, NOT the DWT/subband math (which
+      was already correct). (1) `PacketIterator.init` computed per-resolution precinct geometry
+      with tile origin **(0,0)** instead of the real tile-component origin (tcx0,tcy0) —
+      hardcoded `numPrecincts(0, 0, …)`. For a narrow interior tile (b1 col0 is 3px wide at
+      abs X=3097) origin-0 gives width≥1 at every resolution, but the REAL origin collapses the
+      coarse resolutions to zero extent (ceil(3097/32)==ceil(3100/32)). (2) `nextIndexed` (LRCP)
+      emitted a packet for EVERY resolution, never skipping zero-precinct ones. Together they
+      made the iterator emit phantom packets for empty resolutions → those consumed real
+      packets' bytes → whole-tile byte-stream desync → every code-block decoded to zero (tile
+      output = pure +128 DC shift). Latent for large tiles (origin-0 and real-origin give the
+      same precinct COUNT); b1/b3's tiny clipped edge tiles exposed it. Fix: thread tcx0/tcy0
+      through `PacketIterator`; skip zero-precinct resolutions in `nextIndexed` (the emitted-
+      count == `total()` invariant). Diagnosed via the per-tile 3×5 mismatch-grid instrument
+      (kept in the b1 test, prints only on failure) + plan-count/buffer-energy tracing.
+      **b1_mono AND b3_mono both byte-EXACT** (max_abs 195/202 → 0); sweep **PASS 19→21**, no
+      PASS→FAIL drift. Added a focused MFIC metamorphic test (iterator emits exactly total()
+      packets, none in an empty resolution) + the b1 byte-exact differential test. 229 tests.
+- [ ] **Next: p1_04 >8-bit** (tiffz gap), 9/7 multi-tile `p1_*` (needs cas/origin for the 9/7
+      path like the 5/3 path has), sweep `.pix`-oracle upgrade (reclassifies p0_10 → PASS),
+      p0_13. TDD vs openjpeg.
 - [ ] **Minor (Thelio)**: benign `warning(link): unexpected LLD stderr` in the fast
       dev-loop build (`zig build test` in the devShell); `nix build`/`./test` are clean.
       Likely a new-machine LLD version quirk — investigate/silence for clean dev output.

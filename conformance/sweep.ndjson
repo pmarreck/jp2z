@@ -5,9 +5,9 @@
 {"fixture":"a4_colr.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"a5_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"a6_mono_colr.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":303,"h":179,"comps":4,"max_abs":0}
-{"fixture":"b1_mono.j2c","status":"FAIL","detail":"","w":303,"h":179,"comps":1,"max_abs":195}
+{"fixture":"b1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"b2_mono.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":303,"h":179,"comps":1,"max_abs":0}
-{"fixture":"b3_mono.j2c","status":"FAIL","detail":"","w":303,"h":179,"comps":1,"max_abs":202}
+{"fixture":"b3_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"c1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"c2_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"d1_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}

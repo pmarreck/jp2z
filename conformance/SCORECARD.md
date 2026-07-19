@@ -14,9 +14,9 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 19 | byte-exact vs oracle |
+| PASS | 21 | byte-exact vs oracle |
 | NEAR | 1 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 15 | decoded but diverges (max_abs > 1) |
+| FAIL | 13 | decoded but diverges (max_abs > 1) |
 | skip:* | 21 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -36,8 +36,6 @@ diverge from the oracle. Largest divergence first.
 | d2_colr.j2c | 256×149×3 | 254 |
 | e1_colr.j2c | 256×149×3 | 252 |
 | file8.jp2 | 700×400×1 | 216 |
-| b3_mono.j2c | 303×179×1 | 202 |
-| b1_mono.j2c | 303×179×1 | 195 |
 | file2.jp2 | 480×640×3 | 158 |
 | p0_01.j2k | 128×128×1 | 149 |
 | p1_06.j2k | 12×12×3 | 128 |
@@ -78,8 +76,6 @@ diverge from the oracle. Largest divergence first.
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
-| b1_mono.j2c | FAIL |  | 303 | 179 | 1 | 195 |
-| b3_mono.j2c | FAIL |  | 303 | 179 | 1 | 202 |
 | d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
 | e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 252 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
@@ -98,6 +94,8 @@ diverge from the oracle. Largest divergence first.
 | a2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | a3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | a5_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| b1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| b3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | c1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | c2_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | d1_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |

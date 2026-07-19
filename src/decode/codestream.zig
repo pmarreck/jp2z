@@ -194,6 +194,15 @@ pub const PacketIndex = struct {
 ///     for those (r, c) where (x, y) lies on r's precinct boundary.
 pub const PacketIterator = struct {
     params: CodingParams,
+    /// Tile-component ORIGIN (tcx0, tcy0). Non-zero for interior tiles of a
+    /// multi-tile image. CRITICAL: the per-resolution precinct geometry
+    /// depends on the ABSOLUTE origin, not just the size — a small interior
+    /// tile whose coarse resolutions collapse to zero extent has FEWER
+    /// packets than the same-size tile at origin 0 would. Getting this wrong
+    /// makes the iterator emit phantom packets for empty resolutions and
+    /// desync the whole tile's byte stream (the b1_mono image-origin bug).
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
 
@@ -222,9 +231,11 @@ pub const PacketIterator = struct {
 
     done: bool = false,
 
-    pub fn init(params: CodingParams, image_w: u32, image_h: u32) PacketIterator {
+    pub fn init(params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PacketIterator {
         var iter: PacketIterator = .{
             .params = params,
+            .tile_x0 = tile_x0,
+            .tile_y0 = tile_y0,
             .image_w = image_w,
             .image_h = image_h,
         };
@@ -237,7 +248,7 @@ pub const PacketIterator = struct {
             const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
             const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
             const grid = subbands.numPrecincts(
-                0, 0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
             iter.pcw_at_r[r] = grid.width;
             iter.pch_at_r[r] = grid.height;
             iter.precincts_at_r[r] = grid.width * grid.height;
@@ -284,6 +295,18 @@ pub const PacketIterator = struct {
     // ── LRCP / RLCP — indexed iteration with per-r precinct count ──
 
     fn nextIndexed(self: *PacketIterator) ?PacketIndex {
+        // Skip any resolution with zero precincts. A resolution collapses to
+        // zero extent (⇒ zero precincts) when the tile-component's absolute
+        // origin pushes its coarse levels below one reference-grid cell — a
+        // small interior tile of a multi-tile image. Such a resolution
+        // contributes NO packets (that is exactly what `total()` counts, and
+        // what openjpeg emits). Without this skip the iterator emits a phantom
+        // packet per empty resolution and desyncs the whole tile's byte stream
+        // (the b1_mono narrow-tile bug).
+        while (self.precincts_at_r[self.resolution] == 0) {
+            self.advanceIndexed();
+            if (self.done) return null;
+        }
         const result: PacketIndex = .{
             .layer = self.layer,
             .resolution = self.resolution,
@@ -344,7 +367,7 @@ pub const PacketIterator = struct {
         const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
         const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
         const p_idx = subbands.precinctIndexAt(
-            0, 0, self.image_w, self.image_h, self.params.num_decomp_levels,
+            self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
             r, ppx, ppy, self.x, self.y);
         const result: PacketIndex = .{
             .layer = self.layer,
@@ -402,7 +425,7 @@ pub const PacketIterator = struct {
                 const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
                 const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
                 const p_idx = subbands.precinctIndexAt(
-                    0, 0, self.image_w, self.image_h, self.params.num_decomp_levels,
+                    self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
                     r, ppx, ppy, self.x, self.y);
                 const result: PacketIndex = .{
                     .layer = self.layer,
@@ -1316,7 +1339,7 @@ const TileWalk = struct {
             }
         }
 
-        const iter = jp2z.PacketIterator.init(params, image_w, image_h);
+        const iter = jp2z.PacketIterator.init(params, tile_x0, tile_y0, image_w, image_h);
         return .{
             .params = params,
             .image_w = image_w,

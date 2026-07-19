@@ -249,7 +249,7 @@ test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
         .num_components = 1,
         .num_decomp_levels = 5, // → 6 resolution levels (0..5)
     };
-    var iter = jp2z.PacketIterator.init(params, 303, 179);
+    var iter = jp2z.PacketIterator.init(params, 0, 0, 303, 179);
     try std.testing.expectEqual(@as(usize, 60), iter.total());
 
     var count: usize = 0;
@@ -271,6 +271,36 @@ test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
     try std.testing.expectEqual(@as(usize, 60), count);
 }
 
+test "packet iterator: narrow interior tile skips zero-precinct resolutions (b1_mono regression)" {
+    // b1_mono's col0 tile is only 3px wide at absolute origin XOsiz=3097.
+    // Its coarse resolutions collapse to zero extent — ceil(3097/32) ==
+    // ceil(3100/32) == 97 — so resolutions 0..3 have ZERO precincts and
+    // contribute NO packets (only r=4 and r=5 remain, 1 precinct each).
+    // The iterator MUST NOT emit a packet for an empty resolution: doing so
+    // consumes a real packet's bytes and desyncs the tile's whole byte
+    // stream (every code-block then decodes to zero). This is an MFIC
+    // metamorphic invariant: the number of packets next() yields equals
+    // total(), and no yielded packet names a zero-precinct resolution.
+    const params: jp2z.CodingParams = .{
+        .progression_order = .lrcp,
+        .num_layers = 1,
+        .num_components = 1,
+        .num_decomp_levels = 5,
+    };
+    var iter = jp2z.PacketIterator.init(params, 3097, 41, 3, 83);
+    // r0..r3 empty, r4 + r5 have 1 precinct each ⇒ 1 layer × 2 × 1 comp = 2.
+    try std.testing.expectEqual(@as(usize, 2), iter.total());
+    var count: usize = 0;
+    while (iter.next()) |p| {
+        // No emitted packet may name a resolution the geometry says is empty.
+        try std.testing.expect(p.resolution == 4 or p.resolution == 5);
+        count += 1;
+    }
+    // Emitted count must equal total() — the invariant a phantom empty-res
+    // packet would violate (it would make count == 6, one per resolution).
+    try std.testing.expectEqual(iter.total(), count);
+}
+
 test "packet iterator: d1_colr PCRL produces 72 packets (1×3×6×4 = 72)" {
     // CodingParams: PCRL, 4 layers, 3 components, 5 decomp → 6 res.
     // Default precincts here (15, 15) → 1 precinct per resolution; the
@@ -282,7 +312,7 @@ test "packet iterator: d1_colr PCRL produces 72 packets (1×3×6×4 = 72)" {
         .num_components = 3,
         .num_decomp_levels = 5,
     };
-    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
     try std.testing.expectEqual(@as(usize, 72), iter.total());
 
     // Confirm first packet is (l=0,r=0,c=0,p=0) and 4th packet is
@@ -320,7 +350,7 @@ test "packet iterator: every progression order covers exactly the full Cartesian
             .num_layers = params.num_layers,
             .num_components = params.num_components,
             .num_decomp_levels = params.num_decomp_levels,
-        }, 256, 256);
+        }, 0, 0, 256, 256);
         try std.testing.expectEqual(expected_total, iter.total());
         var count: usize = 0;
         // Bitset of seen (l,r,c,p) tuples — packs into a u32 for this small case.
@@ -355,7 +385,7 @@ test "packet iterator: d1_colr params (PCRL, 64×64 precincts) → 240 packets t
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
     try std.testing.expectEqual(@as(usize, 240), iter.total());
 
     var count: usize = 0;
@@ -375,7 +405,7 @@ test "packet iterator: d1_colr params (PCRL) — first packet is (l=0,r=0,c=0)" 
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
     // PCRL nesting (outer→inner): P, C, R, L. At (x=0, y=0), all 6
     // resolutions fire (all on boundary). Layer is innermost.
     const p0 = iter.next().?;
@@ -403,7 +433,7 @@ test "packet iterator: LRCP with d1_colr params (per-r variable precincts)" {
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 256, 149);
+    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
     try std.testing.expectEqual(@as(usize, 240), iter.total());
 
     var count: usize = 0;
@@ -882,6 +912,7 @@ const c1_mono_t1_oracle = @embedFile("fixtures/oracles/c1_mono.t1.bin");
 const a1_mono_j2c = @embedFile("fixtures/conformance/a1_mono.j2c");
 const f1_mono_j2c = @embedFile("fixtures/conformance/f1_mono.j2c");
 const a5_mono_j2c = @embedFile("fixtures/conformance/a5_mono.j2c");
+const b1_mono_j2c = @embedFile("fixtures/conformance/b1_mono.j2c");
 const c2_mono_j2c = @embedFile("fixtures/conformance/c2_mono.j2c");
 const a1_mono_t1_oracle = @embedFile("fixtures/oracles/a1_mono.t1.bin");
 const d1_colr_t1_oracle = @embedFile("fixtures/oracles/d1_colr.t1.bin");
@@ -1334,6 +1365,59 @@ test "cleanroom: c2_mono single-tile tier-1 (RESET+VSC+SEGSYM) byte-exact vs ope
             std.debug.print("\n[c2] mismatch at ({d},{d}): ours={d} oj={d}\n", .{ i % w, i / w, s, oracle.pixels[i] });
             return error.PixelMismatch;
         }
+    }
+}
+test "cleanroom: b1_mono non-zero image origin + offset tile grid byte-exact vs openjpeg" {
+    // b1_mono is 303x179 output, but its IMAGE origin is non-zero (XOsiz=3097,
+    // YOsiz=41) and the TILE-GRID origin (XTOsiz=3003, YTOsiz=33) is offset from
+    // it. 5x3 tiles (tdx=97, tdy=91). csty=0, cblksty=0, qmfbid=1 → NO SOP/EPH,
+    // NO special tier-1 styles, so the ONLY variable vs the passing origin-0
+    // multi-tile fixtures is image-origin geometry. 5/3 reversible ⇒ byte-EXACT.
+    // Non-sub-sampled mono ⇒ the in-process wrapper oracle is comparable.
+    // Instrumented with a per-tile (col x row) mismatch grid to localise the bug.
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, b1_mono_j2c);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, b1_mono_j2c);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 1), img.num_components);
+    try std.testing.expectEqual(oracle.pixels.len, img.planes[0].len);
+    // Tile column boundaries in output (component) coords: 0,3,100,197,294,303.
+    const colb = [_]u32{ 0, 3, 100, 197, 294, 303 };
+    const rowb = [_]u32{ 0, 83, 174, 179 };
+    var grid = [_]u32{0} ** (5 * 3);
+    var first_x: u32 = 0;
+    var first_y: u32 = 0;
+    var total: usize = 0;
+    var max_abs: i64 = 0;
+    const w = img.width;
+    for (img.planes[0], 0..) |s, i| {
+        if (@as(i32, s) != @as(i32, oracle.pixels[i])) {
+            const x: u32 = @intCast(i % w);
+            const y: u32 = @intCast(i / w);
+            var col: usize = 0;
+            while (col < 5 and !(x >= colb[col] and x < colb[col + 1])) : (col += 1) {}
+            var row: usize = 0;
+            while (row < 3 and !(y >= rowb[row] and y < rowb[row + 1])) : (row += 1) {}
+            if (col < 5 and row < 3) grid[row * 5 + col] += 1;
+            if (total == 0) {
+                first_x = x;
+                first_y = y;
+            }
+            total += 1;
+            const d: i64 = @as(i64, s) - @as(i64, oracle.pixels[i]);
+            const ad = if (d < 0) -d else d;
+            if (ad > max_abs) max_abs = ad;
+        }
+    }
+    if (total != 0) {
+        std.debug.print("\n[b1] {d} mismatches, max_abs={d}, first at ({d},{d})\n", .{ total, max_abs, first_x, first_y });
+        std.debug.print("[b1] per-tile mismatch grid (rows=tile-row 0..2, cols=tile-col 0..4):\n", .{});
+        var r: usize = 0;
+        while (r < 3) : (r += 1) {
+            std.debug.print("  row{d}: {d:>6} {d:>6} {d:>6} {d:>6} {d:>6}\n", .{ r, grid[r * 5 + 0], grid[r * 5 + 1], grid[r * 5 + 2], grid[r * 5 + 3], grid[r * 5 + 4] });
+        }
+        return error.PixelMismatch;
     }
 }
 test "cleanroom: p0_09 (9/7 lossy, mono) within tolerance of opj_decompress" {
