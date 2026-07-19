@@ -63,3 +63,24 @@ Both `replace-lines` and `replace-content`/`replace-symbol` REQUIRE `--version`
 (re-fetch after every edit). `replace-content` takes the replacement on **stdin**
 (`printf '%s' "$repl" | codescan replace-content ...`) — omitting stdin deletes
 the match.
+
+## Decoder debugging: constant-DC tile output ⇒ tier-2 desync, not the DWT (2026-07-19)
+
+When a decoded tile comes out a FLAT constant equal to the DC level shift
+(`2^(prec-1)`, e.g. 128 for 8-bit), its coefficient buffer is ALL ZERO before
+the level shift — so the inverse DWT is almost never the culprit (a wrong DWT
+would spread nonzero energy, not erase it). Trace UP the pipeline instead:
+plans present? → coeffs nonzero after tier-1? → pre-DWT buffer energy? The
+fast instrument chain that cracked b1: (1) per-tile `sum|buf|` after
+reconstruct, (2) per-plan `coeff_e` after tier-1 decode, (3) which resolutions
+the packet iterator actually *yields*. Zero coeff energy from plans that have
+real `numbps`/`data` ⇒ the DATA is wrong ⇒ a tier-2 packet-byte desync, which
+localises per-tile because tiles parse independently.
+
+Root-cause pattern worth remembering: **geometry helpers that hardcode tile
+origin `(0,0)` are LATENT** — origin-0 and the real origin give the same
+precinct/cblk COUNT for any tile big enough that no resolution collapses to
+zero extent. Only a degenerate small/clipped edge tile (b1 col0 is 3px wide at
+abs X=3097 → coarse resolutions have zero width) exposes the divergence. Grep
+for `numPrecincts(0, 0` / `precinctIndexAt(0, 0` / any `subbandX(0, 0, …)` when
+a multi-tile fixture with non-zero image/tile origin decodes wrong.
