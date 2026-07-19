@@ -16,7 +16,8 @@
 > (`33c8c22`), and **b1_mono + b3_mono image-origin geometry** (2026-07-19 — the tier-2
 > narrow-tile packet-iterator desync; see the checked box below). Sweep now PASS 21.
 > **RESUME HERE (ranked next steps):**
-> 1. **Sweep `.pix`-oracle upgrade** (reviewer minor) — reclassifies p0_10 DECODED→PASS.
+> 1. **>8-bit depth (p1_04, the tiffz/16-bit gap)** + 9/7 multi-tile `p1_*` (needs cas/origin
+>    for the 9/7 path like the 5/3 path has) + `p0_13` NoCodingParams header-parse gap.
 > 5. **>8-bit depth (p1_04, the tiffz gap)** + **p0_13 NoCodingParams** — lower priority.
 > Method for all: TDD, differential-vs-openjpeg on valid files (the reviewer bar);
 > run `./sweep` after each to confirm no PASS→FAIL drift.
@@ -80,8 +81,7 @@
       PASS→FAIL drift. Added a focused MFIC metamorphic test (iterator emits exactly total()
       packets, none in an empty resolution) + the b1 byte-exact differential test. 229 tests.
 - [ ] **Next: p1_04 >8-bit** (tiffz gap), 9/7 multi-tile `p1_*` (needs cas/origin for the 9/7
-      path like the 5/3 path has), sweep `.pix`-oracle upgrade (reclassifies p0_10 → PASS),
-      p0_13. TDD vs openjpeg.
+      path like the 5/3 path has), p0_13. TDD vs openjpeg.
 - [ ] **Minor (Thelio)**: benign `warning(link): unexpected LLD stderr` in the fast
       dev-loop build (`zig build test` in the devShell); `nix build`/`./test` are clean.
       Likely a new-machine LLD version quirk — investigate/silence for clean dev output.
@@ -91,11 +91,16 @@
       flags `.jp2_invalid_codestream` + un-publishes coding_params; `precinctCblkGeom`
       guards pdx/pdy==0. TDD classifier fixture; 224 tests; existing code 141 (no registry
       change).
-- [ ] **Sweep upgrade — prefer committed `.pix` planar oracle** (reviewer minor). The
-      sweep's in-process wrapper oracle upsamples+interleaves, so sub-sampled byte-exact
-      fixtures (p0_10) report DECODED not PASS → PASS is a conservative undercount. When a
-      fixture has `tests/unit/fixtures/oracles/<name>.pix`, have `sweep_one` diff THAT
-      (planar, component-res) instead. Reclassifies p0_10 as a true PASS.
+- [x] **Sweep upgrade — prefer committed `.pix` planar oracle** (2026-07-19, Thelio). The
+      `./sweep` driver now passes `SWEEP_PIX=tests/unit/fixtures/oracles/<name>.pix` (via
+      `env`, when the file exists); `sweep_one` diffs the cleanroom planes against that PLANAR
+      per-component oracle (raw opj_decompress output) BEFORE falling back to the in-process
+      wrapper. The `.pix` is component-resolution + causally-independent (opj CLI), so
+      sub-sampled fixtures grade honestly instead of `skip:dim-mismatch`. Guarded: only used
+      when `pix.len == Σ plane.len` (1 byte/sample u8) — a stale/wrong-size `.pix` falls
+      through, never mis-grades. **p0_10 DECODED→PASS byte-exact** (sub-sampled 4× + 2×2
+      multi-tile 5/3); a1/c1/d1/p0_04/p0_09 keep identical verdicts (now tagged `oracle:pix`).
+      Sweep **PASS 21→22**, skip 21→20, no regressions.
 - [ ] **>8-bit depth — p1_04** (max_abs 3782, the tiffz/pathology gap) and
       **p0_13** ERROR=NoCodingParams (header-parse gap) — both lower priority
       than the tile cluster but tracked.

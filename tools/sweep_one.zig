@@ -71,14 +71,34 @@ pub fn main() !void {
         }
     }
 
-    // 3) Oracle: the in-process openjpeg wrapper.
+    // 3) PREFERRED oracle: a committed planar `.pix` (raw opj_decompress
+    //    output, de-interleaved to per-component planes at COMPONENT
+    //    resolution). Passed by the ./sweep driver via SWEEP_PIX when the file
+    //    exists. Unlike the in-process wrapper it is directly comparable to the
+    //    cleanroom's component-resolution planes — so sub-sampled fixtures
+    //    (p0_10) grade honestly instead of skip:dim-mismatch. The `.pix` is a
+    //    causally-independent external oracle (opj CLI), a stronger diff than
+    //    the wrapper. Only used when its size matches the cleanroom sample
+    //    count exactly (1 byte/sample, u8) — a mismatched/stale `.pix` falls
+    //    through to the wrapper rather than producing a bogus verdict.
+    if (std.c.getenv("SWEEP_PIX")) |pix_z| {
+        if (readPix(io, a, std.mem.span(pix_z))) |pix| {
+            if (comparePix(&img, pix)) |max_abs| {
+                const status = if (max_abs == 0) "PASS" else if (max_abs <= 1) "NEAR" else "FAIL";
+                try emit(name, status, "oracle:pix", cw, ch, cc, max_abs);
+                return;
+            }
+        }
+    }
+
+    // 4) Fallback oracle: the in-process openjpeg wrapper.
     const oracle = jp2z.internal.openjpegDecode(a, data) catch |e| {
         try emit(name, "DECODED", "oracle-failed", cw, ch, cc, 0);
         std.debug.print("# {s}: oracle openjpegDecode error: {s}\n", .{ name, @errorName(e) });
         return;
     };
 
-    // 4) Decide whether a diff is meaningful, then grade it.
+    // 5) No usable `.pix`: decide whether the wrapper diff is meaningful.
     if (any_signed) {
         try emit(name, "DECODED", "skip:signed", cw, ch, cc, 0);
         return;
@@ -124,6 +144,43 @@ fn compare(img: *jp2z.internal.CleanroomImage, oracle: jp2z.Image) i64 {
                 if (ad > max_abs) max_abs = ad;
             }
         }
+    }
+    return max_abs;
+}
+
+/// Read a committed planar `.pix` oracle from disk. Returns null on any I/O
+/// error (the caller then falls back to the wrapper oracle).
+fn readPix(io: std.Io, a: std.mem.Allocator, path: []const u8) ?[]u8 {
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    return fr.interface.allocRemaining(a, .limited(64 * 1024 * 1024)) catch null;
+}
+
+/// max_abs of the cleanroom planes vs a PLANAR u8 `.pix` oracle
+/// (plane0 ++ plane1 ++ …, one byte per sample, at component resolution).
+/// Returns null when the `.pix` byte count doesn't equal the total cleanroom
+/// sample count — i.e. it isn't a 1-byte/sample planar oracle for THIS decode
+/// (wrong file, stale dims, or a >8-bit depth we don't diff here) — so a
+/// size-mismatched oracle is ignored rather than mis-graded. complexity: O(samples).
+fn comparePix(img: *jp2z.internal.CleanroomImage, pix: []const u8) ?i64 {
+    var total: usize = 0;
+    var c: usize = 0;
+    while (c < img.num_components) : (c += 1) total += img.planes[c].len;
+    if (pix.len != total) return null;
+
+    var max_abs: i64 = 0;
+    var off: usize = 0;
+    c = 0;
+    while (c < img.num_components) : (c += 1) {
+        const plane = img.planes[c];
+        var i: usize = 0;
+        while (i < plane.len) : (i += 1) {
+            const d: i64 = @as(i64, plane[i]) - @as(i64, pix[off + i]);
+            const ad = if (d < 0) -d else d;
+            if (ad > max_abs) max_abs = ad;
+        }
+        off += plane.len;
     }
     return max_abs;
 }

@@ -64,12 +64,20 @@ i=0
 for f in "${fixtures[@]}"; do
 	i=$((i + 1))
 	name="$(basename "$f")"
+	# Prefer a committed planar `.pix` oracle (raw opj_decompress output) when
+	# one exists for this fixture — it is component-resolution and directly
+	# diffable, so sub-sampled fixtures grade honestly instead of being skipped.
+	pix="$root/tests/unit/fixtures/oracles/${name%.*}.pix"
+	pix_env=()
+	[ -f "$pix" ] && pix_env=("SWEEP_PIX=$pix")
 	# The worker prints its NDJSON record (and any '#' diagnostics) to stderr
 	# via std.debug.print; capture both streams and pull the record line.
+	# `env` (not a bare NAME=val prefix) so the array-expanded SWEEP_PIX is a
+	# real assignment — a word from expansion is NOT recognised as an env prefix.
 	if [ -n "$timeout_bin" ]; then
-		out="$(SWEEP_FIXTURE="$f" MUTE_DEBUG_STATUS=1 "$timeout_bin" "$timeout_secs" "$bin" 2>&1)"
+		out="$(env SWEEP_FIXTURE="$f" "${pix_env[@]}" MUTE_DEBUG_STATUS=1 "$timeout_bin" "$timeout_secs" "$bin" 2>&1)"
 	else
-		out="$(SWEEP_FIXTURE="$f" MUTE_DEBUG_STATUS=1 "$bin" 2>&1)"
+		out="$(env SWEEP_FIXTURE="$f" "${pix_env[@]}" MUTE_DEBUG_STATUS=1 "$bin" 2>&1)"
 	fi
 	rc=$?
 	rec="$(printf '%s\n' "$out" | grep -m1 '^{')"

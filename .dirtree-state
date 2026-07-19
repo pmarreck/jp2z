@@ -14,5 +14,5 @@ annotate=[
 	tests/unit/fixtures/conformance/p0_09.j2k = 9/7 lossy mono conformance fixture (17x37, byte-perfect target)
 	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records
 	tests/unit/fixtures/oracles/d1_colr.t1.bin = OpenJPEG t1 oracle for d1_colr.j2c (pure-MQ, 3-comp MCT, multi-precinct, byte-perfect) — 174 cblk records
-	tools/sweep_one.zig = Conformance-sweep worker: decode+classify ONE fixture per process (decodeCleanroom vs openjpeg oracle); input via SWEEP_FIXTURE env; one JSON record to stderr
+	tools/sweep_one.zig = Conformance-sweep worker: decode+classify ONE fixture/process (decodeCleanroom); prefers committed planar .pix oracle (SWEEP_PIX) else in-process openjpeg wrapper; input via SWEEP_FIXTURE; one JSON record to stderr
 ]

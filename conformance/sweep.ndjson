@@ -1,5 +1,5 @@
 {"_meta":"jp2z conformance sweep: per-fixture decodeCleanroom-vs-openjpeg classification","schema":1,"generated_by":"./sweep (tools/sweep_one.zig)","fixture_set":"openjpeg-data ISO 15444-4 conformance","deterministic":true}
-{"fixture":"a1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
+{"fixture":"a1_mono.j2c","status":"PASS","detail":"oracle:pix","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"a2_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"a3_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"a4_colr.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":256,"h":149,"comps":3,"max_abs":0}
@@ -8,9 +8,9 @@
 {"fixture":"b1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"b2_mono.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"b3_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
-{"fixture":"c1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
+{"fixture":"c1_mono.j2c","status":"PASS","detail":"oracle:pix","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"c2_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
-{"fixture":"d1_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
+{"fixture":"d1_colr.j2c","status":"PASS","detail":"oracle:pix","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"d2_colr.j2c","status":"FAIL","detail":"","w":256,"h":149,"comps":3,"max_abs":254}
 {"fixture":"e1_colr.j2c","status":"FAIL","detail":"","w":256,"h":149,"comps":3,"max_abs":252}
 {"fixture":"e2_colr.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":256,"h":149,"comps":3,"max_abs":0}
@@ -32,13 +32,13 @@
 {"fixture":"p0_01.j2k","status":"FAIL","detail":"","w":128,"h":128,"comps":1,"max_abs":149}
 {"fixture":"p0_02.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":127,"h":126,"comps":1,"max_abs":0}
 {"fixture":"p0_03.j2k","status":"DECODED","detail":"skip:signed","w":256,"h":256,"comps":1,"max_abs":0}
-{"fixture":"p0_04.j2k","status":"NEAR","detail":"","w":640,"h":480,"comps":3,"max_abs":1}
+{"fixture":"p0_04.j2k","status":"NEAR","detail":"oracle:pix","w":640,"h":480,"comps":3,"max_abs":1}
 {"fixture":"p0_05.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":1024,"h":1024,"comps":4,"max_abs":0}
 {"fixture":"p0_06.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":513,"h":129,"comps":4,"max_abs":0}
 {"fixture":"p0_07.j2k","status":"DECODED","detail":"skip:signed","w":2048,"h":2048,"comps":3,"max_abs":0}
 {"fixture":"p0_08.j2k","status":"DECODED","detail":"skip:signed","w":513,"h":3072,"comps":3,"max_abs":0}
-{"fixture":"p0_09.j2k","status":"PASS","detail":"","w":17,"h":37,"comps":1,"max_abs":0}
-{"fixture":"p0_10.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":64,"h":64,"comps":3,"max_abs":0}
+{"fixture":"p0_09.j2k","status":"PASS","detail":"oracle:pix","w":17,"h":37,"comps":1,"max_abs":0}
+{"fixture":"p0_10.j2k","status":"PASS","detail":"oracle:pix","w":64,"h":64,"comps":3,"max_abs":0}
 {"fixture":"p0_11.j2k","status":"PASS","detail":"","w":128,"h":1,"comps":1,"max_abs":0}
 {"fixture":"p0_12.j2k","status":"PASS","detail":"","w":3,"h":5,"comps":1,"max_abs":0}
 {"fixture":"p0_13.j2k","status":"ERROR","detail":"NoCodingParams","w":null,"h":null,"comps":null,"max_abs":0}

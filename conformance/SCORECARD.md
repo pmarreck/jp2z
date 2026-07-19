@@ -14,10 +14,10 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 21 | byte-exact vs oracle |
+| PASS | 22 | byte-exact vs oracle |
 | NEAR | 1 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
 | FAIL | 13 | decoded but diverges (max_abs > 1) |
-| skip:* | 21 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
+| skip:* | 20 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
 | CRASH | 0 | panic / non-zero exit (no record) |
@@ -66,7 +66,6 @@ diverge from the oracle. Largest divergence first.
 | p0_06.j2k | DECODED | skip:dim-mismatch | 513 | 129 | 4 | 0 |
 | p0_07.j2k | DECODED | skip:signed | 2048 | 2048 | 3 | 0 |
 | p0_08.j2k | DECODED | skip:signed | 513 | 3072 | 3 | 0 |
-| p0_10.j2k | DECODED | skip:dim-mismatch | 64 | 64 | 3 | 0 |
 | p0_15.j2k | DECODED | skip:signed | 256 | 256 | 1 | 0 |
 | p1_01.j2k | DECODED | skip:dim-mismatch | 122 | 99 | 1 | 0 |
 | p1_03.j2k | DECODED | skip:dim-mismatch | 1024 | 1024 | 4 | 0 |
@@ -89,16 +88,16 @@ diverge from the oracle. Largest divergence first.
 | p1_04.j2k | FAIL |  | 1024 | 1024 | 1 | 3782 |
 | p1_05.j2k | FAIL |  | 512 | 512 | 3 | 128 |
 | p1_06.j2k | FAIL |  | 12 | 12 | 3 | 128 |
-| p0_04.j2k | NEAR |  | 640 | 480 | 3 | 1 |
-| a1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
+| a1_mono.j2c | PASS | oracle:pix | 303 | 179 | 1 | 0 |
 | a2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | a3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | a5_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | b1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | b3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
-| c1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
+| c1_mono.j2c | PASS | oracle:pix | 303 | 179 | 1 | 0 |
 | c2_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
-| d1_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
+| d1_colr.j2c | PASS | oracle:pix | 256 | 149 | 3 | 0 |
 | f1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | f2_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | file1.jp2 | PASS |  | 768 | 512 | 3 | 0 |
@@ -106,7 +105,8 @@ diverge from the oracle. Largest divergence first.
 | file5.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file6.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file7.jp2 | PASS |  | 480 | 640 | 3 | 0 |
-| p0_09.j2k | PASS |  | 17 | 37 | 1 | 0 |
+| p0_09.j2k | PASS | oracle:pix | 17 | 37 | 1 | 0 |
+| p0_10.j2k | PASS | oracle:pix | 64 | 64 | 3 | 0 |
 | p0_11.j2k | PASS |  | 128 | 1 | 1 | 0 |
 | p0_12.j2k | PASS |  | 3 | 5 | 1 | 0 |
 | p0_14.j2k | PASS |  | 49 | 49 | 3 | 0 |
