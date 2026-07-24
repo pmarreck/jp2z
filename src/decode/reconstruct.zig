@@ -570,5 +570,18 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch)", .{under_count});
         try appendFinding(&report, allocator, sev, .entropy_under_read, detail);
     }
+
+    // EOC is mandatory (T.800 A.4.4). The structural walk flags a missing
+    // terminator as `missing_eoi` at WARN; escalate it to strict severity so
+    // strict mode REJECTs a codestream with no EOC, while relaxed mode keeps it
+    // a WARN (the body is still decodable). `sev` is .fail when strict and
+    // .warn when relaxed, so relaxed is a no-op — missing_eoi is already WARN.
+    for (report.findings.items) |*fnd| {
+        if (fnd.code == .missing_eoi and @intFromEnum(sev) > @intFromEnum(fnd.severity)) {
+            fnd.severity = sev;
+            if (@intFromEnum(sev) > @intFromEnum(report.overall)) report.overall = sev;
+        }
+    }
+
     return report;
 }

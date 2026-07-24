@@ -14,6 +14,10 @@
 
 #include "jp2z_core.h"
 
+/* Numeric finding codes the header exposes only as `int` (jp2z_finding_code_t
+ * is not published in the C ABI). Kept in sync with src/core/errors.zig. */
+#define JP2Z_FINDING_MISSING_EOI 2
+
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { \
         fprintf(stderr, "FAIL: %s (line %d): %s\n", \
@@ -77,6 +81,41 @@ int main(void) {
     ASSERT(dsev2 >= 0, "deep_validate(NULL, 0) doesn't crash");
     jp2z_findings_sink_free(dsink);
 
-    printf("PASS: jp2z C FFI smoke (13 assertions, version + decode + findings_sink + deep_validate)\n");
+    /* ── Missing-EOC strict vs relaxed (T.800 A.4.4: EOC is mandatory) ──
+     * Contract: strict deep_validate REJECTs a codestream missing its EOC
+     * terminator; relaxed mode keeps it a WARN (the body is still decodable).
+     * a1_mono.j2c is a valid control ending in FF D9 (EOC); the EOC-removed
+     * mutant is the same bytes minus the trailing 2. */
+    static const unsigned char a1[] = {
+#embed "../unit/fixtures/conformance/a1_mono.j2c"
+    };
+    const size_t a1_len = sizeof a1;
+
+    /* valid control: strict deep_validate must NOT reject a conforming file. */
+    jp2z_findings_sink_t *vs = jp2z_findings_sink_create();
+    int vsev = jp2z_deep_validate(a1, a1_len, 1, vs);
+    ASSERT(vsev >= 0 && vsev < JP2Z_SEVERITY_FAIL, "valid a1_mono: strict deep_validate ACCEPTs");
+    jp2z_findings_sink_free(vs);
+
+    /* EOC-removed mutant, strict => FAIL and reports the missing-EOC finding. */
+    jp2z_findings_sink_t *es = jp2z_findings_sink_create();
+    int esev = jp2z_deep_validate(a1, a1_len - 2, 1, es);
+    ASSERT(esev == JP2Z_SEVERITY_FAIL, "missing-EOC: strict deep_validate REJECTs (FAIL)");
+    int found_eoc = 0;
+    for (size_t i = 0; i < jp2z_findings_sink_count(es); i++) {
+        jp2z_sink_finding_t fd = {0};
+        if (jp2z_findings_sink_get(es, i, &fd) == JP2Z_OK
+            && fd.code == JP2Z_FINDING_MISSING_EOI) found_eoc = 1;
+    }
+    ASSERT(found_eoc, "missing-EOC: strict reports missing_eoi finding");
+    jp2z_findings_sink_free(es);
+
+    /* relaxed mode preserves WARN — structural, not unconditionally fatal. */
+    jp2z_findings_sink_t *rs = jp2z_findings_sink_create();
+    int rsev = jp2z_deep_validate(a1, a1_len - 2, 0, rs);
+    ASSERT(rsev >= 0 && rsev < JP2Z_SEVERITY_FAIL, "missing-EOC: relaxed deep_validate keeps WARN (no FAIL)");
+    jp2z_findings_sink_free(rs);
+
+    printf("PASS: jp2z C FFI smoke (17 assertions, version + decode + findings_sink + deep_validate + missing-EOC strict/relaxed)\n");
     return 0;
 }

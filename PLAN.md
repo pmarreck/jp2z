@@ -32,9 +32,12 @@ REJECT (1 false-negative)**; non-JPEG2000 3/3 REJECT. The deep byte-budget/
 over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiator
 (caught a deep entropy bit-flip). Ranked pre-1.0 gaps:
 
-- [ ] **Escalate missing-EOC to FAIL in strict mode.** Confirmed false-negative:
-      a file missing the T.800-mandatory EOC (A.4.4) currently only emits WARN
-      `missing_eoi` (code 2) → strict mode ACCEPTs it. 1-line severity + TDD test.
+- [x] **Escalate missing-EOC to FAIL in strict mode** (2026-07-24). `deepValidate`
+      now escalates the structural `missing_eoi` (code 2) finding to strict
+      severity: strict → FAIL/REJECT, relaxed → WARN (body still decodable; T.800
+      A.4.4 makes EOC mandatory but not unconditionally fatal for a decoder). TDD
+      via the public C FFI `jp2z_deep_validate` (a1_mono valid control + EOC-removed
+      mutant, proved RED first). Closes the confusion-matrix false-negative.
 - [ ] **unsupported-valid must NEVER become a strict FAIL.** `c145`
       (`jp2_unsupported_marker_ignored`: COC/QCC/RGN/POC) must stay WARN and be
       excluded from the strict-FAIL verdict. Keep invalid vs unsupported-valid vs
