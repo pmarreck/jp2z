@@ -135,3 +135,27 @@ The `openjpeg-cblk-dump.patch` dumps `t1->data` *inside* `opj_t1_decode_cblk`
 (pre-dequant) — that is NOT the value the DWT sees. Also: openjpeg's post-T1
 `cblk->numbps`/`cblk->Mb` are *significance* values (max decoded bitplane), NOT
 the tier-2 `band->numbps - zbp` — do not compare jz's tier-2 numbps to them.
+
+### Closure update (2026-07-23, decoded_data dump)
+
+Two findings that close the loop enough to pivot:
+1. **The 4× is real, not a buffer artifact.** The openjpeg dump was reading
+   `t1->data` (scratch, restored to `original_t1_data` before the dump). Re-ran
+   dumping `cblk->decoded_data ? cblk->decoded_data : t1->data` — the buffer the
+   dequant actually consumes (`datap * 0.5·stepsize`, no bpno shift) — and it
+   STILL shows the compacted value (`3 -7` for tile-18 r1 HL). So jz genuinely
+   decodes `12` (absolute bitplane scale) where openjpeg's DWT input is `3`.
+2. **The multi-tile 9/7 refactor was never committed.** HEAD calls
+   `idwt97(buf, tile_w, 0, 0, …)` — the single-tile path. The 954-PAE
+   investigation ran on uncommitted refactor code. So p1_04 multi-tile *decode*
+   is currently unimplemented in HEAD (fine for the validator mission: tier-2
+   packet-walk multi-tile correctness — the b1/b3 fixes — IS committed and is
+   what corruption detection needs; pixel reconstruction is not).
+
+Remaining paradox for a future resume: shifting jz's coefficient to the
+compacted value made single-tile p0_04/p0_09 *worse*, implying openjpeg's
+single-tile decode feeds the DWT an absolute-scale buffer while its multi-tile
+path feeds a compacted one — likely a `decoded_data` (partial/multi) vs
+`t1->data` (full single-tile) distinction. Confirm by dumping openjpeg's
+POST-dequant float for a single-tile fixture and comparing to the multi-tile
+case. Decoder-rendering only — off the 1.0 validation critical path.
