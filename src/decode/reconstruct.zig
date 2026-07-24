@@ -555,7 +555,18 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
-        if (cblk.over_read > 2) over_count += 1;
+        // Over-read cap = 4. Normal MQ termination (T.800 C.3.4) legitimately
+        // synthesises past-end 0xFF as the arithmetic coder drains; the amount is
+        // bounded by the decoder's register lookahead — 2 bytes of INITDEC
+        // pre-load + <=2 final-renorm byteins (A is 16-bit ⇒ <=15 shifts ⇒ <=2
+        // byteins). So a conforming cblk over-reads <=4 (observed valid max is 3:
+        // b1_mono byte-exact, p0_04 max_abs<=1); truncation/mis-decode runs far
+        // higher (e1: 12-21). The old >2 rested on a wrong "0-2" assumption.
+        if (cblk.over_read > 4) over_count += 1;
+        // NOTE: under_read (declared-but-unconsumed bytes) is symmetric and could
+        // in principle false-positive up to the same ~4 lookahead, but no valid
+        // fixture trips it today (b1/p0_04 under_read=0); revisit with the same
+        // register-derived cap if one ever does.
         if (cblk.under_read > 2) under_count += 1;
     }
     if (passbudget_count > 0) {

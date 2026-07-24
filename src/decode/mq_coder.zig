@@ -117,10 +117,12 @@ pub const Decoder = struct {
     a: u16,
     ct: u8,
     /// Count of BYTEIN calls that ran past the end of the segment data
-    /// (synthesised 0xFF). A valid MQ segment needs 0-2 of these for its
-    /// terminator tail; >2 signals truncated/over-read entropy data
-    /// (T.800 / openjpeg end_of_byte_stream_counter — openjpeg only checks
-    /// this under PTERM; jp2z exposes it for strict validation always).
+    /// (synthesised 0xFF). Normal MQ termination (T.800 C.3.4) synthesises a
+    /// bounded tail as the coder drains: <=4 (2 INITDEC pre-load + <=2 final-
+    /// renorm byteins; observed valid max 3 — b1_mono/p0_04). deepValidate flags
+    /// >4 as truncated/over-read (T.800 / openjpeg end_of_byte_stream_counter —
+    /// openjpeg only checks this under PTERM; jp2z exposes it for strict
+    /// validation always).
     end_of_stream_count: u32 = 0,
 
     /// T.800 C.3.5 INITDEC: prime the registers from the first two

@@ -42,13 +42,25 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       (`jp2_unsupported_marker_ignored`: COC/QCC/RGN/POC) must stay WARN and be
       excluded from the strict-FAIL verdict. Keep invalid vs unsupported-valid vs
       resource-limit distinct (Einstein Note-2 item 4).
-- [ ] **Decode-driven false positives (the real work).** These valid ISO files
-      wrongly REJECT because jp2z's decoder mis-handles them and the deep-integrity
-      checks fire on jp2z's own broken state — NOT because the files are invalid
-      (openjpeg accepts all): `b1_mono`,`p0_04` → c251 cblk over-read;
-      `e1_colr` → c251×22 + c252×56 (MCT); `p1_04` → c253 pass-overflow (multi-tile
-      9/7). Fix decode ⇒ false positives vanish. Re-landing the (uncommitted)
-      multi-tile-9/7 refactor likely clears p1_04's c253.
+- [x] **b1_mono + p0_04 c251 false positives — over-read cap fix** (2026-07-24).
+      Adjudicated per spec (not decoder consensus): both are CONFORMING (b1
+      byte-exact vs openjpeg, p0_04 max_abs≤1); each has one valid cblk that
+      legitimately over-reads **3** past-end 0xFF during normal MQ termination
+      (T.800 C.3.4). jz's `over_read > 2` rested on a wrong "0-2" assumption. New
+      cap = **4**, DERIVED from the decoder's register lookahead (2 INITDEC
+      pre-load + ≤2 final-renorm byteins; `reconstruct.zig` deepValidate +
+      `mq_coder.zig` doc). Not matrix-driven — b1/p0_04 (3) clear it on principle,
+      e1 (12–21) + truncation still trip it. TDD via C FFI (b1/p0_04 must ACCEPT).
+      Valid-set false positives 4→2.
+- [ ] **e1_colr + p1_04 — genuine decode bugs (NOT false positives).** jz truly
+      mis-decodes these, so their REJECT is honest until the decoder is fixed:
+      `e1_colr` = MCT (sweep FAIL; c251×22 over-reads of 12–21 = the decoder
+      running off) → M6 MCT correctness; `p1_04` = multi-tile 9/7 (c253) → re-land
+      the parked (uncommitted) multi-tile-9/7 refactor. Fix decode ⇒ these ACCEPT.
+- [ ] **PTERM predictable-termination verification** (Peter, 2026-07-24): when a
+      cblk signals PTERM (`cblksty`), also verify the deterministic terminator
+      (openjpeg-style `check_pterm`) — a spec-provided corruption signal, free
+      where available. Complements the always-on over/under-read heuristics.
 - [ ] **Integration:** Validate deep-validates via stock OpenJPEG, not jp2z
       (Einstein's critical fact). Switch `validate/src/core/jpeg2000_validator.zig`
       to `jp2z_deep_validate` once false positives are cleared — jp2z's stricter

@@ -116,6 +116,30 @@ int main(void) {
     ASSERT(rsev >= 0 && rsev < JP2Z_SEVERITY_FAIL, "missing-EOC: relaxed deep_validate keeps WARN (no FAIL)");
     jp2z_findings_sink_free(rs);
 
-    printf("PASS: jp2z C FFI smoke (17 assertions, version + decode + findings_sink + deep_validate + missing-EOC strict/relaxed)\n");
+    /* ── Over-read cap (T.800 C.3.4 normal MQ termination) ──
+     * A conforming code-block synthesises a few past-end 0xFF bytes as the
+     * arithmetic coder drains; the decoder's register lookahead bounds this at
+     * ~4 (2 INITDEC pre-load + <=2 final-renorm byteins). The corruption alarm
+     * must sit ABOVE that, not at the old too-tight >2. These two valid ISO
+     * fixtures each have exactly one cblk that legitimately over-reads 3
+     * (b1_mono decodes byte-exact vs openjpeg; p0_04 within max_abs<=1) — they
+     * must ACCEPT under strict deep_validate, not REJECT as false positives. */
+    static const unsigned char b1[] = {
+#embed "../unit/fixtures/conformance/b1_mono.j2c"
+    };
+    jp2z_findings_sink_t *b1s = jp2z_findings_sink_create();
+    int b1sev = jp2z_deep_validate(b1, sizeof b1, 1, b1s);
+    ASSERT(b1sev >= 0 && b1sev < JP2Z_SEVERITY_FAIL, "b1_mono (valid, cblk over_read=3): strict ACCEPTs");
+    jp2z_findings_sink_free(b1s);
+
+    static const unsigned char p004[] = {
+#embed "../unit/fixtures/conformance/p0_04.j2k"
+    };
+    jp2z_findings_sink_t *p4s = jp2z_findings_sink_create();
+    int p4sev = jp2z_deep_validate(p004, sizeof p004, 1, p4s);
+    ASSERT(p4sev >= 0 && p4sev < JP2Z_SEVERITY_FAIL, "p0_04 (valid, cblk over_read=3): strict ACCEPTs");
+    jp2z_findings_sink_free(p4s);
+
+    printf("PASS: jp2z C FFI smoke (19 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap)\n");
     return 0;
 }
