@@ -21,6 +21,42 @@
 > 5. **>8-bit depth (p1_04, the tiffz gap)** + **p0_13 NoCodingParams** — lower priority.
 > Method for all: TDD, differential-vs-openjpeg on valid files (the reviewer bar);
 > run `./sweep` after each to confirm no PASS→FAIL drift.
+
+### 1.0 strict-validation audit — confusion matrix + gaps (2026-07-24)
+
+Ran jp2z's OWN validator (`jp2z_deep_validate`, strict=1, via the C FFI) over a
+labeled corpus (Einstein's library-first 1.0 program). **Blocker inverts: jp2z is
+not too lenient — it's not yet trustworthy on VALID data.** Matrix: valid ISO
+conformance **10/14 ACCEPT (4 false-positive REJECT)**; corrupt mutants **5/6
+REJECT (1 false-negative)**; non-JPEG2000 3/3 REJECT. The deep byte-budget/
+over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiator
+(caught a deep entropy bit-flip). Ranked pre-1.0 gaps:
+
+- [ ] **Escalate missing-EOC to FAIL in strict mode.** Confirmed false-negative:
+      a file missing the T.800-mandatory EOC (A.4.4) currently only emits WARN
+      `missing_eoi` (code 2) → strict mode ACCEPTs it. 1-line severity + TDD test.
+- [ ] **unsupported-valid must NEVER become a strict FAIL.** `c145`
+      (`jp2_unsupported_marker_ignored`: COC/QCC/RGN/POC) must stay WARN and be
+      excluded from the strict-FAIL verdict. Keep invalid vs unsupported-valid vs
+      resource-limit distinct (Einstein Note-2 item 4).
+- [ ] **Decode-driven false positives (the real work).** These valid ISO files
+      wrongly REJECT because jp2z's decoder mis-handles them and the deep-integrity
+      checks fire on jp2z's own broken state — NOT because the files are invalid
+      (openjpeg accepts all): `b1_mono`,`p0_04` → c251 cblk over-read;
+      `e1_colr` → c251×22 + c252×56 (MCT); `p1_04` → c253 pass-overflow (multi-tile
+      9/7). Fix decode ⇒ false positives vanish. Re-landing the (uncommitted)
+      multi-tile-9/7 refactor likely clears p1_04's c253.
+- [ ] **Integration:** Validate deep-validates via stock OpenJPEG, not jp2z
+      (Einstein's critical fact). Switch `validate/src/core/jpeg2000_validator.zig`
+      to `jp2z_deep_validate` once false positives are cleared — jp2z's stricter
+      c251/c252 checks are the product differentiator.
+- [ ] **Remaining strictness surface** (Einstein Note-1 item 5, not yet audited in
+      code): SOT/Psot tile-part bounds+order, reserved/field ranges, coding-pass
+      budgets (c253 exists — audit coverage), tag-tree invariants, trailing-data,
+      length consistency, embedded-stream base-offset/length bounds.
+- [ ] **Build hygiene:** `libjp2z.a` bundles a nested `libopenjp2.so` archive
+      member (`ld.lld: neither ET_REL nor LLVM bitcode` warning) — the FFI-link
+      fragility Einstein flagged. Static lib should not embed the dynamic dep.
 - [x] **Conformance-sweep harness** (2026-06-30). `tools/sweep_one.zig` decodes
       one fixture per process with `internal.decodeCleanroom` and grades it vs
       the in-process openjpeg oracle; `./sweep` runs all 57 ISO 15444-4 fixtures
