@@ -163,6 +163,19 @@ int main(void) {
     }
     jp2z_findings_sink_free(p4s);
 
-    printf("PASS: jp2z C FFI smoke (22 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant)\n");
+    /* ── PTERM tighter bound must not false-positive on a VALID PTERM stream ──
+     * pterm_test.j2k: generated via `opj_compress -M 16` (64x64 gradient PGM),
+     * cblksty=0x10 verified in its COD marker; openjpeg round-trips it. Under
+     * PTERM the over-read cap tightens 4→2 (flush-terminated tail); a
+     * conforming PTERM stream must still ACCEPT under strict deep_validate. */
+    static const unsigned char ptermf[] = {
+#embed "../unit/fixtures/pterm_test.j2k"
+    };
+    jp2z_findings_sink_t *pts = jp2z_findings_sink_create();
+    int ptsev = jp2z_deep_validate(ptermf, sizeof ptermf, 1, pts);
+    ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
+    jp2z_findings_sink_free(pts);
+
+    printf("PASS: jp2z C FFI smoke (23 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + PTERM)\n");
     return 0;
 }

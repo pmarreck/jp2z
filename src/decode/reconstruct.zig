@@ -449,6 +449,48 @@ test "inverseIct: known YCbCr->RGB vector (Q16) rounds to expected RGB" {
     try std.testing.expectEqual(@as(i32, 118), dwt.fpRound(c2[0]));
 }
 
+/// Max legitimate past-end 0xFF synthesis (MQ over-read) for a conforming
+/// code-block. General bound = 4, DERIVED from the decoder's register
+/// lookahead: INITDEC pre-loads 2 bytes before any symbol decodes, and the
+/// final symbol's RENORMD can pull <=2 more byteins (A is 16-bit => <=15
+/// shifts). Observed valid max is 3 (b1_mono byte-exact, p0_04 max_abs<=1);
+/// truncation/mis-decode runs far higher (e1_colr: 12-21). The old flat >2
+/// bound was openjpeg's PTERM-only check (t1.c check_pterm) mis-generalized.
+/// complexity: O(1)
+fn overReadCap(cblksty: u8) u32 {
+    // PTERM (cblksty bit 0x10, T.800 predictable termination): every terminated
+    // pass ends with a full flush, so the legitimate tail is bounded at 2 —
+    // openjpeg's check_pterm bound, applied here WITH its precondition (and as
+    // a strict finding rather than openjpeg's warning-only).
+    return if (cblksty & 0x10 != 0) 2 else 4;
+}
+
+test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
+    const PTERM: u8 = 0x10; // T.800 SPcod cblksty bit 4 — predictable termination
+    // Under PTERM every terminated pass ends with a full flush, so the tail is
+    // genuinely bounded at 2 (openjpeg t1.c check_pterm's >2, HERE its
+    // precondition actually holds). Without PTERM the register-lookahead bound
+    // of 4 applies.
+    const cases = [_]struct { sty: u8, over: u32, flag: bool }{
+        // non-PTERM: boundary at 4
+        .{ .sty = 0x00, .over = 0, .flag = false },
+        .{ .sty = 0x00, .over = 3, .flag = false }, // b1_mono/p0_04 valid case
+        .{ .sty = 0x00, .over = 4, .flag = false },
+        .{ .sty = 0x00, .over = 5, .flag = true },
+        .{ .sty = 0x00, .over = 12, .flag = true }, // e1_colr mis-decode class
+        // PTERM: boundary tightens to 2
+        .{ .sty = PTERM, .over = 2, .flag = false },
+        .{ .sty = PTERM, .over = 3, .flag = true }, // legal without PTERM, violation with
+        .{ .sty = PTERM, .over = 4, .flag = true },
+        // PTERM composes with other style bits (BYPASS|TERMALL|PTERM etc.)
+        .{ .sty = PTERM | 0x0f, .over = 3, .flag = true },
+        .{ .sty = 0x2f, .over = 3, .flag = false }, // c2-style flags, NO pterm bit
+    };
+    for (cases) |c| {
+        try std.testing.expectEqual(c.flag, c.over > overReadCap(c.sty));
+    }
+}
+
 test "dequantScaleQ: stepsize=1 (mant=0, expn=prec) gives 0.5 in Q16" {
     // stepsize = (1+0)*2^(prec-expn). For expn=prec, stepsize=1 -> 0.5*stepsize=0.5.
     try std.testing.expectEqual(@as(i64, dwt.FP_ONE >> 1), dequantScaleQ(8, 8, 0));
@@ -555,14 +597,7 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
-        // Over-read cap = 4. Normal MQ termination (T.800 C.3.4) legitimately
-        // synthesises past-end 0xFF as the arithmetic coder drains; the amount is
-        // bounded by the decoder's register lookahead — 2 bytes of INITDEC
-        // pre-load + <=2 final-renorm byteins (A is 16-bit ⇒ <=15 shifts ⇒ <=2
-        // byteins). So a conforming cblk over-reads <=4 (observed valid max is 3:
-        // b1_mono byte-exact, p0_04 max_abs<=1); truncation/mis-decode runs far
-        // higher (e1: 12-21). The old >2 rested on a wrong "0-2" assumption.
-        if (cblk.over_read > 4) over_count += 1;
+        if (cblk.over_read > overReadCap(plan.cblksty)) over_count += 1;
         // NOTE: under_read (declared-but-unconsumed bytes) is symmetric and could
         // in principle false-positive up to the same ~4 lookahead, but no valid
         // fixture trips it today (b1/p0_04 under_read=0); revisit with the same

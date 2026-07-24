@@ -59,10 +59,17 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       `e1_colr` = MCT (sweep FAIL; c251×22 over-reads of 12–21 = the decoder
       running off) → M6 MCT correctness; `p1_04` = multi-tile 9/7 (c253) → re-land
       the parked (uncommitted) multi-tile-9/7 refactor. Fix decode ⇒ these ACCEPT.
-- [ ] **PTERM predictable-termination verification** (Peter, 2026-07-24): when a
-      cblk signals PTERM (`cblksty`), also verify the deterministic terminator
-      (openjpeg-style `check_pterm`) — a spec-provided corruption signal, free
-      where available. Complements the always-on over/under-read heuristics.
+- [x] **PTERM tighter over-read bound** (2026-07-24, Peter-endorsed). When
+      `cblksty & 0x10` (predictable termination), every terminated pass ends with
+      a full flush, so the legitimate past-end tail is bounded at 2 — openjpeg's
+      `check_pterm` bound (t1.c:2152, enabled tcd.c:2056 only under PTERM + all
+      layers), now applied WITH its precondition and as a strict finding rather
+      than openjpeg's warning-only. `overReadCap(cblksty)`: 2 under PTERM, else
+      the register-derived 4. TDD: classifier boundary-domain test (RED'd against
+      flat-4) + generated `pterm_test.j2k` fixture (opj_compress -M 16,
+      cblksty=0x10 verified) must ACCEPT via strict FFI. Future: a corrupt-PTERM
+      whole-file mutant (over_read ∈ {3,4}) as an e2e detection proof — needs
+      byte-level crafting since packet lengths must stay consistent.
 - [ ] **Integration:** Validate deep-validates via stock OpenJPEG, not jp2z
       (Einstein's critical fact). Switch `validate/src/core/jpeg2000_validator.zig`
       to `jp2z_deep_validate` once false positives are cleared — jp2z's stricter
