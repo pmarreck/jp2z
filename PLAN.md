@@ -38,10 +38,12 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       A.4.4 makes EOC mandatory but not unconditionally fatal for a decoder). TDD
       via the public C FFI `jp2z_deep_validate` (a1_mono valid control + EOC-removed
       mutant, proved RED first). Closes the confusion-matrix false-negative.
-- [ ] **unsupported-valid must NEVER become a strict FAIL.** `c145`
-      (`jp2_unsupported_marker_ignored`: COC/QCC/RGN/POC) must stay WARN and be
-      excluded from the strict-FAIL verdict. Keep invalid vs unsupported-valid vs
-      resource-limit distinct (Einstein Note-2 item 4).
+- [x] **unsupported-valid must NEVER become a strict FAIL** (2026-07-24). Release
+      invariant locked in `tests/cli/smoke.c`: p0_04 (genuinely carries COC+POC →
+      two c145 findings) proves each c145 is severity WARN and the file still
+      ACCEPTs under strict. Existing behavior already satisfied it (deepValidate's
+      escalation loop only touches missing_eoi; codestream emits c145 at fixed
+      .warn) — test added as the lock, no implementation invented (per Einstein).
 - [x] **b1_mono + p0_04 c251 false positives — over-read cap fix** (2026-07-24).
       Adjudicated per spec (not decoder consensus): both are CONFORMING (b1
       byte-exact vs openjpeg, p0_04 max_abs≤1); each has one valid cblk that

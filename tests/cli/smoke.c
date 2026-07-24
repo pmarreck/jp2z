@@ -17,6 +17,7 @@
 /* Numeric finding codes the header exposes only as `int` (jp2z_finding_code_t
  * is not published in the C ABI). Kept in sync with src/core/errors.zig. */
 #define JP2Z_FINDING_MISSING_EOI 2
+#define JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED 145
 
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { \
@@ -138,8 +139,30 @@ int main(void) {
     jp2z_findings_sink_t *p4s = jp2z_findings_sink_create();
     int p4sev = jp2z_deep_validate(p004, sizeof p004, 1, p4s);
     ASSERT(p4sev >= 0 && p4sev < JP2Z_SEVERITY_FAIL, "p0_04 (valid, cblk over_read=3): strict ACCEPTs");
+
+    /* ── Unsupported-valid invariant (release lock, Einstein step 3) ──
+     * c145 (jp2_unsupported_marker_ignored: COC/QCC/RGN/POC seen but not
+     * applied) marks a CONFORMING stream using a feature jp2z doesn't apply
+     * yet — "unsupported-valid", never "invalid". It must stay WARN and must
+     * never independently escalate a strict verdict to FAIL. p0_04 genuinely
+     * carries two such markers (COC + POC), making it the narrowest honest
+     * fixture: the findings exist, each is WARN, and the file still ACCEPTs
+     * (asserted above). */
+    {
+        size_t n145 = 0;
+        for (size_t i = 0; i < jp2z_findings_sink_count(p4s); i++) {
+            jp2z_sink_finding_t fd = {0};
+            if (jp2z_findings_sink_get(p4s, i, &fd) != JP2Z_OK) continue;
+            if (fd.code == JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED) {
+                n145++;
+                ASSERT(fd.severity == JP2Z_SEVERITY_WARN,
+                       "c145 unsupported-valid stays WARN, never FAIL, in strict mode");
+            }
+        }
+        ASSERT(n145 >= 1, "p0_04 exercises c145 (COC/POC present) so the invariant is non-vacuous");
+    }
     jp2z_findings_sink_free(p4s);
 
-    printf("PASS: jp2z C FFI smoke (19 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap)\n");
+    printf("PASS: jp2z C FFI smoke (22 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant)\n");
     return 0;
 }
