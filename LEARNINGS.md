@@ -84,3 +84,54 @@ zero extent. Only a degenerate small/clipped edge tile (b1 col0 is 3px wide at
 abs X=3097 → coarse resolutions have zero width) exposes the divergence. Grep
 for `numPrecincts(0, 0` / `precinctIndexAt(0, 0` / any `subbandX(0, 0, …)` when
 a multi-tile fixture with non-zero image/tile origin decodes wrong.
+
+## Multi-tile 9/7 renders with per-tile magnitude inflation — PARKED (2026-07-23)
+
+**Status: off the 1.0 critical path** (Einstein/Peter reprioritization: jp2z is
+a *validator*, not a renderer — decoder polish that doesn't change validity
+decisions is deprioritized). Deep-investigated then parked. `p1_04.j2k`
+(1024×1024, 128×128 tiles = 64 tiles, 12-bit mono, 9/7 lossy) is the **only
+multi-tile 9/7 fixture** — p0_04 (640×480) and p0_09 (17×37) are both
+*single-tile* despite their tile-size declarations, so this path was untested.
+
+**Symptom:** tile 0 (canvas origin) reconstructs perfectly; non-origin tiles get
+a per-tile DC offset (~±900 on 12-bit) + AC distortion. jz vs the ISO reference
+PGX (`c1p1_04_0.pgx`): PAE=954 (limit 624). openjpeg vs same ref: PAE=253 — so
+the **reference is valid and jz is the outlier**.
+
+**Ruled out with hard evidence** (do not re-chase these):
+- *Integer vs IEEE754*: built a full f32 DWT mirror → PAE identical (954). Not
+  fixed-point. (Peter's "avoiding IEEE754 causes divergence" hypothesis: FALSE.)
+- *Tier-2*: hand-decoded the res-1 packet-header bits — zbp, coding-passes,
+  length all match jz exactly. Packet walk is correct.
+- *Mb / expn / guard*: raw QCD decode gives Mb=11,10,9 = jz's values.
+- *Dequant scale_q*: = openjpeg's `0.5·stepsize` to the bit (2.413 for r1 HL).
+- *Mallat placement*: all 10 subbands land in the right quadrants (tile-local
+  base_x/base_y, origin-independent via `prev.width`).
+- *idwt97 origin-independence*: empirical test — same buffer through idwt97 at
+  tile_x0=0 vs 256 gives **byte-identical** output.
+
+**The paradox (unresolved):** jz's per-coefficient magnitude reads exactly
+2^half_bit_pos larger than openjpeg's dumped `t1->data` (jz stores magnitudes at
+absolute bitplane positions; openjpeg's dumped value is compacted). openjpeg's
+**decode** path applies no `T1_NMSEDEC_FRACBITS` shift (that's encode-only) and
+dequants `datap * 0.5·stepsize` directly — implying jz's multi-tile buffer is 4×
+too large for *truncated* code-blocks. BUT shifting jz's coefficient down by
+half_bit_pos made p1_04 *worse* (954→2550) AND broke the passing single-tile
+p0_04/p0_09 — proving jz's absolute-scale buffer is what its dequant correctly
+expects. So "buffer is 4× openjpeg's dumped value" and "buffer is correct"
+are both true, which means openjpeg applies its 2^hbp scaling somewhere between
+the `t1->data` dump point (end of `opj_t1_decode_cblk`) and the DWT input that I
+never located.
+
+**Decisive next experiment (if ever resumed):** patch openjpeg to dump the
+*post-dequant* tile-component buffer (the actual float coefficients fed to the
+inverse DWT, in `opj_t1_clbl_decode_processor` after the `datap * 0.5·stepsize`
+loop) and diff byte-for-byte against jz's dequantized buffer for tile 18. That
+bypasses all representation ambiguity and pinpoints the divergence, or forces
+the bug into the compositing stage.
+
+The `openjpeg-cblk-dump.patch` dumps `t1->data` *inside* `opj_t1_decode_cblk`
+(pre-dequant) — that is NOT the value the DWT sees. Also: openjpeg's post-T1
+`cblk->numbps`/`cblk->Mb` are *significance* values (max decoded bitplane), NOT
+the tier-2 `band->numbps - zbp` — do not compare jz's tier-2 numbps to them.

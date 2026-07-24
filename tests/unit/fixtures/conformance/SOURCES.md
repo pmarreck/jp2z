@@ -33,6 +33,7 @@ oracle suite stays accessible without bloating the repo.
 | `a5_mono.j2c` | 34747 | Class A monochrome — SOP/EPH packet markers + 2×2 tiling |
 | `c2_mono.j2c` | 34208 | Class C monochrome — tier-1 RESET+VSC+SEGSYM coding styles |
 | `p0_04.j2k`, `p0_09.j2k`, `p0_10.j2k` | — | Profile-0 conformance (9/7+ICT, 9/7 mono, multi-tile sub-sampled) |
+| `p1_04.j2k` | 101,844 | Profile-1: 12-bit mono, 9/7 lossy, 8×8 multi-tile (>8-bit + 9/7-multi-tile path) |
 | `file1.jp2` | 650,678 | JP2 file format, first reference image — exercises box parser |
 | `file9.jp2` | 300,208 | JP2 file format, exercises additional metadata box types |
 
