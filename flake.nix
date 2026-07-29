@@ -80,7 +80,22 @@
               export HOME=$TMPDIR
               export OPENJPEG_DATA=${openjpeg-data}
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
-              timeout 600 zig build test ${pkgs.lib.concatStringsSep " " zigBuildFlags} \
+              # FLEET FLOOR — tests run ReleaseSafe (fleet finding 2026-07-01).
+              # ReleaseFast compiles OUT the runtime safety checks (integer
+              # overflow, bounds, illegal cast), so a green ReleaseFast suite
+              # cannot see UB — it passes *because* the check that would have
+              # failed it is gone. rarz was carrying three real crashers behind
+              # a fully green ReleaseFast suite.
+              #
+              # Enforced HERE rather than as a per-module `.optimize` in
+              # build.zig: Zig honours per-module optimize, so pinning only the
+              # test module would leave the imported library code at
+              # ReleaseFast. Passing -Doptimize on the command line flips the
+              # entire test compilation in one shot.
+              #
+              # The shipped artifact and benchmarks stay ReleaseFast — this
+              # applies to the test build only.
+              timeout 600 zig build test -Doptimize=ReleaseSafe ${pkgs.lib.concatStringsSep " " zigBuildFlags} \
                 || { echo "Tests failed"; exit 1; }
             '';
             installPhase = ''
