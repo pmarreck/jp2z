@@ -163,6 +163,22 @@ int main(void) {
     }
     jp2z_findings_sink_free(p4s);
 
+    /* ── POC progression-order change must be APPLIED, not ignored ──
+     * e1_colr.j2c (ISO conformance): 8 tiles (4x2, origin (1,1)), 5/3+RCT,
+     * 4 layers, 32x32 precincts; tile 1 spans two tile-parts whose headers
+     * each carry a POC marker (T.800 A.6.6) resequencing that tile's packets
+     * (a PCRL volume for layer 0, then an RLCP volume for the rest). A walker
+     * that ignores POC walks tile 1 in COD's LRCP order and shreds the byte
+     * accounting (mass c251/c252 + a phantom truncation). With POC applied,
+     * this conforming file must ACCEPT under strict deep validation. */
+    static const unsigned char e1[] = {
+#embed "../unit/fixtures/conformance/e1_colr.j2c"
+    };
+    jp2z_findings_sink_t *e1s = jp2z_findings_sink_create();
+    int e1sev = jp2z_deep_validate(e1, sizeof e1, 1, e1s);
+    ASSERT(e1sev >= 0 && e1sev < JP2Z_SEVERITY_FAIL, "e1_colr (valid, POC-resequenced): strict ACCEPTs");
+    jp2z_findings_sink_free(e1s);
+
     /* ── PTERM tighter bound must not false-positive on a VALID PTERM stream ──
      * pterm_test.j2k: generated via `opj_compress -M 16` (64x64 gradient PGM),
      * cblksty=0x10 verified in its COD marker; openjpeg round-trips it. Under
@@ -176,6 +192,6 @@ int main(void) {
     ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
     jp2z_findings_sink_free(pts);
 
-    printf("PASS: jp2z C FFI smoke (23 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + PTERM)\n");
+    printf("PASS: jp2z C FFI smoke (24 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + PTERM)\n");
     return 0;
 }

@@ -31,11 +31,14 @@
         # build-time oracle imported via `jp2z.internal.openjpegDecode`
         # for byte-perfect regression testing (same pattern jpegz
         # uses for libjpeg-turbo today).
-        # Patched openjpeg: adds a JP2Z_DUMP_T1 env-gated cblk
-        # coefficient dump used by M3 EBCOT oracle tests (compare our
-        # cleanroom decodeCblk output byte-perfect vs OpenJPEG's
-        # opj_t1_decode_cblk). The patch is a no-op at runtime when
-        # the env var is unset.
+        # Patched openjpeg: adds two env-gated differential-oracle dumps —
+        # JP2Z_DUMP_T1 (cblk coefficient dump used by M3 EBCOT oracle
+        # tests, compare our cleanroom decodeCblk output byte-perfect vs
+        # OpenJPEG's opj_t1_decode_cblk) and JP2Z_DUMP_T2 (per-packet
+        # (tile, pino, l/r/c/p, offset) trace from opj_t2_decode_packets,
+        # used to diff the tier-2 walker's packet sequencing — this is
+        # how the e1_colr POC/PCRL divergence was pinned to 3 packets).
+        # Both are no-ops at runtime when their env vars are unset.
         openjpegPatched = pkgs.openjpeg.overrideAttrs (old: {
           patches = (old.patches or []) ++ [ ./patches/openjpeg-cblk-dump.patch ];
         });

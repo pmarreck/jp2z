@@ -130,3 +130,23 @@
  
      return OPJ_TRUE;
  }
+--- a/src/lib/openjp2/t2.c
++++ b/src/lib/openjp2/t2.c
+@@ -462,6 +462,17 @@
+                         l_current_pi->poc.prg1, l_current_pi->compno, l_current_pi->resno,
+                         l_current_pi->precno, l_current_pi->layno);
+ 
++            /* jp2z t2 packet-order dump: env-gated differential oracle for
++             * the jp2z tier-2 walker (POC sequencing). No-op unless
++             * JP2Z_DUMP_T2 is set. Offset is relative to the tile's
++             * concatenated tile-part body stream. */
++            if (getenv("JP2Z_DUMP_T2") != NULL) {
++                fprintf(stderr, "jp2zT2 tile=%u pino=%u l%u r%u c%u p%u @%ld\n",
++                        p_tile_no, pino, l_current_pi->layno, l_current_pi->resno,
++                        l_current_pi->compno, l_current_pi->precno,
++                        (long)(l_current_data - p_src));
++            }
++
+             /* If the packet layer is greater or equal than the maximum */
+             /* number of layers, skip the packet */
+             if (l_current_pi->layno >= l_tcp->num_layers_to_decode) {

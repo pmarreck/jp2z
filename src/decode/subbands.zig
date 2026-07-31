@@ -164,11 +164,13 @@ pub fn referenceGridStride(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4) GridS
     };
 }
 
-/// Precinct index at resolution `r` containing reference-grid
-/// position `(x, y)`. Row-major (precinct.y * precincts_at_r.width
-/// + precinct.x). Caller guarantees (x, y) is within the resolution-r
-/// extent. Useful for PCRL/CPRL: at each outer-loop (x, y), call
-/// this for each (r, c) to learn which precinct to emit packets for.
+/// Precinct index (row-major within the TILE's precinct grid) at
+/// resolution `r` containing ABSOLUTE reference-grid position `(x, y)`.
+/// Ported from openjpeg pi.c (opj_pi_next_pcrl et al.): the r-level
+/// coordinate is ceildiv(x, 2^levelno), its precinct column floor-divides
+/// by 2^PPx, and the tile's FIRST precinct column (floor(trx0 / 2^PPx))
+/// is subtracted so an interior tile's own grid starts at 0 — the
+/// origin-offset mapping e1_colr's tile 1 (PCRL-under-POC) exercises.
 pub fn precinctIndexAt(
     tile_x0: u32,
     tile_y0: u32,
@@ -181,25 +183,41 @@ pub fn precinctIndexAt(
     x: u32,
     y: u32,
 ) u32 {
-    const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
+    const levelno: u5 = @intCast(num_decomp_levels - r);
     const pwidth = numPrecincts(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r, ppx, ppy).width;
-    // NOTE: for a non-origin tile under PCRL/CPRL the absolute precinct
-    // column/row must be offset by the tile's first precinct index. No
-    // conformance fixture exercises PCRL on an interior tile yet, so this
-    // keeps the origin-(0,0) mapping; revisit with a failing PCRL fixture.
-    const px = x / stride.width;
-    const py = y / stride.height;
+    const trx0 = ceilDivPow2U32(tile_x0, levelno);
+    const try0 = ceilDivPow2U32(tile_y0, levelno);
+    const xr = ceilDivPow2U32(x, levelno);
+    const yr = ceilDivPow2U32(y, levelno);
+    const px = (xr >> ppx) - (trx0 >> ppx);
+    const py = (yr >> ppy) - (try0 >> ppy);
     return py * pwidth + px;
 }
 
+fn ceilDivPow2U32(a: u32, s: u5) u32 {
+    return (a + ((@as(u32, 1) << s) - 1)) >> s;
+}
 
-/// Is reference-grid `(x, y)` aligned to a precinct boundary at
-/// resolution `r`? Used by PCRL/CPRL outer iteration to avoid
-/// re-emitting the same (r, precinct) for adjacent reference-grid
-/// positions (only the precinct's TOP-LEFT corner triggers).
-pub fn isOnPrecinctBoundary(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u32, y: u32) bool {
+
+/// Does resolution `r` emit a packet at ABSOLUTE reference-grid `(x, y)`
+/// for a tile anchored at `(tile_x0, tile_y0)`? T.800 B.12.1.4-5 via
+/// openjpeg pi.c (opj_pi_next_pcrl/cprl/rpcl), per axis:
+///   on the r-precinct grid (x % 2^(PPx+levelno) == 0), OR pinned to the
+///   tile's origin row/col when the tile's r-level origin is NOT
+///   precinct-aligned ((trx0 << levelno) % 2^(PPx+levelno) != 0) — an
+///   interior tile still owns a partial first precinct there.
+/// Only a precinct's top-left visited position triggers, so PCRL/CPRL/RPCL
+/// emit each (r, precinct) exactly once.
+pub fn isOnPrecinctBoundary(tile_x0: u32, tile_y0: u32, num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u32, y: u32) bool {
+    const levelno: u5 = @intCast(num_decomp_levels - r);
     const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
-    return (x % stride.width == 0) and (y % stride.height == 0);
+    const trx0 = ceilDivPow2U32(tile_x0, levelno);
+    const try0 = ceilDivPow2U32(tile_y0, levelno);
+    const x_ok = (x % stride.width == 0) or
+        (x == tile_x0 and (trx0 << levelno) % stride.width != 0);
+    const y_ok = (y % stride.height == 0) or
+        (y == tile_y0 and (try0 << levelno) % stride.height != 0);
+    return x_ok and y_ok;
 }
 
 // ── Code-block partition — ported from openjpeg opj_tcd.c (opj_tcd_init_tile) ──
@@ -597,22 +615,22 @@ test "isOnPrecinctBoundary: PCRL outer iteration determines which (r) fires at e
     //   r=5 stride=64: on boundary (64 % 64 == 0)
     //   r=4 stride=128: NOT on boundary (64 % 128 != 0)
     //   r=3 stride=256: NOT on boundary
-    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 5, 6, 6, 64, 0));
-    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 4, 6, 6, 64, 0));
-    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 3, 6, 6, 64, 0));
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(0, 0, 5, 5, 6, 6, 64, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(0, 0, 5, 4, 6, 6, 64, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(0, 0, 5, 3, 6, 6, 64, 0));
 
     // At reference (x=128, y=0):
     //   r=5: on boundary (128 % 64 == 0)
     //   r=4: on boundary (128 % 128 == 0)
     //   r=3: NOT (128 % 256 != 0)
-    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 5, 6, 6, 128, 0));
-    try std.testing.expectEqual(true, isOnPrecinctBoundary(5, 4, 6, 6, 128, 0));
-    try std.testing.expectEqual(false, isOnPrecinctBoundary(5, 3, 6, 6, 128, 0));
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(0, 0, 5, 5, 6, 6, 128, 0));
+    try std.testing.expectEqual(true, isOnPrecinctBoundary(0, 0, 5, 4, 6, 6, 128, 0));
+    try std.testing.expectEqual(false, isOnPrecinctBoundary(0, 0, 5, 3, 6, 6, 128, 0));
 
     // At (0, 0): on boundary for every resolution.
     var r: u8 = 0;
     while (r <= 5) : (r += 1) {
-        try std.testing.expectEqual(true, isOnPrecinctBoundary(5, r, 6, 6, 0, 0));
+        try std.testing.expectEqual(true, isOnPrecinctBoundary(0, 0, 5, r, 6, 6, 0, 0));
     }
 }
 
@@ -729,4 +747,40 @@ test "cblkSubbandRect: every cblk in the grid covers the precinct rect (tile)" {
     try std.testing.expectEqual(expected_y0, union_y0);
     try std.testing.expectEqual(expected_x1, union_x1);
     try std.testing.expectEqual(expected_y1, union_y1);
+}
+
+test "isOnPrecinctBoundary: interior-tile edge case — e1_colr tile 1 (origin 80,1)" {
+    // The exact emission the origin-naive predicate missed (the e1_colr
+    // POC/PCRL bug): tile at ref-grid origin (80, 1), 5 decomp levels,
+    // 32x32 precincts (PPx=PPy=5). At r=3 (levelno=2, stride 128):
+    //   - x=128 IS a precinct boundary (128 % 128 == 0), and y=1 is the
+    //     tile's origin row with an UNALIGNED r-level y-origin
+    //     (try0=1, (1<<2) % 128 != 0) → r3 emits at (128, 1).
+    //   - x=96 is neither a boundary (96 % 128 != 0) nor the origin col
+    //     → r3 must NOT emit there (but r5, stride 32, must).
+    try std.testing.expect(isOnPrecinctBoundary(80, 1, 5, 3, 5, 5, 128, 1));
+    try std.testing.expect(!isOnPrecinctBoundary(80, 1, 5, 3, 5, 5, 96, 1));
+    try std.testing.expect(isOnPrecinctBoundary(80, 1, 5, 5, 5, 5, 96, 1));
+    // Tile-origin col: partial first precinct pins to x=80 for every r
+    // whose r-level x-origin is unaligned (r3: trx0=20, 20<<2 % 128 != 0).
+    try std.testing.expect(isOnPrecinctBoundary(80, 1, 5, 3, 5, 5, 80, 1));
+    // Origin-(0,0) tile: 0 % stride == 0 makes the edge clause moot —
+    // the pre-fix behavior is preserved exactly.
+    try std.testing.expect(isOnPrecinctBoundary(0, 0, 5, 3, 5, 5, 0, 0));
+    try std.testing.expect(!isOnPrecinctBoundary(0, 0, 5, 3, 5, 5, 96, 0));
+}
+
+test "precinctIndexAt: interior tile subtracts its first precinct col/row (e1_colr tile 1)" {
+    // Same geometry. r=3: tile spans r3-coords x[20,40) → precinct cols
+    // {0 (r3-x 20..31), 1 (r3-x 32..39)} minus origin col 0 → grid width 2.
+    // Absolute x=128 → r3-x 32 → precinct col 1 − 0 = 1; y=1 → row 0.
+    try std.testing.expectEqual(@as(u32, 1), precinctIndexAt(80, 1, 80, 101, 5, 3, 5, 5, 128, 1));
+    // x=80 (tile origin, partial precinct) → col 0.
+    try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(80, 1, 80, 101, 5, 3, 5, 5, 80, 1));
+    // r=5 (levelno 0): cols at abs {80(partial),96,128}, 3-wide grid;
+    // y=33 is row 1 → index = 1*3 + 2 = 5 at (128, 33)... row math:
+    // try0=1 → first row 0; y=33 → row floor(33/32)=1 − 0 = 1.
+    try std.testing.expectEqual(@as(u32, 5), precinctIndexAt(80, 1, 80, 101, 5, 5, 5, 5, 128, 33));
+    // Origin-(0,0) tile keeps the plain mapping.
+    try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(0, 0, 64, 64, 5, 3, 5, 5, 0, 0));
 }

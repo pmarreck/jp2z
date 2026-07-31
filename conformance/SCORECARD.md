@@ -34,7 +34,6 @@ diverge from the oracle. Largest divergence first.
 | p1_02.j2k | 640×480×3 | 255 |
 | g1_colr.j2c | 256×149×3 | 254 |
 | d2_colr.j2c | 256×149×3 | 254 |
-| e1_colr.j2c | 256×149×3 | 252 |
 | file8.jp2 | 700×400×1 | 216 |
 | file2.jp2 | 480×640×3 | 158 |
 | p0_01.j2k | 128×128×1 | 149 |
@@ -43,6 +42,7 @@ diverge from the oracle. Largest divergence first.
 | g4_colr.j2c | 256×149×3 | 127 |
 | g3_colr.j2c | 256×149×3 | 127 |
 | g2_colr.j2c | 256×149×3 | 127 |
+| e1_colr.j2c | 256×149×3 | 2 |
 
 ## Unsupported profiles (ERROR / CRASH / TIMEOUT)
 
@@ -76,7 +76,7 @@ diverge from the oracle. Largest divergence first.
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
 | d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
-| e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 252 |
+| e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 2 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
 | file8.jp2 | FAIL |  | 700 | 400 | 1 | 216 |
 | g1_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |

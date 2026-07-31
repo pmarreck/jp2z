@@ -159,3 +159,38 @@ path feeds a compacted one — likely a `decoded_data` (partial/multi) vs
 `t1->data` (full single-tile) distinction. Confirm by dumping openjpeg's
 POST-dequant float for a single-tile fixture and comparing to the multi-tile
 case. Decoder-rendering only — off the 1.0 validation critical path.
+
+## POC + interior-tile positional iteration: the e1_colr dig (2026-07-31)
+
+Three lessons from converting e1_colr's strict REJECT into an ACCEPT:
+
+1. **JP2Z_DUMP_T2 is the tier-2 differential oracle.** The openjpeg patch
+   (`patches/openjpeg-cblk-dump.patch`) now also instruments
+   `opj_t2_decode_packets`: with `JP2Z_DUMP_T2` set, every packet prints
+   `jp2zT2 tile=T pino=P lL rR cC pP @offset` to stderr (offset is into the
+   tile's CONCATENATED tile-part bodies). Diffing that against a walker-side
+   trace pinned a 504-packet divergence to exactly 3 packets in minutes,
+   after static analysis of pi.c had matched my sequencer on every axis.
+   Use `nix develop -c opj_decompress` (devShell openjpeg = patched build).
+
+2. **"Byte-perfect on all fixtures" only covers the geometry the fixtures
+   exercise.** The positional iterators (RPCL/PCRL/CPRL) were byte-perfect —
+   on single-tile origin-(0,0) streams, where tile-local == absolute
+   coordinates and `x += stride` == next-multiple stepping. e1's tile 1
+   (origin 80,1, PCRL via POC) broke all three latent assumptions at once:
+   absolute-grid iteration span, next-multiple stepping (80→96→128, not
+   80→112→144), and openjpeg's tile-edge emission special case (an interior
+   tile owns a partial first precinct when its r-level origin is unaligned).
+   The in-code NOTE in `precinctIndexAt` had predicted exactly this. When a
+   NOTE says "revisit with a failing fixture," the fixture eventually shows.
+
+3. **The jp2z CLI is NOT the cleanroom.** `jp2z_decode` (FFI/CLI) still
+   routes through the openjpeg wrapper (Phase 1), so CLI-vs-opj_decompress
+   byte-equality proves nothing about `decodeCleanroom`. Only the sweep
+   (`tools/sweep_one.zig`) and inline tests exercise the cleanroom. (Cost me
+   one false "byte-identical!" conclusion this session.)
+
+Residual parked: e1 tile 7 (bottom-right, both-clipped) renders ±1/±2 on
+~63% of samples — pre-existing, masked by tile 1's old 252, zero effect on
+byte-budget validation. Chase it with the p1_04 multi-tile rendering block;
+the T1 dump patch hardcodes tile 0 and needs extending first.

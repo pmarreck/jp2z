@@ -1586,12 +1586,14 @@ test "deepValidate strict: entropy corruption escalates report to FAIL" {
 }
 
 
-test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ignored; baseline does not" {
-    // Reviewer I1: per-component/ROI/progression override markers that jp2z
-    // does not yet apply must be SURFACED (not silently skipped), so a
-    // consumer knows decode fell back to COD/QCD defaults. Tested as a
-    // classifier over the marker set: each of {COC,QCC,RGN,POC} fires the
-    // finding; a baseline header with only COD/QCD does not.
+test "validate: main-header COC/QCC/RGN each emit jp2_unsupported_marker_ignored; POC and baseline do not" {
+    // Reviewer I1: per-component/ROI override markers that jp2z does not
+    // yet apply must be SURFACED (not silently skipped), so a consumer
+    // knows decode fell back to COD/QCD defaults. Tested as a classifier
+    // over the marker set: each of {COC,QCC,RGN} fires the finding; a
+    // baseline header with only COD/QCD does not — and neither does POC,
+    // which is now APPLIED (parsed into the progression-volume list), not
+    // ignored. A malformed POC instead fires structural findings.
     const prefix = [_]u8{
         0xFF, 0x4F,
         0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
@@ -1610,8 +1612,7 @@ test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ign
     const coc = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
     const qcc = prefix ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
     const rgn = prefix ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ suffix;
-    const poc = prefix ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
-    inline for (.{ coc, qcc, rgn, poc }) |s| {
+    inline for (.{ coc, qcc, rgn }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
@@ -1620,13 +1621,39 @@ test "validate: main-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ign
     var rep0 = try jp2z.validate(std.testing.allocator, &baseline);
     defer rep0.deinit(std.testing.allocator);
     try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
+
+    // POC classifier (T.800 A.6.6, Csiz=1 → 7-byte entries; COD declares
+    // 2 resolutions / 1 layer here):
+    //   - well-formed identity-ish entry {RS=0,CS=0,LYE=1,RE=2,CE=1,LRCP}
+    //     → applied silently: NO c145, NO structural finding.
+    //   - truncated body (the old 2-byte stub) → bad_marker_length.
+    //   - degenerate entry (RSpoc >= REpoc) → jp2_bad_progression_order.
+    const poc_ok = prefix ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00 } ++ suffix;
+    var rep_ok = try jp2z.validate(std.testing.allocator, &poc_ok);
+    defer rep_ok.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep_ok, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep_ok, .bad_marker_length));
+    try std.testing.expect(!hasFinding(rep_ok, .jp2_bad_progression_order));
+
+    const poc_short = prefix ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    var rep_short = try jp2z.validate(std.testing.allocator, &poc_short);
+    defer rep_short.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_short, .bad_marker_length));
+    try std.testing.expect(!hasFinding(rep_short, .jp2_unsupported_marker_ignored));
+
+    const poc_degen = prefix ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x09, 0x02, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00 } ++ suffix;
+    var rep_degen = try jp2z.validate(std.testing.allocator, &poc_degen);
+    defer rep_degen.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_degen, .jp2_bad_progression_order));
 }
 
-test "validate: tile-part-header COC/QCC/RGN/POC each emit jp2_unsupported_marker_ignored" {
+test "validate: tile-part-header COC/QCC/RGN each emit jp2_unsupported_marker_ignored; POC does not" {
     // Reviewer I1 extended to the TILE-PART header (where p0_03's RGN lives).
     // Same SOC+SIZ+COD+QCD main header as the main-header variant, but the
     // override marker now sits between SOT and SOD. Classifier over the set:
-    // each of {COC,QCC,RGN,POC} fires; a bare SOT→SOD tile-part does not.
+    // each of {COC,QCC,RGN} fires; a bare SOT→SOD tile-part does not, and
+    // neither does a well-formed POC (applied — appended to the tile's
+    // progression-volume sequencer — rather than ignored).
     const prefix = [_]u8{
         0xFF, 0x4F,
         0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
@@ -1644,23 +1671,31 @@ test "validate: tile-part-header COC/QCC/RGN/POC each emit jp2_unsupported_marke
     const coc = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
     const qcc = prefix ++ sot ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
     const rgn = prefix ++ sot ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ sod_eoc;
-    const poc = prefix ++ sot ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
-    inline for (.{ coc, qcc, rgn, poc }) |s| {
+    inline for (.{ coc, qcc, rgn }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
     }
-    // Negatives: neither an EMPTY tile-part header nor one carrying a BENIGN
-    // marker (COM 0xFF64 — not a coding override) may fire the finding. The
-    // benign case bites the over-flagging mutation (else=>{} → else=>emit),
-    // which an empty header alone cannot (its scanned range is empty).
+    // Negatives: an EMPTY tile-part header, one carrying a BENIGN marker
+    // (COM 0xFF64 — not a coding override), and one carrying a WELL-FORMED
+    // POC (applied, not ignored) may not fire the finding. The benign case
+    // bites the over-flagging mutation (else=>{} → else=>emit), which an
+    // empty header alone cannot (its scanned range is empty); the POC case
+    // bites a regression that re-adds POC to the ignored set.
     const baseline = prefix ++ sot ++ sod_eoc;
     const benign = prefix ++ sot ++ [_]u8{ 0xFF, 0x64, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
-    inline for (.{ baseline, benign }) |s| {
+    const poc_ok = prefix ++ sot ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00 } ++ sod_eoc;
+    inline for (.{ baseline, benign, poc_ok }) |s| {
         var rep0 = try jp2z.validate(std.testing.allocator, &s);
         defer rep0.deinit(std.testing.allocator);
         try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
     }
+    // A malformed tile-part POC still surfaces structurally.
+    const poc_short = prefix ++ sot ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    var rep_short = try jp2z.validate(std.testing.allocator, &poc_short);
+    defer rep_short.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_short, .bad_marker_length));
+    try std.testing.expect(!hasFinding(rep_short, .jp2_unsupported_marker_ignored));
 }
 
 test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a crash (C1/C2/C4)" {

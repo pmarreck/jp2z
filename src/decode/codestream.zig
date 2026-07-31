@@ -41,6 +41,27 @@ pub const WaveletFilter = enum(u8) {
     reversible_5x3 = 1, // lossless
 };
 
+/// One POC (progression order change, T.800 A.6.6) entry: a "progression
+/// volume" bounding the layers/resolutions/components whose packets are
+/// sequenced in `order`. Marker values are stored RAW (unclamped); the
+/// packet sequencer clamps against the tile's actual geometry at iteration
+/// time — mirroring openjpeg, which stores raw pocs and clamps in pi.c
+/// (T.800 lets REpoc/CEpoc legally exceed the stream's counts, e.g. the
+/// common "255 = all components").
+pub const PocEntry = struct {
+    rs: u8, // RSpoc — first resolution (inclusive)
+    cs: u16, // CSpoc — first component (inclusive)
+    lye: u16, // LYEpoc — layer end (exclusive; every volume starts at layer 0)
+    re: u8, // REpoc — resolution end (exclusive)
+    ce: u16, // CEpoc — component end (exclusive)
+    order: ProgressionOrder, // Ppoc
+};
+
+/// openjpeg caps a tile's accumulated POC list at 32 entries
+/// (`opj_poc_t pocs[32]`); we mirror the cap and FAIL past it rather than
+/// silently truncate the progression description.
+pub const max_pocs = 32;
+
 /// Snapshot of the codec parameters needed to drive tier-2 packet
 /// walking. Populated during the main-header walk:
 ///   - `num_components` from SIZ (Csiz)
@@ -128,6 +149,12 @@ pub const CodingParams = struct {
     tile_y0: u32 = 0, // YTOsiz
     tile_w: u32 = 0, // XTsiz (0 until SIZ parsed)
     tile_h: u32 = 0, // YTsiz
+    /// Progression order changes (T.800 A.6.6). Main-header POC entries
+    /// land here and seed every tile's packet-walk sequencer; tile-part
+    /// POC entries then ACCUMULATE onto the owning tile's walk, mirroring
+    /// openjpeg's opj_j2k_read_poc (which appends across tile-parts).
+    pocs: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
+    num_pocs: u8 = 0,
 
     /// Look up M_b for a (resolution, band) pair. `band` follows the
     /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
@@ -238,6 +265,12 @@ pub const PacketIterator = struct {
             .tile_y0 = tile_y0,
             .image_w = image_w,
             .image_h = image_h,
+            // Positional orders (RPCL/PCRL/CPRL) iterate the ABSOLUTE
+            // reference-grid span [tx0, tx0+w) × [ty0, ty0+h) — openjpeg
+            // pi.c's poc.tx0..tx1 — so the cursor starts at the tile
+            // origin, not 0. LRCP/RLCP ignore (x, y).
+            .x = tile_x0,
+            .y = tile_y0,
         };
         const num_resolutions: u8 = params.num_decomp_levels + 1;
         var min_sx: u32 = std.math.maxInt(u32);
@@ -363,20 +396,36 @@ pub const PacketIterator = struct {
     // ── RPCL — resolution outer; each r uses its OWN stride ──
 
     fn nextRpcl(self: *PacketIterator) ?PacketIndex {
-        const r = self.resolution;
-        const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
-        const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
-        const p_idx = subbands.precinctIndexAt(
-            self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
-            r, ppx, ppy, self.x, self.y);
-        const result: PacketIndex = .{
-            .layer = self.layer,
-            .resolution = r,
-            .component = self.component,
-            .precinct = p_idx,
-        };
-        self.advanceRpcl();
-        return result;
+        // A visited position can be a non-emitter only at the tile-origin
+        // row/col when the tile's r-level origin IS precinct-aligned (the
+        // partial-precinct edge case doesn't apply) yet the origin itself
+        // isn't a stride multiple — skip such positions without emitting.
+        // Zero-precinct (collapsed) resolutions contribute no packets.
+        while (!self.done) {
+            const r = self.resolution;
+            const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
+            const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
+            if (self.precincts_at_r[r] == 0 or
+                !subbands.isOnPrecinctBoundary(
+                    self.tile_x0, self.tile_y0, self.params.num_decomp_levels,
+                    r, ppx, ppy, self.x, self.y))
+            {
+                self.advanceRpclPosition();
+                continue;
+            }
+            const p_idx = subbands.precinctIndexAt(
+                self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
+                r, ppx, ppy, self.x, self.y);
+            const result: PacketIndex = .{
+                .layer = self.layer,
+                .resolution = r,
+                .component = self.component,
+                .precinct = p_idx,
+            };
+            self.advanceRpcl();
+            return result;
+        }
+        return null;
     }
 
     fn advanceRpcl(self: *PacketIterator) void {
@@ -387,12 +436,23 @@ pub const PacketIterator = struct {
         self.component += 1;
         if (self.component < self.params.num_components) return;
         self.component = 0;
-        self.x += self.ref_stride_x_at_r[self.resolution];
-        if (self.x < self.image_w) return;
-        self.x = 0;
-        self.y += self.ref_stride_y_at_r[self.resolution];
-        if (self.y < self.image_h) return;
-        self.y = 0;
+        self.advanceRpclPosition();
+    }
+
+    /// Advance the RPCL position cursor (x → y → r) by the CURRENT
+    /// resolution's own stride, stepping to the next stride MULTIPLE on
+    /// the absolute reference grid (openjpeg's `x += dx - (x % dx)` — an
+    /// unaligned tile origin steps to the grid, not by a fixed offset)
+    /// and resetting carries to the tile origin, not 0.
+    fn advanceRpclPosition(self: *PacketIterator) void {
+        const sx = self.ref_stride_x_at_r[self.resolution];
+        const sy = self.ref_stride_y_at_r[self.resolution];
+        self.x += sx - (self.x % sx);
+        if (self.x < self.tile_x0 + self.image_w) return;
+        self.x = self.tile_x0;
+        self.y += sy - (self.y % sy);
+        if (self.y < self.tile_y0 + self.image_h) return;
+        self.y = self.tile_y0;
         self.resolution += 1;
         if (self.resolution < self.params.num_decomp_levels + 1) return;
         self.done = true;
@@ -408,13 +468,16 @@ pub const PacketIterator = struct {
         // necessary. Emits when current r is on boundary.
         while (!self.done) {
             // Find the next r ≥ self.resolution that is on boundary
-            // at (x, y) for the current precinct exponents.
+            // at (x, y) for the current precinct exponents. Collapsed
+            // (zero-precinct) resolutions contribute no packets.
             while (self.resolution < num_resolutions) {
                 const ppx: u4 = @intCast(self.params.precinct_sizes[self.resolution].x_exp);
                 const ppy: u4 = @intCast(self.params.precinct_sizes[self.resolution].y_exp);
-                if (subbands.isOnPrecinctBoundary(
-                    self.params.num_decomp_levels, self.resolution,
-                    ppx, ppy, self.x, self.y))
+                if (self.precincts_at_r[self.resolution] != 0 and
+                    subbands.isOnPrecinctBoundary(
+                        self.tile_x0, self.tile_y0,
+                        self.params.num_decomp_levels, self.resolution,
+                        ppx, ppy, self.x, self.y))
                 {
                     break;
                 }
@@ -443,27 +506,32 @@ pub const PacketIterator = struct {
             // No more valid r at current (x, y, c). Reset r and carry
             // to the next outer dim per progression order.
             self.resolution = 0;
+            // Position stepping is to the next stride MULTIPLE on the
+            // absolute reference grid (openjpeg's `x += dx - (x % dx)`):
+            // from an unaligned tile origin (e1_colr tile 1: x0=80,
+            // stride 32) the next positions are 96, 128 — NOT 112, 144.
+            // Carries reset to the tile origin, not 0.
             switch (self.params.progression_order) {
                 .pcrl => {
                     // Inner→outer past r: c, x, y.
                     self.component += 1;
                     if (self.component < self.params.num_components) continue;
                     self.component = 0;
-                    self.x += self.min_stride_x;
-                    if (self.x < self.image_w) continue;
-                    self.x = 0;
-                    self.y += self.min_stride_y;
-                    if (self.y < self.image_h) continue;
+                    self.x += self.min_stride_x - (self.x % self.min_stride_x);
+                    if (self.x < self.tile_x0 + self.image_w) continue;
+                    self.x = self.tile_x0;
+                    self.y += self.min_stride_y - (self.y % self.min_stride_y);
+                    if (self.y < self.tile_y0 + self.image_h) continue;
                     self.done = true;
                 },
                 .cprl => {
                     // Inner→outer past r: x, y, c.
-                    self.x += self.min_stride_x;
-                    if (self.x < self.image_w) continue;
-                    self.x = 0;
-                    self.y += self.min_stride_y;
-                    if (self.y < self.image_h) continue;
-                    self.y = 0;
+                    self.x += self.min_stride_x - (self.x % self.min_stride_x);
+                    if (self.x < self.tile_x0 + self.image_w) continue;
+                    self.x = self.tile_x0;
+                    self.y += self.min_stride_y - (self.y % self.min_stride_y);
+                    if (self.y < self.tile_y0 + self.image_h) continue;
+                    self.y = self.tile_y0;
                     self.component += 1;
                     if (self.component < self.params.num_components) continue;
                     self.done = true;
@@ -475,6 +543,144 @@ pub const PacketIterator = struct {
     }
 
     const Dim = enum { layer, resolution, component, precinct };
+};
+
+/// Sequences a tile's packets through its POC progression volumes
+/// (T.800 A.6.6 / B.12.1): each volume is walked in ITS OWN progression
+/// order, filtered to the volume's (layer, resolution, component) box, and
+/// a shared inclusion set guarantees a packet emitted by an earlier volume
+/// is never emitted again (B.12.1's "shall not be included again" —
+/// openjpeg pi.c shares one `include` map across its per-POC iterators the
+/// same way). Filtering a FULL-range iterator preserves within-volume order
+/// and matches openjpeg, whose positional strides (dx/dy) are likewise
+/// derived from all resolutions, not the POC box. Volumes may be appended
+/// mid-walk (a later tile-part header carrying another POC — e1_colr's
+/// tile 1); an exhausted sequencer revives when that happens. With no POC
+/// entries this degrades to the bare PacketIterator: zero allocation,
+/// byte-identical behavior.
+pub const PocSequencer = struct {
+    inner: PacketIterator,
+    volumes: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
+    num_volumes: u8 = 0,
+    /// Index of the volume `inner` is currently iterating. == num_volumes
+    /// when every declared volume is exhausted.
+    cur: u8 = 0,
+    /// Shared already-emitted set, lazily allocated on the first appended
+    /// volume. Index = canonical (l, r, c, p) packet index (layer-major).
+    include: ?[]bool = null,
+    /// rc_offset[r] = Σ_{r'<r} precincts(r')·Csiz — the within-layer base
+    /// of resolution r in the canonical index. rc_total = one layer's span.
+    rc_offset: [33]usize = @splat(0),
+    rc_total: usize = 0,
+    /// Packets already emitted in NO-VOLUME passthrough mode. If a POC
+    /// arrives after passthrough packets were pulled (a late tile-part POC
+    /// on a tile whose earlier parts had none), the first appendVolumes
+    /// replays this many packets of the COD-order iteration into `include`
+    /// so the volumes don't re-emit them.
+    passthrough_pulled: usize = 0,
+
+    pub fn init(params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PocSequencer {
+        var seq: PocSequencer = .{
+            .inner = PacketIterator.init(params, tile_x0, tile_y0, image_w, image_h),
+        };
+        const num_resolutions: u8 = params.num_decomp_levels + 1;
+        var acc: usize = 0;
+        var r: u8 = 0;
+        while (r < num_resolutions) : (r += 1) {
+            seq.rc_offset[r] = acc;
+            acc += @as(usize, seq.inner.precincts_at_r[r]) * @as(usize, params.num_components);
+        }
+        seq.rc_total = acc;
+        return seq;
+    }
+
+    pub fn deinit(self: *PocSequencer, allocator: Allocator) void {
+        if (self.include) |inc| allocator.free(inc);
+        self.include = null;
+    }
+
+    /// Total distinct packets of the tile's full (l, r, c, p) box —
+    /// unchanged by POC (a conforming POC list covers exactly this set;
+    /// the shared include set caps emission at it).
+    pub fn total(self: PocSequencer) usize {
+        return self.inner.total();
+    }
+
+    /// Append POC volumes: main-header defaults at TileWalk init, then
+    /// tile-part-header POCs as each part's header is scanned (accumulating
+    /// per tile, as openjpeg's opj_j2k_read_poc does). Revives an exhausted
+    /// sequencer so the next tile-part's body walks the new volumes.
+    pub fn appendVolumes(self: *PocSequencer, allocator: Allocator, entries: []const PocEntry) Allocator.Error!void {
+        if (entries.len == 0) return;
+        if (self.include == null) {
+            const inc = try allocator.alloc(bool, self.inner.total());
+            @memset(inc, false);
+            self.include = inc;
+            if (self.passthrough_pulled > 0) {
+                // Late first POC: mark the passthrough-emitted prefix (the
+                // first N packets of the COD-order iteration) as included.
+                var replay = PacketIterator.init(self.inner.params, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
+                var n: usize = 0;
+                while (n < self.passthrough_pulled) : (n += 1) {
+                    const pi = replay.next() orelse break;
+                    self.include.?[self.indexOf(pi)] = true;
+                }
+            }
+        }
+        const was_idle = self.cur >= self.num_volumes;
+        for (entries) |e| {
+            // Past the cap the parser already emitted a FAIL finding;
+            // dropping the excess here keeps the walk deterministic.
+            if (self.num_volumes >= max_pocs) break;
+            self.volumes[self.num_volumes] = e;
+            self.num_volumes += 1;
+        }
+        if (was_idle and self.cur < self.num_volumes) self.rebuildInner();
+    }
+
+    /// Point `inner` at the current volume: a fresh FULL-range iterator in
+    /// the volume's progression order (emission is filtered in next()).
+    fn rebuildInner(self: *PocSequencer) void {
+        var p = self.inner.params;
+        p.progression_order = self.volumes[self.cur].order;
+        self.inner = PacketIterator.init(p, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
+    }
+
+    /// Canonical layer-major packet index for the include set.
+    fn indexOf(self: *const PocSequencer, pi: PacketIndex) usize {
+        return @as(usize, pi.layer) * self.rc_total +
+            self.rc_offset[pi.resolution] +
+            @as(usize, pi.component) * @as(usize, self.inner.precincts_at_r[pi.resolution]) +
+            @as(usize, pi.precinct);
+    }
+
+    pub fn next(self: *PocSequencer) ?PacketIndex {
+        if (self.num_volumes == 0) {
+            const pi = self.inner.next() orelse return null;
+            self.passthrough_pulled += 1;
+            return pi;
+        }
+        const inc = self.include.?;
+        while (true) {
+            if (self.cur >= self.num_volumes) return null;
+            const vol = self.volumes[self.cur];
+            if (self.inner.next()) |pi| {
+                // Volume box filter. RAW POC bounds; the iterator already
+                // confines emission to the tile's real geometry, so an
+                // oversized re/ce (e.g. "255 = all") clamps naturally.
+                if (pi.resolution < vol.rs or pi.resolution >= vol.re) continue;
+                if (pi.component < vol.cs or pi.component >= vol.ce) continue;
+                if (pi.layer >= vol.lye) continue;
+                const idx = self.indexOf(pi);
+                if (inc[idx]) continue;
+                inc[idx] = true;
+                return pi;
+            }
+            // Current volume exhausted — advance to the next declared one.
+            self.cur += 1;
+            if (self.cur < self.num_volumes) self.rebuildInner();
+        }
+    }
 };
 
 /// Two-byte marker codes (T.800 Table A.2). Listed here as we wire
@@ -791,17 +997,23 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         switch (marker) {
             @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
             @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
-            // Reviewer I1: COC/QCC/RGN/POC override per-component coding,
-            // quantization, ROI up-shift, or progression. jp2z does not yet
-            // apply them, so decode silently falls back to COD/QCD defaults —
-            // surface a finding so a consumer is told (validate's
-            // stricter-than-openjpeg contract). pos-2 is the marker offset.
-            // (Tile-part-header occurrences get flagged when multi-tile lands.)
+            // Reviewer I1: COC/QCC/RGN override per-component coding,
+            // quantization, or ROI up-shift. jp2z does not yet apply them,
+            // so decode silently falls back to COD/QCD defaults — surface a
+            // finding so a consumer is told (validate's stricter-than-
+            // openjpeg contract). pos-2 is the marker offset.
             @intFromEnum(Marker.coc),
             @intFromEnum(Marker.qcc),
             @intFromEnum(Marker.rgn),
-            @intFromEnum(Marker.poc),
             => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos - 2, null),
+            // POC is APPLIED, not ignored: entries parsed here become the
+            // default progression-volume list for every tile's packet walk.
+            // SIZ precedes POC in a conforming main header (T.800 A.5.1),
+            // so coding_params is already seeded; if SIZ was malformed the
+            // walk is dead anyway and the POC body is skipped.
+            @intFromEnum(Marker.poc) => if (report.coding_params) |*cp| {
+                try parsePocBody(report, allocator, body, pos + 2, cp.num_components, &cp.pocs, &cp.num_pocs);
+            },
             else => {},
         }
 
@@ -877,12 +1089,14 @@ fn walkTileParts(
 
         // Locate SOD once (reused for the marker scan and the packet walk).
         const sod = findSod(data, pos, next_pos);
-        // Flag tile-part-header override markers jp2z doesn't apply per-tile
-        // (COC/QCC/RGN/POC) — the tile-part analogue of the main-header I1
-        // scan. Independent of CodingParams; runs even when the packet walk
-        // below is skipped. The SOT segment is 12 bytes (pos..pos+12).
+        // Scan the tile-part header: flags override markers jp2z doesn't
+        // apply per-tile (COC/QCC/RGN) — the tile-part analogue of the
+        // main-header I1 scan — and parses any POC entries for this tile's
+        // sequencer. Independent of CodingParams; runs even when the packet
+        // walk below is skipped. The SOT segment is 12 bytes (pos..pos+12).
+        var tp_pocs: TilePocs = .{};
         if (sod) |sod_pos| {
-            try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
+            tp_pocs = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
         }
         // Walk this tile-part's packet headers, if we have enough
         // CodingParams to drive the iterator and width/height.
@@ -915,6 +1129,10 @@ fn walkTileParts(
                             return e;
                         };
                     }
+                    // POC entries from THIS tile-part's header accumulate
+                    // onto the tile's sequencer before its body is walked
+                    // (e1_colr: tile 1's two parts each contribute one).
+                    try gop.value_ptr.iter.appendVolumes(allocator, tp_pocs.entries[0..tp_pocs.n]);
                     // A tile-part body is a whole number of packets; resume
                     // this tile's iterator across its tile-parts (TNsot>1).
                     const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor);
@@ -985,37 +1203,108 @@ fn flagIncompleteTiles(
     }
 }
 
+/// POC entries collected from one tile-part header, to be appended onto
+/// the owning tile's packet-walk sequencer by the caller.
+const TilePocs = struct {
+    entries: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
+    n: u8 = 0,
+};
+
 /// Scan a tile-part header — the marker segments between the SOT segment
-/// and SOD — for per-tile override markers jp2z does not yet apply
-/// (COC/QCC/RGN/POC) and surface jp2_unsupported_marker_ignored for each.
-/// The tile-part-header analogue of the main-header I1 scan: a consumer is
-/// told decode fell back to the main-header COD/QCD defaults instead of
-/// silently ignoring the override (validate's stricter-than-openjpeg
-/// contract). `hdr_start` is the first byte after the SOT segment;
-/// `hdr_end` is the SOD offset.
+/// and SOD. Per-tile override markers jp2z does not yet apply (COC/QCC/RGN)
+/// surface jp2_unsupported_marker_ignored, the tile-part analogue of the
+/// main-header I1 scan: a consumer is told decode fell back to the
+/// main-header COD/QCD defaults instead of silently ignoring the override
+/// (validate's stricter-than-openjpeg contract). POC, by contrast, is
+/// APPLIED: its entries are parsed and returned for the caller to append to
+/// the owning tile's sequencer (tile-part POCs accumulate per tile across
+/// its parts, mirroring openjpeg's opj_j2k_read_poc). `hdr_start` is the
+/// first byte after the SOT segment; `hdr_end` is the SOD offset.
 fn scanTilePartHeaderMarkers(
     report: *ValidationReport,
     allocator: Allocator,
     data: []const u8,
     hdr_start: usize,
     hdr_end: usize,
-) Allocator.Error!void {
+) Allocator.Error!TilePocs {
+    var out: TilePocs = .{};
     var p = hdr_start;
     while (p + 4 <= hdr_end) {
-        if (data[p] != 0xFF) return; // not a marker boundary — stop
+        if (data[p] != 0xFF) return out; // not a marker boundary — stop
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[p + 1]);
-        if (marker == @intFromEnum(Marker.sod)) return;
+        if (marker == @intFromEnum(Marker.sod)) return out;
         const lseg = std.mem.readInt(u16, data[p + 2 ..][0..2], .big);
-        if (lseg < 2 or p + 2 + lseg > hdr_end) return; // malformed length — bail
+        if (lseg < 2 or p + 2 + lseg > hdr_end) return out; // malformed length — bail
         switch (marker) {
             @intFromEnum(Marker.coc),
             @intFromEnum(Marker.qcc),
             @intFromEnum(Marker.rgn),
-            @intFromEnum(Marker.poc),
             => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, p, null),
+            @intFromEnum(Marker.poc) => if (report.coding_params) |cp| {
+                const body = data[p + 4 .. p + 2 + lseg];
+                try parsePocBody(report, allocator, body, p + 4, cp.num_components, &out.entries, &out.n);
+            },
             else => {},
         }
         p += 2 + @as(usize, lseg);
+    }
+    return out;
+}
+
+/// Parse a POC (Progression Order Change) marker body (T.800 A.6.6) and
+/// append its entries to `entries`/`num`. Entry width depends on Csiz:
+/// component fields are u8 below 257 components, u16 at or above, so an
+/// entry is 7 or 9 bytes. Emits bad_marker_length for a body that is not a
+/// positive whole number of entries, and jp2_bad_progression_order for a
+/// degenerate entry (Ppoc > 4, RSpoc >= REpoc, CSpoc >= CEpoc, LYEpoc = 0
+/// — T.800 Table A.32's value ranges); a degenerate entry is skipped but
+/// the rest of the body is still parsed so one bad entry can't hide the
+/// others. `offset` is the byte offset of the body within the codestream.
+fn parsePocBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    body: []const u8,
+    offset: usize,
+    num_components: u16,
+    entries: *[max_pocs]PocEntry,
+    num: *u8,
+) Allocator.Error!void {
+    const wide = num_components >= 257;
+    const entry_len: usize = if (wide) 9 else 7;
+    if (body.len == 0 or body.len % entry_len != 0) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    var i: usize = 0;
+    while (i < body.len) : (i += entry_len) {
+        const rs = body[i];
+        var k = i + 1;
+        const cs: u16 = if (wide) std.mem.readInt(u16, body[k..][0..2], .big) else body[k];
+        k += if (wide) 2 else @as(usize, 1);
+        const lye = std.mem.readInt(u16, body[k..][0..2], .big);
+        k += 2;
+        const re = body[k];
+        k += 1;
+        const ce: u16 = if (wide) std.mem.readInt(u16, body[k..][0..2], .big) else body[k];
+        k += if (wide) 2 else @as(usize, 1);
+        const ppoc = body[k];
+        if (ppoc > 4 or rs >= re or cs >= ce or lye == 0) {
+            try emit(report, allocator, .fail, .jp2_bad_progression_order, offset + i, null);
+            continue;
+        }
+        if (num.* >= max_pocs) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + i, null);
+            return;
+        }
+        entries.*[num.*] = .{
+            .rs = rs,
+            .cs = cs,
+            .lye = lye,
+            .re = re,
+            .ce = ce,
+            .order = @enumFromInt(ppoc),
+        };
+        num.* += 1;
     }
 }
 
@@ -1255,7 +1544,7 @@ const TileWalk = struct {
     slots_per_component: usize,
     states: []packet_header.SubbandState,
     initialised: usize,
-    iter: jp2z.PacketIterator,
+    iter: PocSequencer,
     /// Total packets this tile's iterator will yield, and how many have
     /// been consumed across its tile-parts so far. `packets_seen == total`
     /// is the progression-order-INDEPENDENT tile-complete signal — unlike
@@ -1339,7 +1628,10 @@ const TileWalk = struct {
             }
         }
 
-        const iter = jp2z.PacketIterator.init(params, tile_x0, tile_y0, image_w, image_h);
+        var iter = PocSequencer.init(params, tile_x0, tile_y0, image_w, image_h);
+        // Main-header POC entries are the tile's default progression
+        // volumes (tile-part-header POCs get appended as parts arrive).
+        try iter.appendVolumes(allocator, params.pocs[0..params.num_pocs]);
         return .{
             .params = params,
             .image_w = image_w,
@@ -1362,6 +1654,7 @@ const TileWalk = struct {
         var i: usize = 0;
         while (i < self.initialised) : (i += 1) self.states[i].deinit(allocator);
         allocator.free(self.states);
+        self.iter.deinit(allocator);
     }
 };
 
@@ -1816,4 +2109,149 @@ test "CodingParams.numTilesXY: zero tile dims -> single tile" {
     const nt = cp.numTilesXY(303, 179);
     try std.testing.expectEqual(@as(u32, 1), nt.x);
     try std.testing.expectEqual(@as(u32, 1), nt.y);
+}
+
+test "parsePocBody: e1_colr's real 7-byte entries parse; malformed/degenerate flagged" {
+    var report = ValidationReport{
+        .overall = .pass,
+        .variant = .j2k_codestream,
+        .width = null,
+        .height = null,
+        .findings = .empty,
+    };
+    defer report.deinit(std.testing.allocator);
+    var entries: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp });
+    var n: u8 = 0;
+
+    // The two REAL entries from e1_colr's tile-1 tile-part headers
+    // (offsets 13945 and 54017): {0,0,LYE=1,RE=10,CE=10,PCRL} then
+    // {0,0,LYE=5,RE=10,CE=10,RLCP}. Csiz=3 → 7-byte entries, raw
+    // (unclamped) values stored.
+    const tp0 = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x0A, 0x0A, 0x03 };
+    try parsePocBody(&report, std.testing.allocator, &tp0, 0, 3, &entries, &n);
+    const tp1 = [_]u8{ 0x00, 0x00, 0x00, 0x05, 0x0A, 0x0A, 0x01 };
+    try parsePocBody(&report, std.testing.allocator, &tp1, 0, 3, &entries, &n);
+    try std.testing.expectEqual(@as(u8, 2), n);
+    try std.testing.expectEqual(ProgressionOrder.pcrl, entries[0].order);
+    try std.testing.expectEqual(@as(u16, 1), entries[0].lye);
+    try std.testing.expectEqual(@as(u8, 10), entries[0].re);
+    try std.testing.expectEqual(@as(u16, 10), entries[0].ce);
+    try std.testing.expectEqual(ProgressionOrder.rlcp, entries[1].order);
+    try std.testing.expectEqual(@as(u16, 5), entries[1].lye);
+    try std.testing.expectEqual(@as(usize, 0), report.findings.items.len);
+
+    // Truncated body (not a whole number of entries) → bad_marker_length,
+    // nothing appended.
+    const short = [_]u8{ 0x00, 0x00 };
+    try parsePocBody(&report, std.testing.allocator, &short, 0, 3, &entries, &n);
+    try std.testing.expectEqual(@as(u8, 2), n);
+    try std.testing.expectEqual(FindingCode.bad_marker_length, report.findings.items[report.findings.items.len - 1].code);
+
+    // Degenerate first entry (RSpoc >= REpoc) is flagged and SKIPPED, but
+    // the valid entry after it still parses — one bad entry can't hide
+    // the rest of the progression description.
+    const degen_then_ok = [_]u8{
+        0x02, 0x00, 0x00, 0x01, 0x02, 0x03, 0x00, // rs=2 >= re=2 → invalid
+        0x00, 0x00, 0x00, 0x02, 0x06, 0x03, 0x04, // valid, CPRL
+    };
+    try parsePocBody(&report, std.testing.allocator, &degen_then_ok, 0, 3, &entries, &n);
+    try std.testing.expectEqual(@as(u8, 3), n);
+    try std.testing.expectEqual(ProgressionOrder.cprl, entries[2].order);
+    try std.testing.expectEqual(FindingCode.jp2_bad_progression_order, report.findings.items[report.findings.items.len - 1].code);
+}
+
+test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, passthrough replay" {
+    // Hand-computable geometry: 64x64 tile at origin 0, 2 resolutions,
+    // 2 components, 2 layers, default (2^15) precincts → exactly one
+    // precinct per resolution → 2*2*2 = 8 distinct packets.
+    const params: CodingParams = .{
+        .progression_order = .lrcp,
+        .num_layers = 2,
+        .num_components = 2,
+        .num_decomp_levels = 1,
+        .num_pocs = 0,
+    };
+    const vol_a: PocEntry = .{ .rs = 0, .cs = 0, .lye = 1, .re = 2, .ce = 2, .order = .lrcp };
+    const vol_b: PocEntry = .{ .rs = 0, .cs = 0, .lye = 2, .re = 2, .ce = 2, .order = .rlcp };
+    // Expected: volume A (LRCP, layer 0 only) emits l0 in LRCP order;
+    // volume B (RLCP, layers 0..1) re-visits l0 (deduped by the shared
+    // include set — T.800 B.12.1 "shall not be included again") and emits
+    // only the l1 packets, in RLCP order.
+    const expected = [8][3]u16{
+        .{ 0, 0, 0 }, .{ 0, 0, 1 }, .{ 0, 1, 0 }, .{ 0, 1, 1 }, // A: (l,r,c)
+        .{ 1, 0, 0 }, .{ 1, 0, 1 }, .{ 1, 1, 0 }, .{ 1, 1, 1 }, // B: l1 only
+    };
+
+    // (1) Both volumes known up front (a main-header POC).
+    {
+        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        defer seq.deinit(std.testing.allocator);
+        try seq.appendVolumes(std.testing.allocator, &.{ vol_a, vol_b });
+        for (expected) |e| {
+            const pi = seq.next().?;
+            try std.testing.expectEqual(e[0], pi.layer);
+            try std.testing.expectEqual(@as(u8, @intCast(e[1])), pi.resolution);
+            try std.testing.expectEqual(e[2], pi.component);
+        }
+        try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
+    }
+
+    // (2) Volume B appended only after A exhausts — e1_colr's tile 1
+    // shape (each tile-part header contributes one POC entry). The
+    // sequencer must revive and produce the identical total sequence.
+    {
+        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        defer seq.deinit(std.testing.allocator);
+        try seq.appendVolumes(std.testing.allocator, &.{vol_a});
+        for (expected[0..4]) |e| {
+            const pi = seq.next().?;
+            try std.testing.expectEqual(e[0], pi.layer);
+        }
+        try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
+        try seq.appendVolumes(std.testing.allocator, &.{vol_b});
+        for (expected[4..8]) |e| {
+            const pi = seq.next().?;
+            try std.testing.expectEqual(e[0], pi.layer);
+            try std.testing.expectEqual(@as(u8, @intCast(e[1])), pi.resolution);
+            try std.testing.expectEqual(e[2], pi.component);
+        }
+        try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
+    }
+
+    // (3) No volumes → bare passthrough, byte-identical to PacketIterator.
+    {
+        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        defer seq.deinit(std.testing.allocator);
+        var bare = PacketIterator.init(params, 0, 0, 64, 64);
+        var count: usize = 0;
+        while (bare.next()) |b| : (count += 1) {
+            const s = seq.next().?;
+            try std.testing.expectEqual(b, s);
+        }
+        try std.testing.expectEqual(@as(usize, 8), count);
+        try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
+    }
+
+    // (4) Late first POC after passthrough packets were already pulled:
+    // the already-emitted prefix is replayed into the include set so the
+    // new volume cannot re-emit those packets.
+    {
+        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        defer seq.deinit(std.testing.allocator);
+        _ = seq.next().?; // l0 r0 c0 (COD LRCP order)
+        _ = seq.next().?; // l0 r0 c1
+        try seq.appendVolumes(std.testing.allocator, &.{vol_b}); // full box, RLCP
+        const after = [6][3]u16{
+            .{ 1, 0, 0 }, .{ 1, 0, 1 }, // r0: l0 deduped, l1 emits
+            .{ 0, 1, 0 }, .{ 0, 1, 1 }, // r1: l0 NOT yet emitted
+            .{ 1, 1, 0 }, .{ 1, 1, 1 },
+        };
+        for (after) |e| {
+            const pi = seq.next().?;
+            try std.testing.expectEqual(e[0], pi.layer);
+            try std.testing.expectEqual(@as(u8, @intCast(e[1])), pi.resolution);
+            try std.testing.expectEqual(e[2], pi.component);
+        }
+        try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
+    }
 }

@@ -54,11 +54,35 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       `mq_coder.zig` doc). Not matrix-driven — b1/p0_04 (3) clear it on principle,
       e1 (12–21) + truncation still trip it. TDD via C FFI (b1/p0_04 must ACCEPT).
       Valid-set false positives 4→2.
-- [ ] **e1_colr + p1_04 — genuine decode bugs (NOT false positives).** jz truly
-      mis-decodes these, so their REJECT is honest until the decoder is fixed:
-      `e1_colr` = MCT (sweep FAIL; c251×22 over-reads of 12–21 = the decoder
-      running off) → M6 MCT correctness; `p1_04` = multi-tile 9/7 (c253) → re-land
-      the parked (uncommitted) multi-tile-9/7 refactor. Fix decode ⇒ these ACCEPT.
+- [x] **e1_colr — POC + interior-tile positional iteration** (2026-07-31, ~1:15 PM EST).
+      The "MCT bug" label was WRONG. Two real causes, both fixed: (1) e1's tile 1
+      carries POC markers (T.800 A.6.6) in both its tile-part headers; jp2z filed
+      POC under c145 "ignored" but POC rewrites packet sequencing — now APPLIED:
+      `parsePocBody` (main + tile-part headers, entries accumulate per tile à la
+      openjpeg opj_j2k_read_poc) + `PocSequencer` (per-volume progression with
+      shared include-set dedup per B.12.1, mid-walk volume append, passthrough
+      replay). (2) POC's PCRL volume exposed a PRE-EXISTING origin-(0,0) bug in
+      positional iteration (the honest NOTE in precinctIndexAt predicted it):
+      RPCL/PCRL/CPRL now iterate the ABSOLUTE reference grid [tx0,tx1)×[ty0,ty1)
+      with next-multiple stepping, openjpeg's tile-edge boundary special case,
+      and origin-offset precinct indexing. Differential proof: tile-1 packet
+      sequence byte-identical to patched-openjpeg JP2Z_DUMP_T2 trace (divergence
+      was exactly 3 packets: l0 r3 c0-c2 p1 at ref x=128). Strict deep-validate
+      e1: FAIL(c251×15+c252×56+phantom c3) → **ACCEPT** (all 8 tiles walk to
+      end). Valid-set false-positive REJECTs now 1 (p1_04 only). TDD: witnessed
+      RED via C FFI (smoke.c e1 embed), PocSequencer/parsePocBody/boundary unit
+      locks, c145 classifier tests updated (POC out of the ignored set; malformed
+      POC → c4/c142).
+- [ ] **e1_colr tile-7 rendering residual (±2, NOT a validity issue).** Sweep
+      max_abs 252 → 2: remaining diffs are ALL in tile 7 (bottom-right, 19×48,
+      both-clipped), ±1/±2 both signs, ~63% of samples — a least-significant
+      refinement deviation in cblk decode, PRE-EXISTING (masked by tile 1's 252
+      before). Byte-budget accounting closes perfectly (no c251/c252/c253), so
+      the validator is unaffected. Chase with the p1_04 multi-tile rendering
+      block (needs the JP2Z_DUMP_T1 patch extended past its hardcoded tile 0).
+- [ ] **p1_04 — multi-tile 9/7 decode bug (honest REJECT until fixed).** c253 →
+      re-land the parked (uncommitted) multi-tile-9/7 refactor per the LEARNINGS
+      resume recipe. Einstein bound: checkpoint note BEFORE opening this block.
 - [x] **PTERM tighter over-read bound** (2026-07-24, Peter-endorsed). When
       `cblksty & 0x10` (predictable termination), every terminated pass ends with
       a full flush, so the legitimate past-end tail is bounded at 2 — openjpeg's
@@ -81,6 +105,19 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
 - [ ] **Build hygiene:** `libjp2z.a` bundles a nested `libopenjp2.so` archive
       member (`ld.lld: neither ET_REL nor LLVM bitcode` warning) — the FFI-link
       fragility Einstein flagged. Static lib should not embed the dynamic dep.
+- [ ] **jpegz unblock — `@import("jp2z")` without openjpeg** (requested
+      2026-07-31, `inbox/processed/2026-07-31-from-jpegz-module-importable-without-openjpeg.md`;
+      jpegz needs a pinnable SHA for its facade U1 — its `jpeg2000.validate` stub
+      returns PASS on shredded input today). Two causes, both confirmed in-tree:
+      (1) `src/jp2z.zig:241` `comptime` force-links `ffi/c_api.zig` in the
+      importable module root → every importer analyzes `@cImport(openjpeg.h)`;
+      (2) `build.zig` attaches openjpeg include/lib/link to `jp2z_mod` itself.
+      Fix shape (jpegz-proposed, sensible): thin `src/lib_root.zig` for the
+      static-lib artifact keeps the C-ABI force-link; `addModule` root stays
+      pure; openjpeg attaches to the artifacts that need it (CLI, lib, sweep,
+      inline/decode tests). Queued additively behind the e1_colr work block
+      (Peter directive + Einstein checkpoint clearance); jpegz says no rush.
+      Pin-chain sign-off is Einstein's to drive — CC him when shipped.
 - [x] **Conformance-sweep harness** (2026-06-30). `tools/sweep_one.zig` decodes
       one fixture per process with `internal.decodeCleanroom` and grades it vs
       the in-process openjpeg oracle; `./sweep` runs all 57 ISO 15444-4 fixtures
