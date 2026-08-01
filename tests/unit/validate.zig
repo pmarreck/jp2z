@@ -544,11 +544,12 @@ test "validate: stuffing-pattern marker (0xFF 0x00) treated as unknown_marker" {
 }
 
 test "validate: trailing garbage after EOC emits truncated_stream warning" {
-    // A valid SOC..SOT..EOC stream with 4 extra junk bytes appended
+    // A valid SOC..SOT..SOD..EOC stream with 4 extra junk bytes appended
     // after EOC. Psot is set so the walker lands directly on EOC,
     // then sees data.len > next_pos+2 → warn truncated_stream.
-    // Psot = 12 (SOT marker code + Lsot through TNsot = 12 bytes
-    // total, no body since this is a header-only synthetic).
+    // Psot = 14: SOT segment (12) + SOD (2), empty body — SOD is
+    // mandatory in every tile-part (T.800 A.4.4), and Psot < 14 is now
+    // itself flagged as a degenerate length.
     const stream = [_]u8{
         0xFF, 0x4F,
         0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
@@ -557,9 +558,10 @@ test "validate: trailing garbage after EOC emits truncated_stream warning" {
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x01, 0x07, 0x01, 0x01,
-        // SOT with Psot=12
+        // SOT with Psot=14, then SOD
         0xFF, 0x90, 0x00, 0x0A,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00, 0x01,
+        0xFF, 0x93,
         // EOC
         0xFF, 0xD9,
         // 4 bytes of garbage past EOC
@@ -2006,4 +2008,53 @@ test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
     var rep0 = try jp2z.validate(std.testing.allocator, &(soc_siz ++ cod_ok ++ qcd ++ tail));
     defer rep0.deinit(std.testing.allocator);
     try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
+}
+
+test "validate: SOT/Psot/TPsot consistency — classifier over the malformed tile-part set" {
+    // T.800 A.4.2 / Table A.5. Each malformed variant fires a FAIL finding;
+    // the well-formed control fires none of them.
+    const soc_siz = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    };
+    const cod = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 };
+    const qcd = [_]u8{ 0xFF, 0x5C, 0x00, 0x07, 0x40, 0x40, 0x40, 0x40, 0x40 };
+    const hdr = soc_siz ++ cod ++ qcd;
+    const eoc = [_]u8{ 0xFF, 0xD9 };
+
+    // Isot out of range: this SIZ declares a single tile; Isot=5 cannot map
+    // to the tile grid (T.800: Isot < numtiles).
+    const isot_oob = hdr ++ [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, 0x93 } ++ eoc;
+    // First tile-part of a tile must be TPsot=0.
+    const tpsot_first = hdr ++ [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0xFF, 0x93 } ++ eoc;
+    // More tile-parts than TNsot declared: part 0 declares TNsot=1, then a
+    // second part (TPsot=1) arrives. Psot=14 = SOT(12)+SOD(2), empty body.
+    const tnsot_over = hdr ++
+        [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00, 0x01, 0xFF, 0x93 } ++
+        [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0xFF, 0x93 } ++ eoc;
+    inline for (.{ isot_oob, tpsot_first, tnsot_over }) |s| {
+        var rep = try jp2z.validate(std.testing.allocator, &s);
+        defer rep.deinit(std.testing.allocator);
+        try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+        try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    }
+
+    // Degenerate Psot: 1..13 cannot even hold the SOT segment + SOD.
+    const psot_tiny = hdr ++ [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x93 } ++ eoc;
+    var rep_psot = try jp2z.validate(std.testing.allocator, &psot_tiny);
+    defer rep_psot.deinit(std.testing.allocator);
+    try std.testing.expect(hasFinding(rep_psot, .bad_marker_length));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_psot.overall);
+
+    // Control (TPsot=0, TNsot=1, Psot=0 → to EOC): none of the above fire.
+    const control = hdr ++ [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, 0x93 } ++ eoc;
+    var rep0 = try jp2z.validate(std.testing.allocator, &control);
+    defer rep0.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
+    try std.testing.expect(!hasFinding(rep0, .bad_marker_length));
 }

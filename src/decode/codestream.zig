@@ -1051,6 +1051,14 @@ fn walkTileParts(
         while (tw_it.next()) |tw| tw.deinit(allocator);
         tiles.deinit();
     }
+    // Per-tile tile-part bookkeeping (T.800 A.4.2): TPsot starts at 0 and
+    // arrives strictly sequentially per tile (tiles may interleave); TNsot,
+    // once declared nonzero, caps the part count; a completed tile accepts
+    // no further parts. Survives TileWalk removal (walk state is freed on
+    // completion, but the structural ledger must outlive it).
+    const TpState = struct { next_tpsot: u16 = 0, tnsot: u8 = 0, broken: bool = false, complete: bool = false };
+    var tp_state = std.AutoHashMap(u16, TpState).init(allocator);
+    defer tp_state.deinit();
     while (true) {
         // Verify SOT marker at pos.
         if (data.len < pos + 12) {
@@ -1069,6 +1077,59 @@ fn walkTileParts(
         // SOT layout: marker(2) | Lsot(2) | Isot(2) | Psot(4) | TPsot(1) | TNsot(1)
         // Psot sits at pos+6, NOT pos+4 (Isot is in between).
         const psot = std.mem.readInt(u32, data[pos + 6 ..][0..4], .big);
+        // Psot 1..13 cannot even hold the 12-byte SOT segment plus SOD —
+        // the "next tile-part" it points at would be inside THIS segment.
+        // Unwalkable; stop the structural walk here.
+        if (psot > 0 and psot < 14) {
+            try emit(report, allocator, .fail, .bad_marker_length, pos + 6, null);
+            return;
+        }
+        const isot16: u16 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
+        const tpsot: u8 = data[pos + 10];
+        const tnsot: u8 = data[pos + 11];
+        // Structural soundness of THIS part; an unsound part is skipped by
+        // the packet walk below (its bytes cannot be attributed) while the
+        // structural traversal continues to the next SOT.
+        var part_ok = true;
+        // Isot must map into the SIZ tile grid (T.800 A.4.2: Isot ranges
+        // over the tiles that exist).
+        if (report.coding_params) |p| {
+            if (report.width != null and report.height != null) {
+                const nt = p.numTilesXY(p.image_x0 + report.width.?, p.image_y0 + report.height.?);
+                if (@as(u32, isot16) >= nt.x * nt.y) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 4, null);
+                    part_ok = false;
+                }
+            }
+        }
+        {
+            const st = try tp_state.getOrPut(isot16);
+            if (!st.found_existing) st.value_ptr.* = .{};
+            const s = st.value_ptr;
+            if (s.complete or s.broken) {
+                // A part after the tile completed, or after a prior
+                // structural violation broke its ledger.
+                if (s.complete) try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 10, null);
+                part_ok = false;
+            } else if (tpsot != s.next_tpsot) {
+                // First part must be TPsot=0; each later part increments.
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 10, null);
+                s.broken = true;
+                part_ok = false;
+            } else if (s.tnsot != 0 and @as(u16, tpsot) + 1 > @as(u16, s.tnsot)) {
+                // More tile-parts than the declared TNsot.
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 10, null);
+                s.broken = true;
+                part_ok = false;
+            }
+            if (s.tnsot == 0) {
+                s.tnsot = tnsot; // first nonzero declaration is authoritative
+            } else if (tnsot != 0 and tnsot != s.tnsot) {
+                // Conflicting TNsot across parts of the same tile.
+                try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 11, null);
+            }
+            s.next_tpsot = @as(u16, tpsot) + 1;
+        }
 
         // Determine where this tile-part ends.
         const next_pos: usize = if (psot == 0)
@@ -1099,10 +1160,10 @@ fn walkTileParts(
         if (sod) |sod_pos| {
             tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
         }
-        // Walk this tile-part's packet headers, if we have enough
-        // CodingParams to drive the iterator and width/height.
+        // Walk this tile-part's packet headers, if the part is structurally
+        // sound and we have enough CodingParams to drive the iterator.
         if (report.coding_params) |params| {
-            if (report.width != null and report.height != null) {
+            if (part_ok and report.width != null and report.height != null) {
                 if (sod) |sod_pos| {
                     const tp_body = data[sod_pos + 2 .. next_pos];
                     // Per-tile, per-component geometry (T.800 B.2/B.3): drive
@@ -1111,7 +1172,7 @@ fn walkTileParts(
                     // component tile dims = ceil(tx1/dx) − ceil(tx0/dx) (all our
                     // fixtures share dx/dy across components, so use comp 0).
                     // Single-tile, non-sub-sampled files reduce to image dims.
-                    const isot16: u16 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
+                    // (isot16 was read + range-validated with the SOT fields.)
                     const gop = try tiles.getOrPut(isot16);
                     if (!gop.found_existing) {
                         const isot: u32 = isot16;
@@ -1154,6 +1215,10 @@ fn walkTileParts(
                     if (res != .incomplete) {
                         gop.value_ptr.deinit(allocator);
                         _ = tiles.remove(isot16);
+                        // Structural ledger: the tile is done; any further
+                        // tile-part claiming it is a violation (and must
+                        // not resurrect a fresh TileWalk over old state).
+                        if (tp_state.getPtr(isot16)) |s| s.complete = true;
                     }
                 }
                 // Missing SOD inside a tile-part is already caught
