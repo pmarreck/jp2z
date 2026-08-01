@@ -1090,13 +1090,14 @@ fn walkTileParts(
         // Locate SOD once (reused for the marker scan and the packet walk).
         const sod = findSod(data, pos, next_pos);
         // Scan the tile-part header: flags override markers jp2z doesn't
-        // apply per-tile (COC/QCC/RGN) — the tile-part analogue of the
-        // main-header I1 scan — and parses any POC entries for this tile's
-        // sequencer. Independent of CodingParams; runs even when the packet
-        // walk below is skipped. The SOT segment is 12 bytes (pos..pos+12).
-        var tp_pocs: TilePocs = .{};
+        // apply per-tile (COD/COC/QCC/RGN) — the tile-part analogue of the
+        // main-header I1 scan — and captures the overrides it DOES apply
+        // (POC entries for this tile's sequencer; a QCD body span for the
+        // tile's params). Independent of CodingParams; runs even when the
+        // packet walk below is skipped. The SOT segment is 12 bytes.
+        var tp_ov: TileOverrides = .{};
         if (sod) |sod_pos| {
-            tp_pocs = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
+            tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
         }
         // Walk this tile-part's packet headers, if we have enough
         // CodingParams to drive the iterator and width/height.
@@ -1123,16 +1124,30 @@ fn walkTileParts(
                         const tcy0: u32 = (tr.y0 + dy - 1) / dy;
                         const tcw: u32 = (tr.x1 + dx - 1) / dx - tcx0;
                         const tch: u32 = (tr.y1 + dy - 1) / dy - tcy0;
-                        gop.value_ptr.* = TileWalk.init(allocator, params, tcw, tch, tcx0, tcy0, isot) catch |e| {
+                        // A first-tile-part QCD overrides the main header's
+                        // quantization FOR THIS TILE (T.800 A.6.4): Mb per
+                        // subband (pass budgets, tier-1 bitplanes) and the
+                        // dequant stepsizes both change. p1_04 carries one
+                        // on 63 of its 64 tiles.
+                        var tile_params = params;
+                        if (tp_ov.has_qcd) {
+                            try parseQcdInto(report, allocator, &tile_params, data[tp_ov.qcd_start..tp_ov.qcd_end], tp_ov.qcd_start);
+                        }
+                        gop.value_ptr.* = TileWalk.init(allocator, tile_params, tcw, tch, tcx0, tcy0, isot) catch |e| {
                             // Don't leave a half-built entry in the map.
                             _ = tiles.remove(isot16);
                             return e;
                         };
+                    } else if (tp_ov.has_qcd) {
+                        // QCD is only honored in a tile's FIRST tile-part
+                        // header (T.800 A.6.4 placement); a later one is
+                        // ignored — surface it rather than silently drop.
+                        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
                     }
                     // POC entries from THIS tile-part's header accumulate
                     // onto the tile's sequencer before its body is walked
                     // (e1_colr: tile 1's two parts each contribute one).
-                    try gop.value_ptr.iter.appendVolumes(allocator, tp_pocs.entries[0..tp_pocs.n]);
+                    try gop.value_ptr.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
                     // A tile-part body is a whole number of packets; resume
                     // this tile's iterator across its tile-parts (TNsot>1).
                     const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor);
@@ -1203,11 +1218,19 @@ fn flagIncompleteTiles(
     }
 }
 
-/// POC entries collected from one tile-part header, to be appended onto
-/// the owning tile's packet-walk sequencer by the caller.
-const TilePocs = struct {
+/// Overrides collected from one tile-part header, applied to the owning
+/// tile by the caller: POC entries (appended to the packet-walk
+/// sequencer) and an optional QCD body span (parsed into the tile's
+/// params copy before its walk starts).
+const TileOverrides = struct {
     entries: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
     n: u8 = 0,
+    /// Byte span of the LAST QCD body seen in this header (marker at
+    /// qcd_start-4), or null. Last-wins matches openjpeg's sequential
+    /// overwrite on the spec-degenerate multiple-QCD case.
+    qcd_start: usize = 0,
+    qcd_end: usize = 0,
+    has_qcd: bool = false,
 };
 
 /// Scan a tile-part header — the marker segments between the SOT segment
@@ -1226,8 +1249,8 @@ fn scanTilePartHeaderMarkers(
     data: []const u8,
     hdr_start: usize,
     hdr_end: usize,
-) Allocator.Error!TilePocs {
-    var out: TilePocs = .{};
+) Allocator.Error!TileOverrides {
+    var out: TileOverrides = .{};
     var p = hdr_start;
     while (p + 4 <= hdr_end) {
         if (data[p] != 0xFF) return out; // not a marker boundary — stop
@@ -1236,6 +1259,9 @@ fn scanTilePartHeaderMarkers(
         const lseg = std.mem.readInt(u16, data[p + 2 ..][0..2], .big);
         if (lseg < 2 or p + 2 + lseg > hdr_end) return out; // malformed length — bail
         switch (marker) {
+            // COD in a tile-part header is a per-tile coding-style
+            // override jp2z does not yet apply — same flag as COC/QCC/RGN.
+            @intFromEnum(Marker.cod),
             @intFromEnum(Marker.coc),
             @intFromEnum(Marker.qcc),
             @intFromEnum(Marker.rgn),
@@ -1243,6 +1269,14 @@ fn scanTilePartHeaderMarkers(
             @intFromEnum(Marker.poc) => if (report.coding_params) |cp| {
                 const body = data[p + 4 .. p + 2 + lseg];
                 try parsePocBody(report, allocator, body, p + 4, cp.num_components, &out.entries, &out.n);
+            },
+            // Tile-part QCD is APPLIED (per-tile quantization override,
+            // T.800 A.6.4): return its body span; the caller parses it
+            // into the owning tile's params before walking.
+            @intFromEnum(Marker.qcd) => {
+                out.qcd_start = p + 4;
+                out.qcd_end = p + 2 + @as(usize, lseg);
+                out.has_qcd = true;
             },
             else => {},
         }
@@ -1414,6 +1448,30 @@ fn parseQcdBody(
     body: []const u8,
     offset: usize,
 ) Allocator.Error!void {
+    if (report.coding_params) |*cp| return parseQcdInto(report, allocator, cp, body, offset);
+    // No params (malformed SIZ): still surface structural QCD problems.
+    if (body.len < 1) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    if ((body[0] & 0x1F) > 2) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+    }
+}
+
+/// Parse a QCD body into `cp` — used for BOTH the main-header QCD
+/// (cp = report.coding_params) and a TILE-PART-HEADER QCD override
+/// (cp = the owning tile's params copy; T.800 A.6.4 allows QCD in the
+/// first tile-part header of a tile, and p1_04 carries one on 63 of its
+/// 64 tiles — ignoring them mis-computes Mb AND the dequant stepsizes
+/// for every overridden tile).
+fn parseQcdInto(
+    report: *ValidationReport,
+    allocator: Allocator,
+    cp: *CodingParams,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
     if (body.len < 1) {
         try emit(report, allocator, .fail, .bad_marker_length, offset, null);
         return;
@@ -1425,11 +1483,11 @@ fn parseQcdBody(
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
     }
 
-    // Populate per-subband M_b on CodingParams (T.800 A.6.4 Table A.30
-    // + E.1). SIZ/COD parsing seeded num_components / num_decomp_levels;
-    // we lay M_b across subband index space here so the tier-1 dispatcher
-    // can pick it up per (resolution, band).
-    if (report.coding_params) |*cp| {
+    // Populate per-subband M_b (T.800 A.6.4 Table A.30 + E.1). SIZ/COD
+    // parsing seeded num_components / num_decomp_levels; we lay M_b
+    // across subband index space here so the tier-1 dispatcher can pick
+    // it up per (resolution, band).
+    {
         cp.guard_bits = guard_bits;
         cp.quant_style = quant_style;
         const num_subbands: u8 = 1 + 3 * cp.num_decomp_levels;
@@ -1815,6 +1873,8 @@ fn walkTilePartBody(
                             .sb_y1 = rect.y1,
                             .zero_bitplanes = cb.zero_bitplanes,
                             .m_b = params.mbForSubband(pi.resolution, band_for_key),
+                            .qcd_expn = params.qcd_expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .qcd_mant = params.qcd_mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
                             .cblksty = params.cblksty,
                             .total_passes = cb.total_passes,
                             .segments = cb.segments.items,

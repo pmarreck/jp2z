@@ -60,6 +60,12 @@ pub const CblkDecodePlan = struct {
     /// numbps = M_b - zero_bitplanes (T.800 E.1 + tag-tree result).
     /// Drives `msb_bp = numbps - 1` in the EBCOT dispatcher.
     numbps: u8,
+    /// Per-subband quantization (expn, mant) for irreversible dequant,
+    /// from the OWNING TILE's params — a tile-part-header QCD overrides
+    /// the main header per tile (p1_04 carries one on 63 of 64 tiles),
+    /// so the render path must not reach for a global QCD table.
+    qcd_expn: u8 = 0,
+    qcd_mant: u16 = 0,
     /// Total EBCOT coding passes contributed to this cblk across all
     /// packets. Becomes the `total_passes` arg to `decodeCblkPasses`.
     total_passes: u32,

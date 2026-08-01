@@ -15,8 +15,8 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 | status | count | meaning |
 |--------|------:|---------|
 | PASS | 22 | byte-exact vs oracle |
-| NEAR | 1 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 13 | decoded but diverges (max_abs > 1) |
+| NEAR | 2 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
+| FAIL | 12 | decoded but diverges (max_abs > 1) |
 | skip:* | 20 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -30,7 +30,6 @@ diverge from the oracle. Largest divergence first.
 
 | fixture | w×h×comps | max_abs |
 |---------|-----------|--------:|
-| p1_04.j2k | 1024×1024×1 | 3782 |
 | p1_02.j2k | 640×480×3 | 255 |
 | g1_colr.j2c | 256×149×3 | 254 |
 | d2_colr.j2c | 256×149×3 | 254 |
@@ -60,20 +59,20 @@ diverge from the oracle. Largest divergence first.
 | e2_colr.j2c | DECODED | skip:dim-mismatch | 256 | 149 | 3 | 0 |
 | file3.jp2 | DECODED | skip:dim-mismatch | 480 | 640 | 3 | 0 |
 | file9.jp2 | DECODED | skip:dim-mismatch | 768 | 512 | 1 | 0 |
-| p0_02.j2k | DECODED | skip:dim-mismatch | 127 | 126 | 1 | 0 |
+| p0_02.j2k | DECODED | skip:dim-mismatch | 64 | 126 | 1 | 0 |
 | p0_03.j2k | DECODED | skip:signed | 256 | 256 | 1 | 0 |
 | p0_05.j2k | DECODED | skip:dim-mismatch | 1024 | 1024 | 4 | 0 |
 | p0_06.j2k | DECODED | skip:dim-mismatch | 513 | 129 | 4 | 0 |
 | p0_07.j2k | DECODED | skip:signed | 2048 | 2048 | 3 | 0 |
 | p0_08.j2k | DECODED | skip:signed | 513 | 3072 | 3 | 0 |
 | p0_15.j2k | DECODED | skip:signed | 256 | 256 | 1 | 0 |
-| p1_01.j2k | DECODED | skip:dim-mismatch | 122 | 99 | 1 | 0 |
+| p1_01.j2k | DECODED | skip:dim-mismatch | 61 | 99 | 1 | 0 |
 | p1_03.j2k | DECODED | skip:dim-mismatch | 1024 | 1024 | 4 | 0 |
 | p1_07.j2k | DECODED | skip:dim-mismatch | 2 | 12 | 2 | 0 |
 | subsampling_1.jp2 | DECODED | skip:dim-mismatch | 1280 | 1024 | 3 | 0 |
-| subsampling_2.jp2 | DECODED | skip:dim-mismatch | 1280 | 1024 | 3 | 0 |
+| subsampling_2.jp2 | DECODED | skip:dim-mismatch | 640 | 512 | 3 | 0 |
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
-| zoo2.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
+| zoo2.jp2 | DECODED | skip:dim-mismatch | 1953 | 1301 | 3 | 0 |
 | p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
 | d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
 | e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 2 |
@@ -85,10 +84,10 @@ diverge from the oracle. Largest divergence first.
 | g4_colr.j2c | FAIL |  | 256 | 149 | 3 | 127 |
 | p0_01.j2k | FAIL |  | 128 | 128 | 1 | 149 |
 | p1_02.j2k | FAIL |  | 640 | 480 | 3 | 255 |
-| p1_04.j2k | FAIL |  | 1024 | 1024 | 1 | 3782 |
 | p1_05.j2k | FAIL |  | 512 | 512 | 3 | 128 |
 | p1_06.j2k | FAIL |  | 12 | 12 | 3 | 128 |
 | p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
+| p1_04.j2k | NEAR |  | 1024 | 1024 | 1 | 1 |
 | a1_mono.j2c | PASS | oracle:pix | 303 | 179 | 1 | 0 |
 | a2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | a3_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |

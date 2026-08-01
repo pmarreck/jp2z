@@ -293,33 +293,95 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
         out_w = comp_w[0];
         out_h = comp_h[0];
     } else {
-        // ── Lossy 9/7 path (Q16 fixed-point) ──
-        const qplanes = try allocator.alloc([]i64, ncomp);
-        var qdone: u16 = 0;
-        defer {
-            for (qplanes[0..qdone]) |p| allocator.free(p);
-            allocator.free(qplanes);
+        // ── Lossy 9/7 path (Q16 fixed-point), multi-tile aware ──
+        // Same per-tile reconstruct → (inverse ICT) → round+DC+clamp →
+        // composite shape as the 5/3 branch above; tiles are independent
+        // (T.800). For a single tile at the origin this reduces to the
+        // whole image at (0,0) — the prior single-tile behavior exactly.
+        const xsiz = params.image_x0 + image_w;
+        const ysiz = params.image_y0 + image_h;
+
+        var comp_w: [16]u32 = @splat(0);
+        var comp_h: [16]u32 = @splat(0);
+        c = 0;
+        while (c < ncomp) : (c += 1) {
+            const ci = @min(c, 15);
+            const dx: u32 = params.comp_dx[ci];
+            const dy: u32 = params.comp_dy[ci];
+            comp_w[ci] = ceilDiv(xsiz, dx) - ceilDiv(params.image_x0, dx);
+            comp_h[ci] = ceilDiv(ysiz, dy) - ceilDiv(params.image_y0, dy);
         }
         c = 0;
         while (c < ncomp) : (c += 1) {
-            qplanes[c] = try reconstructComponentTile97(allocator, list.plans, c, image_w, image_h, params);
-            qdone += 1;
-        }
-        if (params.mct and ncomp >= 3) inverseIct(qplanes[0], qplanes[1], qplanes[2]);
-        // round (ties-to-even) + DC level shift + clamp. `done` (the
-        // function-level errdefer counter) now tracks `planes`.
-        c = 0;
-        while (c < ncomp) : (c += 1) {
-            const prec = precs[c];
-            const is_signed = (params.comp_signed >> @intCast(@min(c, 15))) & 1 != 0;
-            const dc: i32 = if (is_signed) 0 else (@as(i32, 1) << @intCast(prec - 1));
-            const lo: i32 = if (is_signed) -(@as(i32, 1) << @intCast(prec - 1)) else 0;
-            const hi: i32 = if (is_signed) (@as(i32, 1) << @intCast(prec - 1)) - 1 else (@as(i32, 1) << @intCast(prec)) - 1;
-            const plane = try allocator.alloc(i32, qplanes[c].len);
-            for (qplanes[c], 0..) |v, i| plane[i] = std.math.clamp(dwt.fpRound(v) + dc, lo, hi);
+            const ci = @min(c, 15);
+            const plane = try allocator.alloc(i32, @as(usize, comp_w[ci]) * @as(usize, comp_h[ci]));
+            @memset(plane, 0);
             planes[c] = plane;
             done += 1;
         }
+
+        const nt = params.numTilesXY(xsiz, ysiz);
+        const num_tiles = nt.x * nt.y;
+        var plan_cursor: usize = 0;
+        var t: u32 = 0;
+        while (t < num_tiles) : (t += 1) {
+            const tr = params.tileRect(xsiz, ysiz, t);
+
+            var tqbufs: [16][]i64 = undefined;
+            const TileDim = struct { w: u32, h: u32, ox: u32, oy: u32 };
+            var tdims: [16]TileDim = undefined;
+            var tb_done: u16 = 0;
+            defer {
+                var k: u16 = 0;
+                while (k < tb_done) : (k += 1) allocator.free(tqbufs[k]);
+            }
+
+            c = 0;
+            while (c < ncomp) : (c += 1) {
+                const ci = @min(c, 15);
+                const dx: u32 = params.comp_dx[ci];
+                const dy: u32 = params.comp_dy[ci];
+                const tcx0 = ceilDiv(tr.x0, dx);
+                const tcy0 = ceilDiv(tr.y0, dy);
+                const tcw = ceilDiv(tr.x1, dx) - tcx0;
+                const tch = ceilDiv(tr.y1, dy) - tcy0;
+                tdims[c] = .{
+                    .w = tcw,
+                    .h = tch,
+                    .ox = tcx0 - ceilDiv(params.image_x0, dx),
+                    .oy = tcy0 - ceilDiv(params.image_y0, dy),
+                };
+                const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
+                tqbufs[c] = try reconstructComponentTile97(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.num_decomp_levels, precs[c]);
+                tb_done += 1;
+            }
+
+            if (params.mct and ncomp >= 3) inverseIct(tqbufs[0], tqbufs[1], tqbufs[2]);
+
+            // round (ties-to-even) + DC level shift + clamp, per tile,
+            // compositing straight into the component planes.
+            c = 0;
+            while (c < ncomp) : (c += 1) {
+                const ci = @min(c, 15);
+                const prec = precs[c];
+                const is_signed = (params.comp_signed >> @intCast(ci)) & 1 != 0;
+                const dc: i32 = if (is_signed) 0 else (@as(i32, 1) << @intCast(prec - 1));
+                const lo: i32 = if (is_signed) -(@as(i32, 1) << @intCast(prec - 1)) else 0;
+                const hi: i32 = if (is_signed) (@as(i32, 1) << @intCast(prec - 1)) - 1 else (@as(i32, 1) << @intCast(prec)) - 1;
+                const d = tdims[c];
+                const stride = comp_w[ci];
+                var ty: u32 = 0;
+                while (ty < d.h) : (ty += 1) {
+                    var tx: u32 = 0;
+                    while (tx < d.w) : (tx += 1) {
+                        const v = tqbufs[c][ty * d.w + tx];
+                        planes[c][(d.oy + ty) * stride + (d.ox + tx)] = std.math.clamp(dwt.fpRound(v) + dc, lo, hi);
+                    }
+                }
+            }
+        }
+        out_w = comp_w[0];
+        out_h = comp_h[0];
     }
 
     return .{
@@ -362,39 +424,44 @@ fn dequantScaleQ(prec: u8, expn: u8, mant: u16) i64 {
     return (numerator + (@as(i64, 1) << @intCast(rs - 1))) >> rs;
 }
 
-/// Assemble + inverse 9/7 DWT one component into a Q16 (i64) tile buffer.
+/// Assemble + inverse 9/7 DWT one (tile, component) into a Q16 (i64)
+/// tile buffer. Mirrors reconstructComponentTile's origin-aware subband
+/// split and DWT parity exactly (the 5/3 multi-tile shape proven by
+/// b1/b3/e1); dequant uses each plan's TILE-stamped (expn, mant), since
+/// a tile-part-header QCD overrides the main header per tile (p1_04:
+/// 63 of 64 tiles carry one).
 pub fn reconstructComponentTile97(
     allocator: Allocator,
+    // Pre-filtered to a single (tile, component) by the caller's
+    // planRangeFor bucket sweep.
     plans: []const cblk_plan.CblkDecodePlan,
-    component: u16,
+    tile_x0: u32,
+    tile_y0: u32,
     image_w: u32,
     image_h: u32,
-    params: codestream.CodingParams,
+    num_decomp: u8,
+    prec: u8,
 ) Allocator.Error![]i64 {
     const tile_w = image_w;
-    const num_decomp = params.num_decomp_levels;
-    const prec = params.comp_prec[@min(component, 15)];
     const buf = try allocator.alloc(i64, @as(usize, image_w) * @as(usize, image_h));
     @memset(buf, 0);
     errdefer allocator.free(buf);
 
     for (plans) |plan| {
-        if (plan.component != component) continue;
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
 
         const msb_bp: u5 = @intCast(plan.numbps);
         const half_bp = cblk_dispatch.halfBitPos(msb_bp, plan.total_passes);
-        const sb = codestream.CodingParams.subbandIndex(plan.resolution, plan.band);
-        const scale_q = dequantScaleQ(prec, params.qcd_expn[sb], params.qcd_mant[sb]);
+        const scale_q = dequantScaleQ(prec, plan.qcd_expn, plan.qcd_mant);
 
         var base_x: u32 = @intCast(plan.sb_x0);
         var base_y: u32 = @intCast(plan.sb_y0);
         if (plan.resolution >= 1) {
-            const prev = subbands.resolutionExtent(0, 0, image_w, image_h, num_decomp, plan.resolution - 1);
-            if (plan.band & 1 != 0) base_x += prev.width;
-            if (plan.band & 2 != 0) base_y += prev.height;
+            const prev = subbands.resolutionExtent(tile_x0, tile_y0, image_w, image_h, num_decomp, plan.resolution - 1);
+            if (plan.band & 1 != 0) base_x += prev.width; // HL / HH → right quadrant
+            if (plan.band & 2 != 0) base_y += prev.height; // LH / HH → bottom quadrant
         }
         const cw = plan.width();
         const ch = plan.height();
@@ -408,7 +475,7 @@ pub fn reconstructComponentTile97(
         }
     }
 
-    try dwt.idwt97(allocator, buf, tile_w, 0, 0, image_w, image_h, num_decomp);
+    try dwt.idwt97(allocator, buf, tile_w, tile_x0, tile_y0, image_w, image_h, num_decomp);
     return buf;
 }
 

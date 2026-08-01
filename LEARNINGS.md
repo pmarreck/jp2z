@@ -194,3 +194,36 @@ Residual parked: e1 tile 7 (bottom-right, both-clipped) renders ±1/±2 on
 ~63% of samples — pre-existing, masked by tile 1's old 252, zero effect on
 byte-budget validation. Chase it with the p1_04 multi-tile rendering block;
 the T1 dump patch hardcodes tile 0 and needs extending first.
+
+## The multi-tile 9/7 "paradox" was per-tile QCD all along (2026-07-31, RESOLVED)
+
+The parked investigation above ("per-tile magnitude inflation", "4x =
+2^half_bp") is closed, and the answer embarrasses both prior sessions: p1_04
+carries a QCD marker in 63 of its 64 tile-part headers, each overriding the
+main header's quantization for that tile. jz ignored them silently (QCD was
+not even in the tile-header c145 flag set), so every non-origin tile was
+dequantized against the wrong (expn, mant) table AND had the wrong Mb for
+pass budgets. Everything observed follows:
+
+- "tile 0 reconstructs perfectly, non-origin tiles get DC offset + AC
+  distortion": tile 0 is the ONE tile without an override.
+- the "4x = 2^2" magnitude ratio on tile 18: an expn delta between that
+  tile's QCD and the main header's — a stepsize difference, not a
+  coefficient-representation difference. The "compacted vs absolute
+  bitplane" framing was a red herring; both decoders' t1 buffers were fine.
+- the c253 REJECT: tile 7's own LL expn=9 makes Mb=10 → numbps=7 → 19
+  passes legal; the main header's expn=8 made jz think the cap was 16.
+- shifting coefficients made single-tile fixtures worse: of course — the
+  bug was never in the coefficient scale.
+
+Diagnostic lesson: when a per-tile-shaped error appears (clean origin tile,
+corrupt interiors), scan the TILE-PART HEADERS for override markers before
+theorizing about DWT/fixed-point/compositing. `opj_dump` does not list
+tile-part-header markers; a 10-line awk over `od` output does (see the
+session's SOT/QCD scan). The decisive-experiment recipe above (post-dequant
+float dump) was never needed.
+
+Status after the fix: p1_04 sweep NEAR max_abs=1 (9/7 lossy tolerance),
+strict deep-validate ACCEPT, valid-set false-positive REJECTs now ZERO.
+Still open in this family: e1_colr tile-7 +-1/2 rendering residual (5/3
+path, unrelated to QCD — e1's tile headers carry only POC).

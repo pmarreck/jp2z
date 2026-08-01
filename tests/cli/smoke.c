@@ -179,6 +179,22 @@ int main(void) {
     ASSERT(e1sev >= 0 && e1sev < JP2Z_SEVERITY_FAIL, "e1_colr (valid, POC-resequenced): strict ACCEPTs");
     jp2z_findings_sink_free(e1s);
 
+    /* ── Per-tile QCD overrides must be APPLIED, not ignored ──
+     * p1_04.j2k (ISO conformance, T.803 pass-case): 64 tiles, 9/7,
+     * expounded quant, and 63 of the 64 tile-part headers carry their own
+     * QCD overriding the main header's. Ignoring those made jz compute
+     * tile 7's LL Mb from the main QCD (expn 8 -> Mb 9 -> numbps 6 ->
+     * max 16 passes) and flag the encoder's 19 declared passes as c253 —
+     * a false positive; tile 7's own QCD (expn 9 -> Mb 10 -> numbps 7)
+     * allows exactly 19. With tile QCD applied this file must ACCEPT. */
+    static const unsigned char p104[] = {
+#embed "../unit/fixtures/conformance/p1_04.j2k"
+    };
+    jp2z_findings_sink_t *p1s = jp2z_findings_sink_create();
+    int p1sev = jp2z_deep_validate(p104, sizeof p104, 1, p1s);
+    ASSERT(p1sev >= 0 && p1sev < JP2Z_SEVERITY_FAIL, "p1_04 (valid, per-tile QCD): strict ACCEPTs");
+    jp2z_findings_sink_free(p1s);
+
     /* ── PTERM tighter bound must not false-positive on a VALID PTERM stream ──
      * pterm_test.j2k: generated via `opj_compress -M 16` (64x64 gradient PGM),
      * cblksty=0x10 verified in its COD marker; openjpeg round-trips it. Under
@@ -192,6 +208,6 @@ int main(void) {
     ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
     jp2z_findings_sink_free(pts);
 
-    printf("PASS: jp2z C FFI smoke (24 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + PTERM)\n");
+    printf("PASS: jp2z C FFI smoke (25 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM)\n");
     return 0;
 }

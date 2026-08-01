@@ -80,9 +80,26 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       before). Byte-budget accounting closes perfectly (no c251/c252/c253), so
       the validator is unaffected. Chase with the p1_04 multi-tile rendering
       block (needs the JP2Z_DUMP_T1 patch extended past its hardcoded tile 0).
-- [ ] **p1_04 — multi-tile 9/7 decode bug (honest REJECT until fixed).** c253 →
-      re-land the parked (uncommitted) multi-tile-9/7 refactor per the LEARNINGS
-      resume recipe. Einstein bound: checkpoint note BEFORE opening this block.
+- [x] **p1_04 — per-tile QCD + multi-tile 9/7** (2026-07-31, ~10:45 PM EST).
+      The parked "4x = 2^half_bp paradox" and the c253 REJECT had ONE root
+      cause neither investigation suspected: **63 of p1_04's 64 tile-part
+      headers carry their own QCD** overriding the main header's quantization,
+      and jz silently ignored them (not even flagged — QCD wasn't in the
+      tile-scan c145 set). Tile 7's own LL expn=9 gives Mb=10 → numbps=7 →
+      max passes 19 = exactly what the encoder declared; jz's main-QCD Mb=9
+      made 19 look impossible (c253 false positive). Fixes: (1) tile-part
+      QCD parsed (`parseQcdInto`) and applied to the owning tile's params
+      (first tile-part only; later-part QCD → c145; tile COD added to the
+      c145 flag set); (2) plans now carry tile-stamped `qcd_expn`/`qcd_mant`
+      so dequant is per-tile-correct everywhere; (3) the 9/7 branch of
+      decodeCleanroom restructured to the 5/3 branch's proven per-tile
+      reconstruct→ICT→clamp→composite shape (origin-aware subband split +
+      idwt97 parity). Sweep: p1_04 FAIL max_abs 3782 → **NEAR max_abs 1**;
+      zero verdict drift elsewhere (sub-sampled 9/7 skips now report
+      component dims, matching the 5/3 branch). Strict deep-validate p1_04:
+      **ACCEPT** (TDD: witnessed RED via C FFI, 25 assertions).
+      **Valid-set false-positive REJECTs: 0.** The multi-tile 9/7 "magnitude
+      inflation" was never a DWT or scale bug — LEARNINGS updated.
 - [x] **PTERM tighter over-read bound** (2026-07-24, Peter-endorsed). When
       `cblksty & 0x10` (predictable termination), every terminated pass ends with
       a full flush, so the legitimate past-end tail is bounded at 2 — openjpeg's
