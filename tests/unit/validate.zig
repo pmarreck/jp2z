@@ -1911,3 +1911,99 @@ test "validate: p0_10.j2k multi-tile → 4 tiles walk byte-perfect (TNsot>1)" {
     try std.testing.expectEqual(@as(usize, 0), under_read);
     try std.testing.expectEqual(@as(usize, 0), truncated);
 }
+
+test "validate: hostile COD ranges (decomp>32, cblk exp>8, layers=0) FAIL without crashing" {
+    // Crash-class hardening: a hostile-input validator must never panic.
+    // Before the fix, decomp=200 overflowed `1 + 3*num_decomp_levels` (u8)
+    // in parseQcdBody, and cblk exp=255 overflowed `exp + 2` (u8) in the
+    // code-block geometry — both ReleaseSafe panics, UB in ReleaseFast.
+    // Classifier over the hostile set: each variant must yield an overall
+    // FAIL with no crash; the well-formed control must not FAIL.
+    const soc_siz = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    };
+    const qcd = [_]u8{ 0xFF, 0x5C, 0x00, 0x07, 0x40, 0x40, 0x40, 0x40, 0x40 };
+    const tail = [_]u8{
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0x93, 0xFF, 0xD9,
+    };
+    // COD body: Scod, prog, layers(2), mct, decomp, cblkw, cblkh, cblksty, qmfbid.
+    const cod_ok = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 };
+    const cod_decomp = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0xC8, 0x04, 0x04, 0x00, 0x00 }; // decomp=200
+    const cod_cblk = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0xFF, 0x04, 0x00, 0x00 }; // cblkw exp=255
+    const cod_layers0 = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 }; // layers=0
+
+    inline for (.{ cod_decomp, cod_cblk, cod_layers0 }) |cod| {
+        const s = soc_siz ++ cod ++ qcd ++ tail;
+        var rep = try jp2z.internal.deepValidate(std.testing.allocator, &s, true);
+        defer rep.deinit(std.testing.allocator);
+        try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+        try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+    }
+    // Control: the hostile-range finding is absent. (overall is not
+    // asserted — this minimal stream has an empty tile body, which the
+    // walk legitimately flags as incomplete.)
+    const control = soc_siz ++ cod_ok ++ qcd ++ tail;
+    var rep0 = try jp2z.internal.deepValidate(std.testing.allocator, &control, true);
+    defer rep0.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
+}
+
+test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
+    // T.800 A.6.1: xcb + ycb <= 12 (code-block area cap, 4096 samples) is
+    // normative — exceeding it is non-conformant even though each exponent
+    // alone is in range. Reserved bits (Scod bits 3-7, cblksty bits 6-7)
+    // must be zero; a set bit is surfaced as WARN, not silently passed
+    // (cblksty 0x40 is HTJ2K's HT flag — T.814, not Part 1).
+    const soc_siz = [_]u8{
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    };
+    const qcd = [_]u8{ 0xFF, 0x5C, 0x00, 0x07, 0x40, 0x40, 0x40, 0x40, 0x40 };
+    const tail = [_]u8{
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0x93, 0xFF, 0xD9,
+    };
+    // xcb=8 (exp byte 6), ycb=8: 4+4? — exponents are stored minus 2, so
+    // bytes 0x06/0x06 mean xcb=8, ycb=8 → 16 > 12: area violation with
+    // each exponent individually legal (6 <= 8).
+    const cod_area = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x06, 0x06, 0x00, 0x00 };
+    var rep_area = try jp2z.validate(std.testing.allocator, &(soc_siz ++ cod_area ++ qcd ++ tail));
+    defer rep_area.deinit(std.testing.allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_area.overall);
+    try std.testing.expect(hasFinding(rep_area, .jp2_invalid_codestream));
+
+    const cod_scod_resv = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 }; // Scod bit 7
+    const cod_sty_resv = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x40, 0x00 }; // cblksty bit 6 (HT)
+    inline for (.{ cod_scod_resv, cod_sty_resv }) |cod| {
+        const s = soc_siz ++ cod ++ qcd ++ tail;
+        var rep = try jp2z.validate(std.testing.allocator, &s);
+        defer rep.deinit(std.testing.allocator);
+        // Every jp2_invalid_codestream on a reserved-bit stream is the
+        // reserved-bit WARN — present, and never escalated to FAIL.
+        var n: usize = 0;
+        for (rep.findings.items) |f| {
+            if (f.code == .jp2_invalid_codestream) {
+                n += 1;
+                try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+            }
+        }
+        try std.testing.expect(n >= 1);
+    }
+    // Control: none of the above fire on the clean stream.
+    const cod_ok = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 };
+    var rep0 = try jp2z.validate(std.testing.allocator, &(soc_siz ++ cod_ok ++ qcd ++ tail));
+    defer rep0.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
+}

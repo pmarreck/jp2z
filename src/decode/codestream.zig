@@ -1365,22 +1365,50 @@ fn parseCodBody(
         try emit(report, allocator, .warn, .jp2_bad_progression_order, offset + 1, null);
     }
     const num_layers = std.mem.readInt(u16, body[2..4], .big);
+    // SGcod layers: 1..65535 (T.800 Table A.14). Zero layers is
+    // non-conformant — there is nothing to decode.
+    if (num_layers == 0) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 2, null);
+    }
     const mct_raw = body[4];
     if (mct_raw > 1) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null);
     }
-    // SPcod
+    // SPcod. Out-of-range decomp levels / cblk exponents are CRASH-class,
+    // not warn-class: T.800 caps decomposition at 32 and cblk exponents at
+    // 8, and the geometry downstream sizes [33] arrays and computes
+    // `exp + 2` in u8 — a hostile 200/255 here panics ReleaseSafe and is
+    // UB in ReleaseFast. FAIL and un-publish params (the walk cannot be
+    // driven safely), same containment as the invalid-precinct case.
+    var geometry_unsafe = false;
     const decomp_levels = body[5];
     if (decomp_levels > 32) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 5, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 5, null);
+        geometry_unsafe = true;
     }
     const cblkw_exp = body[6];
     const cblkh_exp = body[7];
     // Code-block dimension exponent: 0..8 maps to actual size 4..256.
     if (cblkw_exp > 8 or cblkh_exp > 8) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 6, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 6, null);
+        geometry_unsafe = true;
+    } else if (@as(u16, cblkw_exp) + 2 + @as(u16, cblkh_exp) + 2 > 12) {
+        // T.800 A.6.1: xcb + ycb <= 12 (code-block area cap, 4096
+        // samples). Each exponent can be individually legal while the
+        // pair violates the cap — normative, so FAIL, but the geometry
+        // is still safely walkable (params stay published).
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 6, null);
     }
     const cblksty = body[8];
+    // Reserved bits must be zero: Scod bits 3-7, cblksty bits 6-7
+    // (cblksty 0x40 is HTJ2K's HT flag — T.814, not Part 1). Surface a
+    // set reserved bit as WARN: unknown-but-decodable per Part 1 rules.
+    if (body[0] & 0xF8 != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+    }
+    if (cblksty & 0xC0 != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 8, null);
+    }
     // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
     const qmfbid = body[9];
     switch (qmfbid) {
@@ -1428,9 +1456,12 @@ fn parseCodBody(
     }
     if (invalid_precinct) {
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + precinct_byte_offset, null);
-        // Reject: a non-conformant precinct partition cannot be safely walked. Un-publish
-        // coding_params so the packet walk + decodeCleanroom stop cleanly
-        // (error.NoCodingParams) instead of crashing on the malformed geometry.
+    }
+    if (invalid_precinct or geometry_unsafe) {
+        // Reject: a non-conformant precinct partition / out-of-range
+        // geometry cannot be safely walked. Un-publish coding_params so
+        // the packet walk + decodeCleanroom stop cleanly
+        // (error.NoCodingParams) instead of crashing on it.
         report.coding_params = null;
     }
 }
@@ -1490,7 +1521,10 @@ fn parseQcdInto(
     {
         cp.guard_bits = guard_bits;
         cp.quant_style = quant_style;
-        const num_subbands: u8 = 1 + 3 * cp.num_decomp_levels;
+        // u16: parseCodBody rejects decomp > 32 (un-publishing params), but
+        // this math must not be one marker-ordering quirk away from a u8
+        // overflow panic (1 + 3*200 was exactly that before the range fix).
+        const num_subbands: u16 = 1 + 3 * @as(u16, cp.num_decomp_levels);
         switch (quant_style) {
             // Style 0: no quantization (reversible / 5/3). Each subband
             // gets one SPqcd byte — eps_b in bits 7..3, low 3 reserved.
