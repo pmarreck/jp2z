@@ -2058,3 +2058,49 @@ test "validate: SOT/Psot/TPsot consistency — classifier over the malformed til
     try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
     try std.testing.expect(!hasFinding(rep0, .bad_marker_length));
 }
+
+test "deepValidate diagnostics: aggregate entropy findings carry first-offender offset + identity" {
+    // The c253 hunt on p1_04 needed a throwaway trace print because the
+    // aggregate deep findings carried no offset and no cblk identity.
+    // Contract: every c251/c252/c253 finding anchors at the FIRST
+    // offending cblk's byte offset in the codestream and names it in the
+    // detail ("first: tile T comp C ...").
+    const allocator = std.testing.allocator;
+    const corrupt = try allocator.dupe(u8, a1_mono_j2c);
+    defer allocator.free(corrupt);
+    // Flip one byte deep in the entropy data (halfway through the file —
+    // well past the tile-part headers, so the tier-2 walk stays intact and
+    // the damage lands in a code-block's byte budget). Corrupting header
+    // bytes instead would break the packet walk before any cblk decodes.
+    const pos = corrupt.len / 2;
+    corrupt[pos] ^= 0xFF;
+
+    var rep = try jp2z.internal.deepValidate(allocator, corrupt, true);
+    defer rep.deinit(allocator);
+    var n_deep: usize = 0;
+    for (rep.findings.items) |f| {
+        switch (f.code) {
+            .entropy_over_read, .entropy_under_read, .coding_pass_overflow => {
+                n_deep += 1;
+                // Anchored at the offending cblk's first contribution byte,
+                // which precedes the flipped byte and sits inside the file.
+                try std.testing.expect(f.offset != null);
+                try std.testing.expect(f.offset.? > 0 and f.offset.? < corrupt.len);
+                try std.testing.expect(f.detail != null);
+                try std.testing.expect(std.mem.indexOf(u8, f.detail.?, "first: tile ") != null);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(n_deep >= 1);
+
+    // The clean control emits no deep finding at all (the anchoring must
+    // not come from a finding that fires on valid data).
+    var rep0 = try jp2z.internal.deepValidate(allocator, a1_mono_j2c, true);
+    defer rep0.deinit(allocator);
+    for (rep0.findings.items) |f| {
+        try std.testing.expect(f.code != .entropy_over_read);
+        try std.testing.expect(f.code != .entropy_under_read);
+        try std.testing.expect(f.code != .coding_pass_overflow);
+    }
+}

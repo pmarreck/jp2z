@@ -115,10 +115,39 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       (Einstein's critical fact). Switch `validate/src/core/jpeg2000_validator.zig`
       to `jp2z_deep_validate` once false positives are cleared — jp2z's stricter
       c251/c252 checks are the product differentiator.
-- [ ] **Remaining strictness surface** (Einstein Note-1 item 5, not yet audited in
-      code): SOT/Psot tile-part bounds+order, reserved/field ranges, coding-pass
-      budgets (c253 exists — audit coverage), tag-tree invariants, trailing-data,
-      length consistency, embedded-stream base-offset/length bounds.
+- [x] **Marker-field ranges + crash-class hardening** (2026-08-01). COD
+      decomp>32 / cblk-exp>8 were warn-then-assign — downstream geometry sizes
+      [33] arrays and computes `exp+2` in u8, so hostile values PANICKED
+      ReleaseSafe (witnessed SEGV in the RED) and were UB in ReleaseFast. Now
+      FAIL + un-publish coding_params (invalid-precinct containment). Also:
+      layers=0 FAIL, xcb+ycb>12 area cap FAIL (T.800 A.6.1), reserved Scod/
+      cblksty bits WARN (0x40 = HTJ2K HT flag, T.814), parseQcdInto subband
+      count widened to u16.
+- [x] **SOT/Psot/TPsot tile-part consistency** (2026-08-01). Per-tile
+      structural ledger surviving TileWalk removal: Psot 1..13 (can't hold
+      SOT+SOD) FAIL; Isot outside the SIZ tile grid FAIL; TPsot must start at 0
+      and increment strictly per tile; parts beyond TNsot FAIL; conflicting
+      TNsot WARN; a part arriving after its tile completed FAILs and no longer
+      resurrects a fresh TileWalk over finished state. Unsound parts are
+      excluded from the packet walk while traversal continues.
+- [ ] **Remaining strictness surface**: tag-tree invariants (monotonicity /
+      inclusion / zero-bitplane anomalies), embedded-stream base-offset+length
+      bounds (payload-relative vs host-file offsets; no read may escape a
+      bounded Source), PLT/TLM cross-checks vs actual tile-part lengths.
+- [x] **Diagnostics: published code registry + anchored deep findings**
+      (2026-08-01). `jp2z_finding_code_t` is now in `include/jp2z_core.h`
+      (full registry with band comments), so C consumers stop hardcoding
+      numbers; smoke.c dropped its local #defines and `_Static_assert`s the
+      numbering through the ABI (drift fails the build). Aggregate deep
+      findings (c251/c252/c253) now carry a byte OFFSET and name their first
+      offending code-block in `detail` ("first: tile T comp C rR band B prc P")
+      — plans gained `src_offset` (first-contribution byte). Motivation was
+      concrete: the p1_04 c253 hunt needed a throwaway trace build purely
+      because the finding identified nothing.
+- [ ] **Diagnostics, remaining**: several structural findings still carry no
+      offset where one is derivable; audit `emit` call sites for `null`
+      offsets. Consider a per-finding cblk identity struct rather than
+      free-text `detail` once a consumer needs to machine-read it.
 - [x] **jpegz unblock — `@import("jp2z")` without openjpeg** (2026-07-31,
       ~8:30 PM EST; priority-bumped by Peter via jpegz: "fix U1, then U5" put
       it on jpegz's critical path, landed between the e1 and p1_04 blocks

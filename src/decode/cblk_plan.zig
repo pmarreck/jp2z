@@ -66,6 +66,11 @@ pub const CblkDecodePlan = struct {
     /// so the render path must not reach for a global QCD table.
     qcd_expn: u8 = 0,
     qcd_mant: u16 = 0,
+    /// Byte offset in the codestream of this cblk's FIRST contribution —
+    /// the anchor a diagnostic finding points a consumer at (aggregate
+    /// deep findings name their first offender; hunting an unanchored
+    /// c253 across 64 tiles once needed a throwaway trace build).
+    src_offset: usize = 0,
     /// Total EBCOT coding passes contributed to this cblk across all
     /// packets. Becomes the `total_passes` arg to `decodeCblkPasses`.
     total_passes: u32,

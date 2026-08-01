@@ -160,6 +160,46 @@ typedef enum {
     JP2Z_SEVERITY_FAIL = 3,
 } jp2z_severity_t;
 
+/* Finding codes carried in jp2z_sink_finding_t.code. Numbering is the
+ * C ABI wire format and is shared with the sibling jpegz codec family
+ * (structural 1..49, JPEG 2000 specifics 140..179, informational
+ * 200..249, tier-2/packet integrity 250..299), so a consumer can hold
+ * one vocabulary across formats. Kept in sync with src/core/errors.zig;
+ * tests/cli/smoke.c asserts the registry through this ABI.
+ *
+ * A finding's SEVERITY is reported per occurrence, not implied by its
+ * code: several codes are WARN in relaxed mode and FAIL under strict
+ * validation. Consumers should branch on severity, not on code alone. */
+typedef enum {
+    /* Structural */
+    JP2Z_FINDING_MISSING_SOI                 = 1,   /* no SOC / JP2 signature box */
+    JP2Z_FINDING_MISSING_EOI                 = 2,   /* no EOC (T.800 A.4.4) */
+    JP2Z_FINDING_TRUNCATED_STREAM            = 3,
+    JP2Z_FINDING_BAD_MARKER_LENGTH           = 4,
+    JP2Z_FINDING_UNKNOWN_MARKER              = 5,
+    /* JPEG 2000 specifics */
+    JP2Z_FINDING_JP2_INVALID_SIGNATURE       = 140,
+    JP2Z_FINDING_JP2_INVALID_CODESTREAM      = 141,
+    JP2Z_FINDING_JP2_BAD_PROGRESSION_ORDER   = 142,
+    JP2Z_FINDING_JP2_TILE_DECODE_FAILED      = 143,
+    JP2Z_FINDING_JP2_CODEBLOCK_DECODE_FAILED = 144,
+    /* A COD/COC/QCC/RGN override jp2z does not yet apply was present:
+     * the stream is unsupported-valid, never invalid. Stays WARN. */
+    JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED  = 145,
+    JP2Z_FINDING_JP2_INVALID_SIZ             = 146,
+    /* Informational */
+    JP2Z_FINDING_JP2_USES_9X7_WAVELET        = 207,
+    JP2Z_FINDING_JP2_USES_5X3_WAVELET        = 208,
+    /* Tier-2 / packet + entropy integrity — jp2z's deep-validation
+     * differentiator; these carry an offset and name their first
+     * offending code-block in `detail`. */
+    JP2Z_FINDING_JP2_PACKETS_UNDER_READ      = 250,
+    JP2Z_FINDING_ENTROPY_OVER_READ           = 251,
+    JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,
+    JP2Z_FINDING_CODING_PASS_OVERFLOW        = 253,
+    JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END   = 254,  /* a good sign */
+} jp2z_finding_code_t;
+
 typedef struct {
     jp2z_severity_t  severity;
     int              code;            /* jp2z_finding_code_t numeric */

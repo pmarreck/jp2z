@@ -14,10 +14,31 @@
 
 #include "jp2z_core.h"
 
-/* Numeric finding codes the header exposes only as `int` (jp2z_finding_code_t
- * is not published in the C ABI). Kept in sync with src/core/errors.zig. */
-#define JP2Z_FINDING_MISSING_EOI 2
-#define JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED 145
+/* Substring search over a NON-NUL-terminated buffer (finding details are
+ * length-delimited). Hand-rolled because memmem is GNU-only and this
+ * suite is expected to build on all five target platforms. */
+static int contains(const unsigned char *hay, size_t hay_len, const char *needle) {
+    const size_t n = strlen(needle);
+    if (n == 0 || hay_len < n) return 0;
+    for (size_t i = 0; i + n <= hay_len; i++) {
+        if (memcmp(hay + i, needle, n) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Finding codes now come from the published jp2z_finding_code_t in
+ * jp2z_core.h — no local #defines. The registry numbering is ABI, so
+ * these static asserts fail the build if a value ever drifts (the codes
+ * are shared with the sibling jpegz family's vocabulary). */
+_Static_assert(JP2Z_FINDING_MISSING_SOI == 1, "finding registry: missing_soi");
+_Static_assert(JP2Z_FINDING_MISSING_EOI == 2, "finding registry: missing_eoi");
+_Static_assert(JP2Z_FINDING_TRUNCATED_STREAM == 3, "finding registry: truncated_stream");
+_Static_assert(JP2Z_FINDING_BAD_MARKER_LENGTH == 4, "finding registry: bad_marker_length");
+_Static_assert(JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED == 145, "finding registry: c145");
+_Static_assert(JP2Z_FINDING_ENTROPY_OVER_READ == 251, "finding registry: c251");
+_Static_assert(JP2Z_FINDING_ENTROPY_UNDER_READ == 252, "finding registry: c252");
+_Static_assert(JP2Z_FINDING_CODING_PASS_OVERFLOW == 253, "finding registry: c253");
+_Static_assert(JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END == 254, "finding registry: c254");
 
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { \
@@ -110,6 +131,35 @@ int main(void) {
     }
     ASSERT(found_eoc, "missing-EOC: strict reports missing_eoi finding");
     jp2z_findings_sink_free(es);
+
+    /* Deep findings are offset-anchored and name their first offending
+     * code-block: a C consumer can jump straight to the byte. Flip one
+     * byte deep in the entropy data (halfway in) — the tier-2 headers
+     * stay intact so the walk reaches tier-1 and the byte-budget checks
+     * fire. (Truncating instead would trip the cheaper structural
+     * truncated_stream check first and never reach a code-block.) */
+    unsigned char *a1_mut = malloc(a1_len);
+    ASSERT(a1_mut != NULL, "malloc for corrupt copy");
+    memcpy(a1_mut, a1, a1_len);
+    a1_mut[a1_len / 2] ^= 0xFF;
+    jp2z_findings_sink_t *ds2 = jp2z_findings_sink_create();
+    (void)jp2z_deep_validate(a1_mut, a1_len, 1, ds2);
+    int saw_anchored_deep = 0;
+    for (size_t i = 0; i < jp2z_findings_sink_count(ds2); i++) {
+        jp2z_sink_finding_t fd = {0};
+        if (jp2z_findings_sink_get(ds2, i, &fd) != JP2Z_OK) continue;
+        if (fd.code == JP2Z_FINDING_ENTROPY_OVER_READ
+            || fd.code == JP2Z_FINDING_ENTROPY_UNDER_READ
+            || fd.code == JP2Z_FINDING_CODING_PASS_OVERFLOW) {
+            ASSERT(fd.offset != INT64_MIN && fd.offset > 0, "deep finding carries a byte offset");
+            ASSERT(contains(fd.detail, fd.detail_len, "first: tile "),
+                   "deep finding names its first offending code-block");
+            saw_anchored_deep = 1;
+        }
+    }
+    ASSERT(saw_anchored_deep, "entropy-corrupted a1_mono produces an anchored deep finding");
+    jp2z_findings_sink_free(ds2);
+    free(a1_mut);
 
     /* relaxed mode preserves WARN — structural, not unconditionally fatal. */
     jp2z_findings_sink_t *rs = jp2z_findings_sink_create();
@@ -208,6 +258,6 @@ int main(void) {
     ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
     jp2z_findings_sink_free(pts);
 
-    printf("PASS: jp2z C FFI smoke (25 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM)\n");
+    printf("PASS: jp2z C FFI smoke (28 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM + code-registry + anchored-diagnostics)\n");
     return 0;
 }

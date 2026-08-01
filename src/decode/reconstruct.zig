@@ -566,12 +566,12 @@ test "dequantScaleQ: stepsize=1 (mant=0, expn=prec) gives 0.5 in Q16" {
 }
 
 /// Append a finding to a report and escalate its overall severity.
-fn appendFinding(report: *codestream.ValidationReport, allocator: Allocator, sev: codestream.Severity, code: codestream.FindingCode, detail: ?[]const u8) Allocator.Error!void {
+fn appendFinding(report: *codestream.ValidationReport, allocator: Allocator, sev: codestream.Severity, code: codestream.FindingCode, offset: ?u64, detail: ?[]const u8) Allocator.Error!void {
     // Take ownership of `detail`: on success the finding owns it (freed by
     // report.deinit); on append-OOM free it here so the caller's allocPrint'd
     // string never leaks (reviewer C1, mirrors codestream.emit's errdefer).
     errdefer if (detail) |d| allocator.free(d);
-    try report.findings.append(allocator, .{ .severity = sev, .code = code, .offset = null, .detail = detail });
+    try report.findings.append(allocator, .{ .severity = sev, .code = code, .offset = offset, .detail = detail });
     if (@intFromEnum(sev) > @intFromEnum(report.overall)) report.overall = sev;
 }
 
@@ -592,7 +592,7 @@ test "appendFinding frees caller detail when findings.append OOMs (reviewer C1)"
     var fa = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
     const a = fa.allocator();
     const detail = try a.dupe(u8, "caller-owned detail");
-    const r = appendFinding(&report, a, .warn, .coding_pass_overflow, detail);
+    const r = appendFinding(&report, a, .warn, .coding_pass_overflow, null, detail);
     try testing.expectError(error.OutOfMemory, r);
     try testing.expectEqual(@as(usize, 0), report.findings.items.len);
 }
@@ -656,32 +656,50 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     var over_count: u32 = 0;
     var under_count: u32 = 0;
     var passbudget_count: u32 = 0;
+    // First offender per category: the aggregate finding anchors at its
+    // codestream offset and names it, so a consumer (or a future session)
+    // can go straight to the cblk instead of re-instrumenting the walk.
+    var first_over: ?cblk_plan.CblkDecodePlan = null;
+    var first_under: ?cblk_plan.CblkDecodePlan = null;
+    var first_passbudget: ?cblk_plan.CblkDecodePlan = null;
     for (list.plans) |plan| {
         // Coding-pass budget (no decode needed): numbps bit-planes allow at
         // most 1 + 3*(numbps-1) = 3*numbps-2 passes. More is impossible.
         const max_passes: u32 = if (plan.numbps == 0) 0 else 3 * @as(u32, plan.numbps) - 2;
-        if (plan.total_passes > max_passes) passbudget_count += 1;
+        if (plan.total_passes > max_passes) {
+            passbudget_count += 1;
+            if (first_passbudget == null) first_passbudget = plan;
+        }
         if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
-        if (cblk.over_read > overReadCap(plan.cblksty)) over_count += 1;
+        if (cblk.over_read > overReadCap(plan.cblksty)) {
+            over_count += 1;
+            if (first_over == null) first_over = plan;
+        }
         // NOTE: under_read (declared-but-unconsumed bytes) is symmetric and could
         // in principle false-positive up to the same ~4 lookahead, but no valid
         // fixture trips it today (b1/p0_04 under_read=0); revisit with the same
         // register-derived cap if one ever does.
-        if (cblk.under_read > 2) under_count += 1;
+        if (cblk.under_read > 2) {
+            under_count += 1;
+            if (first_under == null) first_under = plan;
+        }
     }
     if (passbudget_count > 0) {
-        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than numbps allows", .{passbudget_count});
-        try appendFinding(&report, allocator, sev, .coding_pass_overflow, detail);
+        const p = first_passbudget.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than numbps allows (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ passbudget_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, sev, .coding_pass_overflow, p.src_offset, detail);
     }
     if (over_count > 0) {
-        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt)", .{over_count});
-        try appendFinding(&report, allocator, sev, .entropy_over_read, detail);
+        const p = first_over.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ over_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, sev, .entropy_over_read, p.src_offset, detail);
     }
     if (under_count > 0) {
-        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch)", .{under_count});
-        try appendFinding(&report, allocator, sev, .entropy_under_read, detail);
+        const p = first_under.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ under_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, sev, .entropy_under_read, p.src_offset, detail);
     }
 
     // EOC is mandatory (T.800 A.4.4). The structural walk flags a missing

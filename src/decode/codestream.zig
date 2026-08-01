@@ -1974,6 +1974,7 @@ fn walkTilePartBody(
                             .m_b = params.mbForSubband(pi.resolution, band_for_key),
                             .qcd_expn = params.qcd_expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
                             .qcd_mant = params.qcd_mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .src_offset = body_offset_in_data + data_base + bytes_so_far,
                             .cblksty = params.cblksty,
                             .total_passes = cb.total_passes,
                             .segments = cb.segments.items,
