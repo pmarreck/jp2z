@@ -20,8 +20,26 @@ pub fn build(b: *std.Build) void {
         "Path to openjpeg libs (default: /usr/lib)",
     ) orelse "/usr/lib";
 
-    // ── Core Zig module ────────────────────────────────────────────
-    const jp2z_mod = b.addModule("jp2z", .{
+    // ── PUBLIC Zig module — what `@import("jp2z")` gets ────────────
+    // Deliberately carries ZERO C attachments: a validate-only consumer
+    // (the jpegz facade's U1 path) compiles and links with no openjpeg
+    // headers or libs. Zig's lazy analysis keeps the Phase-1 decode path
+    // (openjpeg_wrapper's @cImport) out of such builds; the import-probe
+    // gate below keeps it that way. A consumer that wants decode through
+    // this module must supply its own openjpeg include/lib (or wait for
+    // Phase 3, when the cleanroom replaces the wrapper and this split
+    // collapses).
+    const jp2z_pub = b.addModule("jp2z", .{
+        .root_source_file = b.path("src/jp2z.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // ── Internal Phase-1 flavor: same root + the openjpeg backend ──
+    // Every in-repo artifact that exercises decode (CLI, sweep, tests)
+    // uses this instance. Dissolves into jp2z_pub at Phase 3.
+    const jp2z_mod = b.createModule(.{
         .root_source_file = b.path("src/jp2z.zig"),
         .target = target,
         .optimize = optimize,
@@ -32,10 +50,23 @@ pub fn build(b: *std.Build) void {
     jp2z_mod.linkSystemLibrary("openjp2", .{});
 
     // ── Static library with C ABI ──────────────────────────────────
+    // Rooted at lib_root.zig (public API + the C-ABI force-link) so the
+    // export fns land in the archive without contaminating the module
+    // root. Include path only — deliberately NO linkSystemLibrary: the
+    // archive must not embed a libopenjp2.so member (the "neither ET_REL
+    // nor LLVM bitcode" LLD wart); executables linking libjp2z.a resolve
+    // -lopenjp2 themselves, exactly as the in-repo consumers already do.
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib_root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lib_mod.addIncludePath(.{ .cwd_relative = openjpeg_include });
     const lib = b.addLibrary(.{
         .name = "jp2z",
         .linkage = .static,
-        .root_module = jp2z_mod,
+        .root_module = lib_mod,
     });
     lib.installHeadersDirectory(b.path("include"), "", .{
         .include_extensions = &.{".h"},
@@ -151,6 +182,25 @@ pub fn build(b: *std.Build) void {
         .root_module = validate_mod,
     });
     test_step.dependOn(&b.addRunArtifact(validate_tests).step);
+
+    // (4b) Module-import gate (MFIC; jpegz U1 contract): a validate-only
+    //      consumer of the PUBLIC module must build+link with zero C deps
+    //      (no openjpeg include/lib anywhere on its graph). See
+    //      tests/import_probe.zig for what a RED here means.
+    const probe_mod = b.createModule(.{
+        .root_source_file = b.path("tests/import_probe.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    probe_mod.addImport("jp2z", jp2z_pub);
+    const probe_exe = b.addExecutable(.{
+        .name = "import_probe",
+        .root_module = probe_mod,
+    });
+    const run_probe = b.addRunArtifact(probe_exe);
+    test_step.dependOn(&run_probe.step);
+    b.step("import-probe", "Gate: validate-only consumer of the public jp2z module builds with zero C deps").dependOn(&run_probe.step);
 
     // (5) C FFI smoke test — links the static lib and runs the CLI
     //     test program (exercises every C ABI entry point).

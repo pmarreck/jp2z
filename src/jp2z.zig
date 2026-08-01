@@ -233,13 +233,11 @@ pub const internal = struct {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Force-link the C ABI module so its `export fn`s land in the static lib.
-// ─────────────────────────────────────────────────────────────────────
-
-comptime {
-    _ = @import("ffi/c_api.zig");
-}
+// NOTE: the C ABI force-link (`comptime { _ = @import("ffi/c_api.zig"); }`)
+// deliberately does NOT live here — it moved to src/lib_root.zig (the
+// static-library artifact's root) so that importing this module never
+// analyzes the openjpeg-backed C ABI. A validate-only Zig consumer must
+// build with zero C deps (tests/import_probe.zig enforces this).
 
 // ─────────────────────────────────────────────────────────────────────
 // Force test discovery for modules that don't have a non-test

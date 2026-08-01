@@ -102,22 +102,28 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       code): SOT/Psot tile-part bounds+order, reserved/field ranges, coding-pass
       budgets (c253 exists — audit coverage), tag-tree invariants, trailing-data,
       length consistency, embedded-stream base-offset/length bounds.
-- [ ] **Build hygiene:** `libjp2z.a` bundles a nested `libopenjp2.so` archive
-      member (`ld.lld: neither ET_REL nor LLVM bitcode` warning) — the FFI-link
-      fragility Einstein flagged. Static lib should not embed the dynamic dep.
-- [ ] **jpegz unblock — `@import("jp2z")` without openjpeg** (requested
-      2026-07-31, `inbox/processed/2026-07-31-from-jpegz-module-importable-without-openjpeg.md`;
-      jpegz needs a pinnable SHA for its facade U1 — its `jpeg2000.validate` stub
-      returns PASS on shredded input today). Two causes, both confirmed in-tree:
-      (1) `src/jp2z.zig:241` `comptime` force-links `ffi/c_api.zig` in the
-      importable module root → every importer analyzes `@cImport(openjpeg.h)`;
-      (2) `build.zig` attaches openjpeg include/lib/link to `jp2z_mod` itself.
-      Fix shape (jpegz-proposed, sensible): thin `src/lib_root.zig` for the
-      static-lib artifact keeps the C-ABI force-link; `addModule` root stays
-      pure; openjpeg attaches to the artifacts that need it (CLI, lib, sweep,
-      inline/decode tests). Queued additively behind the e1_colr work block
-      (Peter directive + Einstein checkpoint clearance); jpegz says no rush.
-      Pin-chain sign-off is Einstein's to drive — CC him when shipped.
+- [x] **jpegz unblock — `@import("jp2z")` without openjpeg** (2026-07-31,
+      ~8:30 PM EST; priority-bumped by Peter via jpegz: "fix U1, then U5" put
+      it on jpegz's critical path, landed between the e1 and p1_04 blocks
+      exactly as the ack predicted). The comptime C-ABI force-link moved from
+      `src/jp2z.zig` to a new `src/lib_root.zig` (static-lib artifact root
+      only); build.zig now has a PUBLIC bare `jp2z` module (zero C
+      attachments — `addModule`) + an internal Phase-1 flavor carrying the
+      openjpeg backend for in-repo decode artifacts (dissolves at Phase 3).
+      Witnessed RED via `tests/import_probe.zig` — a validate-only consumer
+      of the public module that must build+link with ZERO C deps — which
+      reproduced jpegz's exact reference trace, then flipped green; the probe
+      is now a permanent MFIC gate in `zig build test`. Fleet ruling recorded
+      (Peter via jpegz 2026-07-31): jp2z's C-FFI dogfooding obligation is
+      WAIVED — jpegz (facade + its U5 C CLI) carries it family-wide; our C
+      CLI stays as the e2e vehicle only.
+- [x] **Build hygiene: nested `libopenjp2.so` in `libjp2z.a`** (2026-07-31,
+      fixed by the same slice): the lib artifact (lib_root) gets the include
+      path only — NO linkSystemLibrary — so the archive no longer embeds the
+      dynamic dep and the `ld.lld: neither ET_REL nor LLVM bitcode` warning
+      is gone from every FFI link (verified: 0 warnings, 0 `.so` members via
+      `ar t`). Executables linking libjp2z.a resolve `-lopenjp2` themselves,
+      as all in-repo consumers already did.
 - [x] **Conformance-sweep harness** (2026-06-30). `tools/sweep_one.zig` decodes
       one fixture per process with `internal.decodeCleanroom` and grades it vs
       the in-process openjpeg oracle; `./sweep` runs all 57 ISO 15444-4 fixtures
