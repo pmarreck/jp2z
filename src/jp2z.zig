@@ -158,6 +158,21 @@ pub fn validate(
     return @import("decode/codestream.zig").validate(allocator, data);
 }
 
+/// Strict consumer-facing validation. This adds a full pure-Zig entropy
+/// decode to the structural walk, so byte-budget and impossible-pass-count
+/// corruption becomes visible without linking or calling OpenJPEG.
+///
+/// Unsupported-but-valid features remain warnings. `strict` promotes only
+/// findings whose violated invariant proves corruption, including a missing
+/// mandatory EOC marker and deep entropy-budget failures.
+pub fn deepValidate(
+    allocator: Allocator,
+    data: []const u8,
+    strict: bool,
+) error{OutOfMemory}!ValidationReport {
+    return @import("decode/reconstruct.zig").deepValidate(allocator, data, strict);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Internal namespace — diagnostic-only oracle entry points.
 // ─────────────────────────────────────────────────────────────────────

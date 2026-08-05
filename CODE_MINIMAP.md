@@ -23,7 +23,7 @@ jpegz uses. Update as the pure-Zig decode milestones land.
 
 | Path | Defines | Notes |
 |---|---|---|
-| `src/jp2z.zig` | `decode`, `decodeWithOptions`, `validate`, `DecodeOptions`, `Image`, `FindingsSink`, `Severity`, `Variant`, `FindingCode`, `internal.openjpegDecode`, `version`, `lastErrorMessage` | Hub. Imports core/* + decode/* + ffi/c_api.zig (force-link) |
+| `src/jp2z.zig` | `decode`, `decodeWithOptions`, `validate`, `deepValidate`, `DecodeOptions`, `Image`, `FindingsSink`, `Severity`, `Variant`, `FindingCode`, `internal.openjpegDecode`, `version`, `lastErrorMessage` | Public Zig hub; strict validation is pure Zig and OpenJPEG-free |
 
 ## Core (shared, no I/O)
 
@@ -71,5 +71,6 @@ jpegz uses. Update as the pure-Zig decode milestones land.
 | `tests/unit/smoke.zig` | Public-API wiring: version, last error, decode error paths, FindingsSink basics |
 | `tests/unit/decode.zig` | TODO: needs JP2/J2K fixtures + Phase-1 wrapper round-trip |
 | `tests/unit/validate.zig` | TODO: stub passes; M1 codestream walker activates real tests |
+| `tests/mutation_matrix.zig` | Set-based strict classifier over valid controls and deterministic sniper/bolter/shotgun mutations; imports the OpenJPEG-free public module |
 | `tests/cli/smoke.c` | 10 C-side assertions: version, decode error paths, FindingsSink create/free/count/get |
 | `tests/unit/fixtures/` | TODO: tiny 4×4 JP2 + J2K fixtures (use `opj_compress` from openjpeg-tools, or write a generator script à la `jpegz/scratch/gen_jpegls_fixtures.c`) |

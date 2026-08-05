@@ -49,7 +49,7 @@ Frozen as of `yolo@7a962ed4`. Interface version **v1**.
   this contract is exactly what lets the runtime backend change invisibly.
 - **The `internal.*` namespace** is explicitly NOT part of the stable ABI
   (test/oracle hooks: `decodeCleanroom`, `extractCblkPlans`, `inspect`,
-  `deepValidate`, `openjpegDecode`, …). Consumers MUST NOT depend on it.
+  `openjpegDecode`, …). Consumers MUST NOT depend on it.
 - **Finding semantics may strengthen** (a code may begin firing in more
   cases as validation sharpens), but a code's numeric value and meaning are
   stable once registered.
@@ -71,7 +71,13 @@ pub const DecodeOptions = struct {
 ### Validate
 ```zig
 pub fn validate(allocator: Allocator, data: []const u8) error{OutOfMemory}!ValidationReport;
+pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) error{OutOfMemory}!ValidationReport;
 ```
+
+`deepValidate` is the production corruption-detection entry point. It adds a
+full entropy decode to the structural walk using only jp2z's Zig code. The
+public-module import gate executes it without OpenJPEG headers or libraries.
+Unsupported-but-valid features stay warnings even when `strict` is true.
 
 ### Types
 ```zig
@@ -133,6 +139,7 @@ pub const jpeg2000 = struct {
     pub const decode = jp2z.decode;
     pub const decodeWithOptions = jp2z.decodeWithOptions;
     pub const validate = jp2z.validate;
+    pub const deepValidate = jp2z.deepValidate;
 };
 ```
 
@@ -151,6 +158,8 @@ jp2z_findings_sink_t *jp2z_findings_sink_create(void);
 void                  jp2z_findings_sink_free(jp2z_findings_sink_t *sink);
 size_t                jp2z_findings_sink_count(const jp2z_findings_sink_t *sink);
 /* + jp2z_findings_sink_get(...), jp2z_decode_with_findings(...) */
+int                   jp2z_deep_validate(const uint8_t *data, size_t len,
+                                         int strict, jp2z_findings_sink_t *sink);
 ```
 
 - **Structs:** `jp2z_image_t`, `jp2z_decode_options_t`, `jp2z_finding_t`.

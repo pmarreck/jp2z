@@ -2,6 +2,29 @@
 
 ## In progress
 
+### Mecha Validate v1 leaf gate (2026-08-04 EDT)
+
+- [x] Promote the pure-Zig strict validator from an internal-only hook to the
+      public `jp2z.deepValidate` API. Witnessed the consumer probe fail before
+      implementation, then execute a valid entropy decode with no C/OpenJPEG
+      dependency.
+- [x] Add a deterministic set classifier over 14 conforming controls and
+      sniper/bolter/shotgun mutations. Current evidence: 0/14 false-positive
+      rejects; 0/42 misses for provably invalid SOC mutations; entropy-probe
+      sensitivity 10/14, 11/14, and 14/14 respectively. See
+      `conformance/MUTATION_SCORECARD.md` for the honest labeling boundary.
+- [x] Run the exact Mechatron targets via `./test` (238 existing tests plus
+      the mutation classifier), `./build`, the OpenJPEG-free import probe,
+      and the 57-file differential sweep. Results: all build/test gates pass;
+      sweep PASS 22, NEAR 2, FAIL 12, skip 20, ERROR 1, CRASH/TIMEOUT 0.
+- [ ] Remove OpenJPEG from the standalone decode package and C decode path.
+      The production strict-validation Zig module is clean, but the Phase-1
+      decoder and bundled CLI still use OpenJPEG. Consumers must not select
+      those artifacts when validating until the pure-Zig decoder cutover.
+- [ ] Add specification-grounded labels for entropy mutations so undetected
+      probes can be counted as true false negatives rather than merely lower
+      mutation sensitivity.
+
 > **WIND-DOWN STATE (fleet migration to Thelio, 2026-07-06).** All work GREEN +
 > pushed: `yolo@origin = 2c0e8728`, 224/224 tests, Garnix 6/6, working copy clean
 > (no uncommitted/WIP). Sweep baseline **PASS 14, NEAR 1, FAIL 20, skip 21, ERROR 1,

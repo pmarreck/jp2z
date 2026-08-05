@@ -202,6 +202,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_probe.step);
     b.step("import-probe", "Gate: validate-only consumer of the public jp2z module builds with zero C deps").dependOn(&run_probe.step);
 
+    // (4c) Mutation classifier: valid controls plus deterministic sniper,
+    //      bolter, and shotgun mutations through the public pure-Zig strict
+    //      API. This module deliberately imports jp2z_pub, not jp2z_mod.
+    const mutation_mod = b.createModule(.{
+        .root_source_file = b.path("tests/mutation_matrix.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mutation_mod.addImport("jp2z", jp2z_pub);
+    const mutation_tests = b.addTest(.{
+        .name = "mutation_matrix",
+        .root_module = mutation_mod,
+    });
+    const run_mutation_tests = b.addRunArtifact(mutation_tests);
+    test_step.dependOn(&run_mutation_tests.step);
+    b.step("mutation-matrix", "Classify strict-validation controls and deterministic mutation scales").dependOn(&run_mutation_tests.step);
+
     // (5) C FFI smoke test — links the static lib and runs the CLI
     //     test program (exercises every C ABI entry point).
     const cli_test_mod = b.createModule(.{

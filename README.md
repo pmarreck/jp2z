@@ -63,6 +63,7 @@ pub const jpeg2000 = struct {
     pub const decode = jp2z.decode;
     pub const decodeWithOptions = jp2z.decodeWithOptions;
     pub const validate = jp2z.validate;
+    pub const deepValidate = jp2z.deepValidate;
 };
 ```
 

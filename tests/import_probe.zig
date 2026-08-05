@@ -1,5 +1,5 @@
 //! Mechanical gate (MFIC) for the PUBLIC `jp2z` module's import contract:
-//! a validate-only consumer — exactly what the jpegz facade's U1 slice is —
+//! a strict-validation consumer — exactly what the jpegz facade needs —
 //! must compile AND link with ZERO C dependencies: no openjpeg headers, no
 //! -lopenjp2, no include/library paths. Zig's lazy analysis keeps the
 //! Phase-1 decode path (openjpeg_wrapper's @cImport) out of such builds as
@@ -15,10 +15,11 @@ const jp2z = @import("jp2z");
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    // A bare SOC marker: enough to drive the validate walk end-to-end.
-    // The gate is compile+link; the run just proves the entry point is
-    // callable. Output stays silent (tests run clean) — exit code only.
-    var report = try jp2z.validate(arena.allocator(), &[_]u8{ 0xFF, 0x4F });
+    // Exercise the actual strict, entropy-decoding entry point against a
+    // conforming codestream. This prevents a shallow structural-only probe
+    // from going green while deep validation accidentally regains a C oracle.
+    const valid = @embedFile("unit/fixtures/conformance/a1_mono.j2c");
+    var report = try jp2z.deepValidate(arena.allocator(), valid, true);
     defer report.deinit(arena.allocator());
-    if (@intFromEnum(report.overall) > @intFromEnum(jp2z.Severity.fail)) return error.ImplausibleSeverity;
+    if (report.overall == .fail) return error.ValidFixtureRejected;
 }
