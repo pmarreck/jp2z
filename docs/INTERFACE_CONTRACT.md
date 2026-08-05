@@ -1,12 +1,12 @@
 ---
 purpose: Frozen public interface of jp2z (Zig surface + C ABI + finding-code registry) that consumers pin against; decouples interface stability from decode coverage.
 audience: both
-status: FROZEN v1 — awaiting Einstein blessing; changes require Einstein cross-board sign-off
+status: FROZEN v1 — Einstein-approved 2026-08-04; changes require Einstein cross-board sign-off
 maintained_by: einstein-signoff
-frozen_as_of: yolo@7a962ed4
+frozen_as_of: yolo@0db0c51
 ---
 
-# jp2z Interface Contract — v1 (FROZEN, pending Einstein blessing)
+# jp2z Interface Contract — v1 (FROZEN)
 
 ## Purpose & status
 
@@ -27,7 +27,7 @@ consistency, this frozen contract, and the finding-code registry). Routine
 jp2z work that does NOT touch this surface (decode internals, fixtures, bug
 fixes) proceeds through jp2z-reviewer as normal.
 
-Frozen as of `yolo@7a962ed4`. Interface version **v1**.
+Frozen as of `yolo@0db0c51`. Interface version **v1**.
 
 ## What is frozen vs. what is not
 
