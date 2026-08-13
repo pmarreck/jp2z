@@ -29,6 +29,11 @@ const fixtures = [_]Fixture{
     .{ .name = "p1_04.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_04.j2k") },
     .{ .name = "file1.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file1.jp2") },
     .{ .name = "file9.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file9.jp2") },
+    // Real-encoder multi-tile lossy JP2 (12 tiles, 8 layers, RPCL, custom
+    // precincts, SOP+EPH, SEGSYM). Guards the empty-packet extractor class:
+    // stale last_contribution_length sliced phantom bytes into cblk plans
+    // and fired entropy_under_read on a valid file (2026-08-13).
+    .{ .name = "balloon_eciRGB_icc.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/balloon_eciRGB_icc.jp2") },
 };
 
 const Stats = struct {
@@ -133,7 +138,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual(@as(usize, 0), stats.false_positive_rejects);
     try std.testing.expectEqual([_]usize{ fixtures.len, fixtures.len, fixtures.len }, stats.known_corrupt_by_class);
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
-    try std.testing.expectEqual([_]usize{ 12, 2 }, stats.controls_by_family);
+    try std.testing.expectEqual([_]usize{ 12, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
     try std.testing.expectEqual([_]usize{ 2, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
@@ -141,7 +146,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
     // are probes rather than known-invalid files, so improvement may raise the
     // counts without invalidating the gate.
-    const sensitivity_floor = [_]usize{ 8, 9, 12, 2, 2, 2 };
+    const sensitivity_floor = [_]usize{ 8, 9, 12, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }

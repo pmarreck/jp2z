@@ -36,6 +36,7 @@ oracle suite stays accessible without bloating the repo.
 | `p1_04.j2k` | 101,844 | Profile-1: 12-bit mono, 9/7 lossy, 8×8 multi-tile (>8-bit + 9/7-multi-tile path) |
 | `file1.jp2` | 650,678 | JP2 file format, first reference image — exercises box parser |
 | `file9.jp2` | 300,208 | JP2 file format, exercises additional metadata box types |
+| `balloon_eciRGB_icc.jp2` | 1,864,443 | Real-encoder JP2: 12 tiles, 8 layers, RPCL, custom precincts, SOP+EPH, SEGSYM, 9/7, eciRGB ICC. NOT from openjpeg-data — copied from validate's labeled known-GOOD corpus (`ground_truth_examples/jpeg2k/`, offered 2026-08-13) after its empty-packet layout exposed the `entropy_under_read` extractor false positive. Must-accept regression guard. |
 
 Phase 1 (openjpeg wrapper) decode tests target these via
 `@embedFile`. Phase 2 pure-Zig decode milestones use them as both

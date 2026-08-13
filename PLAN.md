@@ -2,6 +2,54 @@
 
 ## In progress
 
+### entropy_under_read false positive on real lossy JP2 (2026-08-13 EDT)
+
+Reported by jpegz 2026-08-12 (inbox), fixture offered by validate 2026-08-13.
+Sole blocker on validate's JP2 cutover (jp2z → jpegz → tiffz → validate).
+
+- [x] Reproduce: confirmed byte-for-byte (FAIL 252, 26 cblks, first: tile 3
+      comp 0 r0 band 0 prc 0). Probe evidence: offenders' plan buffers held
+      MORE bytes than their declared segments (995B vs 881B) with under-reads
+      of 75–698 bytes — not MQ-flush slop. (2026-08-13 ~4:20pm EDT)
+- [x] Root-cause: NEITHER of jpegz's two candidates. `readPacketHeader`'s
+      EMPTY-PACKET early return (leading flag bit 0, T.800 B.10.3) skipped
+      the per-cblk `last_contribution_length` reset that only lives inside
+      `readCodeBlockContribution`. After any empty packet — ubiquitous in
+      8-layer RPCL streams — the extraction loop sliced phantom bytes for
+      every previously-contributing cblk in the precinct, polluting plan
+      buffers (and decoded coefficients) while the packet walk itself stayed
+      in sync (`advance` uses the header's true length, so all 12 tiles
+      still reported walked_to_end). Fix: clear the field for all cblks in
+      the view on the empty-packet path. RED witnessed (expected 0, found
+      2), then GREEN. Post-fix balloon: max under_read across 4336 cblks is
+      1 byte; strict verdict INFO/ACCEPT. The `> 2` FAIL threshold was
+      never the problem and is unchanged. (2026-08-13 ~4:25pm EDT)
+- [x] Vendor the fixture: `tests/unit/fixtures/conformance/
+      balloon_eciRGB_icc.jp2` (+ SOURCES.md provenance), 15th mutation-
+      matrix control (jp2 family 2→3, floors raised to 3/3/3 — balloon
+      detects all six mutation probes). Gate proven to BITE: matrix fails
+      with the fix stashed. `./test` green; sweep drift zero. (2026-08-13
+      ~4:35pm EDT)
+- [ ] On green: ship, then SHA-chain note to jpegz + validate (validate
+      expects reply ONLY when the fix lands).
+- [ ] Decode-correctness follow-up (NOT a validation blocker): balloon's
+      differential grade vs openjpeg is FAIL max_abs=9 even post-fix — the
+      cleanroom decode has a residual gap on this feature combo (custom
+      precincts / 8 layers / SEGSYM / RPCL). Distinct from the sweep's
+      existing 12 FAILs only in that balloon isn't in the sweep corpus.
+
+### Carried threads (do not drop)
+
+- [ ] Send jpegz the UBSan diagnosis note: their vendored-openjpeg Debug/
+      ReleaseSafe test builds trap upstream UB (`-fsanitize=function`,
+      fn-pointer cast at openjpeg.c:225/:336 called via opj_setup_decoder);
+      system-lib nix path is uninstrumented so `./test` stays green. Fix is
+      `-fno-sanitize=function` on vendored C, or patch to real trampolines.
+      Diagnosed 2026-08-06 from coredump 2274349; not yet sent.
+- [ ] Archive the executed Einstein leaf-gate note (2026-08-04) to
+      `inbox/processed/` — work shipped as `0db0c51` + `d3754cf`.
+- [ ] Awaiting Peter's word: Trash `~/Code/jp2z-reviewer/` (stale orphan).
+
 ### Mecha Validate v1 leaf gate (2026-08-04 EDT)
 
 - [x] Promote the pure-Zig strict validator from an internal-only hook to the

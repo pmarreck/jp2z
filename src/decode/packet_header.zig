@@ -319,6 +319,15 @@ pub fn readPacketHeader(
 ) std.mem.Allocator.Error!?u32 {
     const flag = reader.readBit() orelse return null;
     if (flag == 0) {
+        // Empty packet: no cblk in this precinct contributes this layer.
+        // The per-cblk reset in readCodeBlockContribution never runs on
+        // this path, so clear last_contribution_length explicitly —
+        // otherwise the walker's extraction loop slices phantom bytes
+        // for every cblk that contributed in an earlier layer (the
+        // balloon_eciRGB_icc entropy_under_read false positive).
+        for (subband_states) |*sbs| {
+            for (sbs.blocks) |*b| b.last_contribution_length = 0;
+        }
         reader.alignToByte();
         return 0;
     }
@@ -400,6 +409,39 @@ test "readPacketHeader: empty packet flag '0' followed by alignment" {
     try std.testing.expectEqual(@as(u32, 0), len);
     // After byte-align, full byte consumed.
     try std.testing.expectEqual(@as(usize, 1), reader.bytesConsumed());
+}
+
+test "readPacketHeader: empty packet resets stale last_contribution_length" {
+    // The balloon_eciRGB_icc false positive (2026-08-13): a cblk
+    // contributes in layer 0, then the precinct's layer-1 packet is
+    // EMPTY (leading flag bit '0'). The empty-packet early return
+    // never touched per-cblk state, so the walker's extraction loop
+    // (which keys on last_contribution_length) sliced phantom bytes
+    // for every previously-contributing cblk in the precinct —
+    // polluting plan buffers and firing entropy_under_read on valid
+    // multi-layer streams. An empty packet must leave every cblk in
+    // the view reading "no contribution this packet".
+    const allocator = std.testing.allocator;
+    var sb_state = try SubbandState.init(
+        allocator,
+        .{ .kind = .ll, .width = 10, .height = 6 },
+        4,
+        4,
+    );
+    defer sb_state.deinit(allocator);
+    var states = [_]SubbandState{sb_state};
+
+    // Layer 0: non-empty packet, first inclusion, 1 pass, 2 bytes (0xE2
+    // per the encoding walkthrough in the test below).
+    var r1 = BitReader.init(&.{0xE2}, .{});
+    _ = (try readPacketHeader(&r1, &states, 0, 0, null)).?;
+    try std.testing.expectEqual(@as(u32, 2), states[0].blocks[0].last_contribution_length);
+
+    // Layer 1: empty packet (single '0' bit + alignment padding).
+    var r2 = BitReader.init(&.{0x00}, .{});
+    const len = (try readPacketHeader(&r2, &states, 1, 0, null)).?;
+    try std.testing.expectEqual(@as(u32, 0), len);
+    try std.testing.expectEqual(@as(u32, 0), states[0].blocks[0].last_contribution_length);
 }
 
 test "readPacketHeader: r=0, 1×1 cblk, first inclusion at layer 0" {
