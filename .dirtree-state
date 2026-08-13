@@ -12,6 +12,7 @@ annotate=[
 	src/decode/reconstruct.zig = Cleanroom reconstruct (5/3 + 9/7 + RCT/ICT + level shift) AND deepValidate strict-findings entry point (M7)
 	sweep = Conformance-sweep driver: runs sweep_one over all 57 ISO 15444-4 fixtures, writes conformance/{sweep.ndjson,SCORECARD.md}; deterministic regression net
 	tests/mutation_matrix.zig = OpenJPEG-free strict-validation classifier over valid controls and deterministic mutation scales
+	tests/unit/fixtures/conformance/balloon_eciRGB_icc.jp2 = Real-encoder must-accept control (12 tiles, 8 layers, RPCL, SEGSYM, 9/7, ICC) — guards the empty-packet extractor false-positive class
 	tests/unit/fixtures/conformance/p0_04.j2k = 9/7 lossy 3-comp+ICT+TERMALL conformance fixture (640x480, PAE<=1)
 	tests/unit/fixtures/conformance/p0_09.j2k = 9/7 lossy mono conformance fixture (17x37, byte-perfect target)
 	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records

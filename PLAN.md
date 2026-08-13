@@ -30,8 +30,11 @@ Sole blocker on validate's JP2 cutover (jp2z → jpegz → tiffz → validate).
       detects all six mutation probes). Gate proven to BITE: matrix fails
       with the fix stashed. `./test` green; sweep drift zero. (2026-08-13
       ~4:35pm EDT)
-- [ ] On green: ship, then SHA-chain note to jpegz + validate (validate
-      expects reply ONLY when the fix lands).
+- [x] Shipped `1b29e0c`; push verified (origin/yolo == HEAD); Mechatron
+      SUCCESS 2026-08-13T20:37:10Z. SHA-chain notes delivered to jpegz
+      (re-pin + propagate to tiffz) and validate (FYI, re-pin when the
+      chain reaches them); both sessions notified; source notes archived
+      to inbox/processed/. (2026-08-13 ~4:40pm EDT)
 - [ ] Decode-correctness follow-up (NOT a validation blocker): balloon's
       differential grade vs openjpeg is FAIL max_abs=9 even post-fix — the
       cleanroom decode has a residual gap on this feature combo (custom
@@ -40,14 +43,13 @@ Sole blocker on validate's JP2 cutover (jp2z → jpegz → tiffz → validate).
 
 ### Carried threads (do not drop)
 
-- [ ] Send jpegz the UBSan diagnosis note: their vendored-openjpeg Debug/
-      ReleaseSafe test builds trap upstream UB (`-fsanitize=function`,
-      fn-pointer cast at openjpeg.c:225/:336 called via opj_setup_decoder);
-      system-lib nix path is uninstrumented so `./test` stays green. Fix is
-      `-fno-sanitize=function` on vendored C, or patch to real trampolines.
-      Diagnosed 2026-08-06 from coredump 2274349; not yet sent.
-- [ ] Archive the executed Einstein leaf-gate note (2026-08-04) to
-      `inbox/processed/` — work shipped as `0db0c51` + `d3754cf`.
+- [x] Sent jpegz the UBSan diagnosis note (vendored-openjpeg Debug/
+      ReleaseSafe builds trap upstream fn-pointer-cast UB at
+      openjpeg.c:225/:336; system-lib nix path uninstrumented). Delivered
+      2026-08-13 to `jpegz/inbox/`. (2026-08-13 ~4:37pm EDT)
+- [x] Archived the executed Einstein leaf-gate note (2026-08-04) to
+      `inbox/processed/` — work had shipped as `0db0c51` + `d3754cf`.
+      (2026-08-13 ~4:16pm EDT)
 - [ ] Awaiting Peter's word: Trash `~/Code/jp2z-reviewer/` (stale orphan).
 
 ### Mecha Validate v1 leaf gate (2026-08-04 EDT)
