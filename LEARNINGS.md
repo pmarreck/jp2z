@@ -227,3 +227,33 @@ Status after the fix: p1_04 sweep NEAR max_abs=1 (9/7 lossy tolerance),
 strict deep-validate ACCEPT, valid-set false-positive REJECTs now ZERO.
 Still open in this family: e1_colr tile-7 +-1/2 rendering residual (5/3
 path, unrelated to QCD — e1's tile headers carry only POC).
+
+## 2026-08-13 — the balloon 252 false positive: "the right code never ran"
+
+The `entropy_under_read` FAIL on validate's known-good balloon_eciRGB_icc.jp2
+(real encoder: 12 tiles, 8 layers, RPCL, SEGSYM) was neither of the reporter's
+two hypotheses (accounting formula wrong / severity policy wrong). The per-cblk
+`last_contribution_length` reset existed, was correct, and was UNIT-TESTED —
+but it lived inside `readCodeBlockContribution`, and `readPacketHeader`'s
+EMPTY-packet early return (T.800 B.10.3 leading flag bit 0) bypassed it
+entirely. jpegz named the category well: "the logic is wrong" and "the policy
+is wrong" do not exhaust the space; "the right code never ran" is its own kind.
+
+Corollaries proven by this bug:
+- A tested invariant is only as good as the set of control-flow paths that
+  reach its enforcement point. The reset's test pulled it through the per-cblk
+  reader; no test pulled the empty-packet path against stale state.
+- Two true signals can mask one lie: every tile reported walked_to_end (the
+  walk advances by the header's true length) while the extractor's plans
+  rotted (it advances by per-cblk stale lengths). When two subsystems consume
+  the same stream by different bookkeeping, their AGREEMENT is the invariant
+  to test — here, plan.data.len == sum(segments.byte_len) would have caught
+  it years early. That check is cheap and now implicitly enforced by the
+  balloon must-accept control.
+- The diagnostic tell was an internal inconsistency, not the finding itself:
+  buffers holding MORE bytes than their declared segment budgets (995 vs 881)
+  with residues of 75-698 bytes — far outside any legal MQ-flush explanation
+  (post-fix max residue: 1 byte). Magnitude histograms beat verdicts.
+- Synthetic small-dimension valid corpora cannot represent "empty packet"
+  layouts: single-layer fixtures never emit one. One real-encoder multi-layer
+  file was worth 14 synthetics on the must-accept side.
