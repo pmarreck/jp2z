@@ -48,9 +48,39 @@ Sole blocker on validate's JP2 cutover (jp2z → jpegz → tiffz → validate).
       openjpeg.c:225/:336; system-lib nix path uninstrumented). Delivered
       2026-08-13 to `jpegz/inbox/`. (2026-08-13 ~4:37pm EDT)
 - [x] Archived the executed Einstein leaf-gate note (2026-08-04) to
-      `inbox/processed/` — work had shipped as `0db0c51` + `d3754cf`.
-      (2026-08-13 ~4:16pm EDT)
-- [ ] Awaiting Peter's word: Trash `~/Code/jp2z-reviewer/` (stale orphan).
+      `inbox/processed/` (later Trashed wholesale per the 2026-08-14
+      ephemeral-inbox rule change). Work had shipped as `0db0c51` +
+      `d3754cf`. (2026-08-13 ~4:16pm EDT)
+- [x] jp2z-reviewer orphan Trashed — verified already absent from
+      `~/Code/` (2026-08-14 ~2:50pm EDT).
+
+### M7 strictness surface — remaining gaps (2026-08-14 EDT) — DONE
+
+Einstein's original 1.0-audit "embedded-stream bounds" item plus the
+three follow-ups I'd parked. All four TDD-first (RED witnessed where
+new behavior), `./test` green, sweep drift zero, pushed.
+
+- [x] JP2 box-layer strictness (`7e3e0a2`): host-relative finding
+      offsets for embedded codestreams (was jp2c-payload-relative — two
+      coordinate systems in one report); first-jp2c-only per I.5.4;
+      jp2h-before-jp2c ordering per I.5.3; jp2h sub-box bad-length +
+      XLBox handling; ihdr/SIZ dimension cross-check (I.5.3.1).
+- [x] Null-offset audit (`e214a95`): the only three null-offset emit
+      sites (walkJp2 missing-box findings) now anchor at data.len; an
+      invariant test rejects ANY null-offset finding on one-box-missing
+      JP2s, keeping the class closed.
+- [x] TLM/PLT length cross-checks (`738b3d7`): declared-vs-walked for
+      both markers, FAIL on disagreement; varint/entry-width hardening
+      (hostile >u32 length is bad_marker_length, not a shift-overflow).
+- [x] Tag-tree invariants + zero_bitplane_overflow finding 255
+      (`f9bc51b`): re-attributed the numbps==0 anomaly out of 253
+      (empirically 0/7730 valid cblks); two MFIC monotonicity locks on
+      tag_tree.read().
+
+- [ ] Awaiting Peter: nothing pending on jp2z. Next natural blocks are
+      decode-correctness (balloon max_abs=9, sweep's 12 FAIL) and the
+      leaf-gate leftovers below (retire OpenJPEG from the decode
+      artifacts; spec-grounded entropy-corruption labels).
 
 ### Mecha Validate v1 leaf gate (2026-08-04 EDT)
 
