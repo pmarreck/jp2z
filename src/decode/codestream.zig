@@ -1018,6 +1018,11 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     try parseSizBody(report, allocator, data[4 .. 4 + lsiz], 2);
 
     // Walk the remaining main-header markers up to SOT/SOD/EOC.
+    // TLM entries (A.7.1) accumulate here in encounter order; the
+    // tile-part walker cross-checks each against the walked spans.
+    var tlm_entries: std.ArrayListUnmanaged(TlmEntry) = .empty;
+    defer tlm_entries.deinit(allocator);
+    var saw_tlm = false;
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1035,7 +1040,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             @intFromEnum(Marker.sot) => {
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
-                try walkTileParts(report, allocator, data, pos, extractor);
+                try walkTileParts(report, allocator, data, pos, extractor, if (saw_tlm) tlm_entries.items else null);
                 return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
@@ -1086,10 +1091,65 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             @intFromEnum(Marker.poc) => if (report.coding_params) |*cp| {
                 try parsePocBody(report, allocator, body, pos + 2, cp.num_components, &cp.pocs, &cp.num_pocs);
             },
+            @intFromEnum(Marker.tlm) => {
+                saw_tlm = true;
+                try parseTlmBody(report, allocator, body, pos + 2, &tlm_entries);
+            },
             else => {},
         }
 
         pos += lxxx;
+    }
+}
+
+/// One TLM tile-part-length record. `ttlm == null` means ST=0: entries
+/// describe tile-parts in file order with no explicit tile index.
+const TlmEntry = struct { ttlm: ?u16, ptlm: u32 };
+
+/// Parse a TLM marker body (T.800 A.7.1): Ztlm(u8), Stlm(u8), then
+/// fixed-width entries. Stlm's ST field (bits 4-5) selects the tile-index
+/// width (0/1/2 bytes); SP (bit 6) selects u16 or u32 lengths. TLM exists
+/// so decoders can seek without walking — a lying entry silently corrupts
+/// any consumer that trusts it, which is why the walker cross-checks.
+/// Structurally malformed bodies emit bad_marker_length and contribute
+/// no entries.
+fn parseTlmBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    body: []const u8,
+    offset: usize,
+    entries: *std.ArrayListUnmanaged(TlmEntry),
+) Allocator.Error!void {
+    if (body.len < 2) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    const stlm = body[1];
+    const st: u8 = (stlm >> 4) & 0x3;
+    const sp: u8 = (stlm >> 6) & 0x1;
+    if (st == 3) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset + 1, null);
+        return;
+    }
+    const entry_len: usize = @as(usize, st) + @as(usize, if (sp == 1) 4 else 2);
+    const payload = body[2..];
+    if (payload.len % entry_len != 0) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    var i: usize = 0;
+    while (i < payload.len) : (i += entry_len) {
+        const ttlm: ?u16 = switch (st) {
+            0 => null,
+            1 => payload[i],
+            2 => std.mem.readInt(u16, payload[i..][0..2], .big),
+            else => unreachable,
+        };
+        const ptlm: u32 = if (sp == 1)
+            std.mem.readInt(u32, payload[i + st ..][0..4], .big)
+        else
+            std.mem.readInt(u16, payload[i + st ..][0..2], .big);
+        try entries.append(allocator, .{ .ttlm = ttlm, .ptlm = ptlm });
     }
 }
 
@@ -1110,8 +1170,16 @@ fn walkTileParts(
     data: []const u8,
     start: usize,
     extractor: ?*cblk_extract.CblkExtractor,
+    tlm: ?[]const TlmEntry,
 ) Allocator.Error!void {
     var pos: usize = start;
+    // TLM cross-check cursor: entry N describes the Nth tile-part in
+    // file order. `tlm == null` means no TLM marker was present (an
+    // EMPTY list is a present-but-lying TLM and still checks). First
+    // disagreement stops the check (a desynced list would otherwise
+    // flag every later part).
+    var tp_index: usize = 0;
+    var tlm_broken = false;
     // Persistent per-tile walk state, keyed by Isot (SOT tile index).
     // A tile with TNsot>1 tile-parts shares ONE TileWalk across them so
     // the packet iterator + tag-tree states resume rather than restart.
@@ -1219,6 +1287,27 @@ fn walkTileParts(
             return;
         } else pos + psot;
 
+        // TLM cross-check (T.800 A.7.1): when TLM is present it describes
+        // every tile-part; entry tp_index must match THIS part's tile
+        // index (when ST!=0 carries one) and walked length. A missing
+        // entry means the main header lies about the file's layout.
+        if (tlm != null and !tlm_broken) {
+            const entries = tlm.?;
+            if (tp_index >= entries.len) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, null);
+                tlm_broken = true;
+            } else {
+                const e = entries[tp_index];
+                if (e.ttlm != null and e.ttlm.? != isot16) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 4, null);
+                    tlm_broken = true;
+                } else if (e.ptlm != next_pos - pos) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 6, null);
+                    tlm_broken = true;
+                }
+            }
+        }
+        tp_index += 1;
 
         // Locate SOD once (reused for the marker scan and the packet walk).
         const sod = findSod(data, pos, next_pos);
@@ -1229,6 +1318,7 @@ fn walkTileParts(
         // tile's params). Independent of CodingParams; runs even when the
         // packet walk below is skipped. The SOT segment is 12 bytes.
         var tp_ov: TileOverrides = .{};
+        defer tp_ov.plt.deinit(allocator);
         if (sod) |sod_pos| {
             tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
         }
@@ -1283,7 +1373,7 @@ fn walkTileParts(
                     try gop.value_ptr.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
                     // A tile-part body is a whole number of packets; resume
                     // this tile's iterator across its tile-parts (TNsot>1).
-                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor);
+                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null);
                     if (res != .incomplete) {
                         gop.value_ptr.deinit(allocator);
                         _ = tiles.remove(isot16);
@@ -1368,6 +1458,10 @@ const TileOverrides = struct {
     qcd_start: usize = 0,
     qcd_end: usize = 0,
     has_qcd: bool = false,
+    /// PLT-declared packet lengths for THIS tile-part (A.7.3), in Zplt
+    /// encounter order. Owned by the caller — deinit after the walk.
+    plt: std.ArrayListUnmanaged(u32) = .empty,
+    has_plt: bool = false,
 };
 
 /// Scan a tile-part header — the marker segments between the SOT segment
@@ -1414,6 +1508,37 @@ fn scanTilePartHeaderMarkers(
                 out.qcd_start = p + 4;
                 out.qcd_end = p + 2 + @as(usize, lseg);
                 out.has_qcd = true;
+            },
+            // PLT (A.7.3): declared per-packet lengths — 7-bit varints,
+            // MSB = continuation. The packet walk cross-checks each
+            // against the walked span (SOP+header+EPH+body; the dominant
+            // PLT writers include the delimiters so summed entries seek).
+            // A varint may not dangle past the segment (openjpeg agrees),
+            // and a >u32 length is hostile — both bad_marker_length.
+            @intFromEnum(Marker.plt) => {
+                out.has_plt = true;
+                const body = data[p + 4 .. p + 2 + lseg]; // [Zplt, varints...]
+                var acc: u32 = 0;
+                var mid = false;
+                var q: usize = 1;
+                while (q < body.len) : (q += 1) {
+                    const b = body[q];
+                    if (acc > (std.math.maxInt(u32) >> 7)) {
+                        try emit(report, allocator, .fail, .bad_marker_length, p + 4 + q, null);
+                        acc = 0;
+                        mid = false;
+                        break;
+                    }
+                    acc = (acc << 7) | (b & 0x7F);
+                    if (b & 0x80 != 0) {
+                        mid = true;
+                        continue;
+                    }
+                    try out.plt.append(allocator, acc);
+                    acc = 0;
+                    mid = false;
+                }
+                if (mid) try emit(report, allocator, .fail, .bad_marker_length, p, null);
             },
             else => {},
         }
@@ -1912,6 +2037,7 @@ fn walkTilePartBody(
     tp_body: []const u8,
     body_offset_in_data: usize,
     extractor: ?*cblk_extract.CblkExtractor,
+    plt: ?[]const u32,
 ) Allocator.Error!TilePartResult {
     const params = tw.params;
     const image_w = tw.image_w;
@@ -1924,9 +2050,15 @@ fn walkTilePartBody(
     const slots_per_component = tw.slots_per_component;
 
     var body_pos: usize = 0;
+    // PLT cross-check state (A.7.3): entry N describes the Nth packet of
+    // THIS tile-part (ordinal resets per part). First disagreement stops
+    // the check — a desynced list would flag every later packet.
+    var plt_index: usize = 0;
+    var plt_broken = false;
     // Pull packets from the PERSISTENT iterator until this tile-part's
     // body is consumed; the iterator's cursor carries to the next part.
     while (body_pos < tp_body.len) {
+        const packet_start = body_pos;
         const pi = tw.iter.next() orelse break;
         tw.packets_seen += 1;
 
@@ -2063,6 +2195,20 @@ fn walkTilePartBody(
             return .broken;
         }
         body_pos += advance;
+
+        // PLT cross-check: the walked packet span (SOP marker if present
+        // + header + EPH + body) must equal the declared length. A packet
+        // beyond the declared list means the header lies about this
+        // tile-part's layout.
+        if (plt != null and !plt_broken) {
+            const lengths = plt.?;
+            const walked: u32 = @intCast(body_pos - packet_start);
+            if (plt_index >= lengths.len or lengths[plt_index] != walked) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + packet_start, null);
+                plt_broken = true;
+            }
+            plt_index += 1;
+        }
     }
 
     // Disposition. The iterator yields exactly `tw.total` packets across the tile's

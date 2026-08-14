@@ -2317,3 +2317,135 @@ test "validate: absence findings (missing ftyp/jp2h/jp2c) carry an offset — no
         }
     }
 }
+
+// ── M7 slice: TLM / PLT length cross-checks (T.800 A.7.1 / A.7.3) ──
+//
+// TLM (main header) declares every tile-part's length; PLT (tile-part
+// header) declares every packet's length. Both exist so decoders can
+// seek without walking — which means a lying entry silently corrupts
+// any consumer that trusts it. openjpeg never verifies either; jp2z
+// cross-checks declared vs walked and FAILs on disagreement.
+//
+// Fixture: minimal 4x4 mono 5/3 stream, decomp=0 → exactly ONE packet,
+// and that packet is the 1-byte empty packet (header flag bit 0). Every
+// length is hand-derivable: tile-part = 12 (SOT) + extras + 2 (SOD) + 1.
+
+/// Build: SOC + SIZ(4x4) + COD(decomp=0, 5/3) + QCD + `main_extra`
+/// (e.g. a TLM marker) + SOT + `tp_hdr_extra` (e.g. a PLT marker) +
+/// SOD + 1-byte empty packet + EOC. Psot is computed, not hardcoded.
+fn buildMiniStream(allocator: std.mem.Allocator, main_extra: []const u8, tp_hdr_extra: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    // SIZ — 4x4 mono 8-bit, single 4x4 tile
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    // COD — Scod=0, LRCP, 1 layer, no MCT, decomp=0, cblk 64x64, 5/3
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    // QCD — style 0 (no quant), 2 guard bits, 1 subband (decomp=0)
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    try buf.appendSlice(allocator, main_extra);
+    // SOT — Psot = 12 + tp_hdr_extra + SOD(2) + packet(1)
+    const psot: u32 = @intCast(12 + tp_hdr_extra.len + 2 + 1);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00 });
+    var psot_bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &psot_bytes, psot, .big);
+    try buf.appendSlice(allocator, &psot_bytes);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x01 });
+    try buf.appendSlice(allocator, tp_hdr_extra);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x93, 0x00 }); // SOD + empty packet
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 }); // EOC
+    return buf.toOwnedSlice(allocator);
+}
+
+test "validate: mini stream sanity — walks to end, no TLM/PLT anywhere" {
+    const allocator = std.testing.allocator;
+    const stream = try buildMiniStream(allocator, &.{}, &.{});
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+}
+
+test "validate: TLM entry matching the walked tile-part length → clean" {
+    const allocator = std.testing.allocator;
+    // TLM: Ztlm=0, Stlm=0x00 (ST=0 in-order, SP=0 u16), Ptlm=15.
+    const stream = try buildMiniStream(allocator, &.{ 0xFF, 0x55, 0x00, 0x06, 0x00, 0x00, 0x00, 0x0F }, &.{});
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: TLM entry disagreeing with the walked tile-part length → FAIL" {
+    const allocator = std.testing.allocator;
+    // Ptlm=99, actual tile-part is 15 bytes.
+    const stream = try buildMiniStream(allocator, &.{ 0xFF, 0x55, 0x00, 0x06, 0x00, 0x00, 0x00, 0x63 }, &.{});
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: TLM present but a tile-part has no entry → FAIL" {
+    const allocator = std.testing.allocator;
+    // TLM with ZERO entries (Ltlm=4: just Ztlm+Stlm). A.7.1: when TLM
+    // is used it describes every tile-part; this one describes none.
+    const stream = try buildMiniStream(allocator, &.{ 0xFF, 0x55, 0x00, 0x04, 0x00, 0x00 }, &.{});
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: TLM body not a whole number of entries → bad_marker_length" {
+    const allocator = std.testing.allocator;
+    // Stlm=0x00 → entry size 2; one stray byte after Ztlm+Stlm.
+    const stream = try buildMiniStream(allocator, &.{ 0xFF, 0x55, 0x00, 0x05, 0x00, 0x00, 0x0F }, &.{});
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
+
+test "validate: PLT entry matching the walked packet length → clean" {
+    const allocator = std.testing.allocator;
+    // PLT: Zplt=0, one Iplt byte = 1 (the empty packet is 1 byte).
+    const stream = try buildMiniStream(allocator, &.{}, &.{ 0xFF, 0x58, 0x00, 0x04, 0x00, 0x01 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: PLT entry disagreeing with the walked packet length → FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildMiniStream(allocator, &.{}, &.{ 0xFF, 0x58, 0x00, 0x04, 0x00, 0x05 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: PLT ending mid-varint (trailing continuation bit) → bad_marker_length" {
+    const allocator = std.testing.allocator;
+    const stream = try buildMiniStream(allocator, &.{}, &.{ 0xFF, 0x58, 0x00, 0x04, 0x00, 0x81 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
