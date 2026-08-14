@@ -200,6 +200,12 @@ typedef enum {
     JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,
     JP2Z_FINDING_CODING_PASS_OVERFLOW        = 253,
     JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END   = 254,  /* a good sign */
+    /* A code-block's zero-bitplane tag tree consumed the whole bit-depth
+     * (zero_bitplanes >= M_b, so numbps == 0) yet still carries coding
+     * passes: impossible in a conforming stream. Distinct root cause from
+     * CODING_PASS_OVERFLOW (there the pass count is too high FOR a nonzero
+     * bit-plane budget; here the budget itself is zero). */
+    JP2Z_FINDING_ZERO_BITPLANE_OVERFLOW      = 255,
 } jp2z_finding_code_t;
 
 typedef struct {

@@ -83,4 +83,5 @@ pub const FindingCode = enum(u32) {
     entropy_under_read       = 252,  // cblk had leftover unconsumed bytes — length/data inconsistency
     coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2 (impossible — corrupt header)
     jp2_packets_walked_to_end = 254,  // walker consumed every tile-part body byte (renumbered 209→254 per Einstein: 209 collided with jpegz jfif_metadata_present)
+    zero_bitplane_overflow   = 255,  // cblk zero-bitplane tag tree consumed the whole bit-depth (zbp>=M_b → numbps=0) yet carries coding passes — impossible; distinct root cause from 253
 };

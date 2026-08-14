@@ -656,21 +656,37 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     var over_count: u32 = 0;
     var under_count: u32 = 0;
     var passbudget_count: u32 = 0;
+    var zbp_overflow_count: u32 = 0;
     // First offender per category: the aggregate finding anchors at its
     // codestream offset and names it, so a consumer (or a future session)
     // can go straight to the cblk instead of re-instrumenting the walk.
     var first_over: ?cblk_plan.CblkDecodePlan = null;
     var first_under: ?cblk_plan.CblkDecodePlan = null;
     var first_passbudget: ?cblk_plan.CblkDecodePlan = null;
+    var first_zbp: ?cblk_plan.CblkDecodePlan = null;
     for (list.plans) |plan| {
+        // numbps == 0 means the zero-bitplane tag tree consumed the whole
+        // bit-depth budget (zero_bitplanes >= M_b). A cblk with coding
+        // passes over ZERO bit-planes is impossible — a tag-tree/bit-depth
+        // corruption whose root cause differs from a pass-count overflow,
+        // so it gets its own finding rather than being blamed on the pass
+        // count (whose "too many passes" wording would misdirect: the
+        // pass count is fine, the bit-plane count is the lie).
+        if (plan.numbps == 0) {
+            if (plan.total_passes > 0) {
+                zbp_overflow_count += 1;
+                if (first_zbp == null) first_zbp = plan;
+            }
+            continue;
+        }
         // Coding-pass budget (no decode needed): numbps bit-planes allow at
         // most 1 + 3*(numbps-1) = 3*numbps-2 passes. More is impossible.
-        const max_passes: u32 = if (plan.numbps == 0) 0 else 3 * @as(u32, plan.numbps) - 2;
+        const max_passes: u32 = 3 * @as(u32, plan.numbps) - 2;
         if (plan.total_passes > max_passes) {
             passbudget_count += 1;
             if (first_passbudget == null) first_passbudget = plan;
         }
-        if (plan.numbps == 0 or plan.total_passes == 0 or plan.data.len == 0) continue;
+        if (plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
         if (cblk.over_read > overReadCap(plan.cblksty)) {
@@ -685,6 +701,11 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
             under_count += 1;
             if (first_under == null) first_under = plan;
         }
+    }
+    if (zbp_overflow_count > 0) {
+        const p = first_zbp.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) have a zero-bitplane count that consumes the whole bit-depth (numbps=0) yet carry coding passes (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ zbp_overflow_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, sev, .zero_bitplane_overflow, p.src_offset, detail);
     }
     if (passbudget_count > 0) {
         const p = first_passbudget.?;

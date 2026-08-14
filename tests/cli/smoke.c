@@ -39,6 +39,7 @@ _Static_assert(JP2Z_FINDING_ENTROPY_OVER_READ == 251, "finding registry: c251");
 _Static_assert(JP2Z_FINDING_ENTROPY_UNDER_READ == 252, "finding registry: c252");
 _Static_assert(JP2Z_FINDING_CODING_PASS_OVERFLOW == 253, "finding registry: c253");
 _Static_assert(JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END == 254, "finding registry: c254");
+_Static_assert(JP2Z_FINDING_ZERO_BITPLANE_OVERFLOW == 255, "finding registry: c255");
 
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { \

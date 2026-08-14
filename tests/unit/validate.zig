@@ -2449,3 +2449,53 @@ test "validate: PLT ending mid-varint (trailing continuation bit) → bad_marker
     try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
     try std.testing.expect(hasFinding(rep, .bad_marker_length));
 }
+
+// ── M7 slice: zero-bitplane-overflow as a distinct finding ─────────
+//
+// A cblk whose zero-bitplane tag tree consumed the ENTIRE bit-depth
+// budget (zero_bitplanes >= M_b → numbps == 0) yet still carries coding
+// passes is impossible in a conforming stream — proven empirically:
+// across all 15 conformance fixtures (7,730 code-blocks) not one has
+// numbps == 0. It WAS caught, but mislabeled coding_pass_overflow whose
+// detail ("declare more coding passes than numbps allows") misdirects a
+// consumer to the pass count when the real cause is the zero-bitplane
+// count. This slice re-attributes it to a dedicated finding.
+
+/// Crafted minimal stream: mini-stream shell (SIZ 8-bit, QCD G=2 eps=8
+/// → LL M_b=9) + one packet whose zero-bitplane tag tree encodes zbp=9
+/// (nine '0' then '1'), 1 coding pass, 1 body byte. Verified via probe
+/// to yield zero_bitplanes=9, numbps=0, passes=1.
+fn buildZbpOverflowStream(allocator: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    // Psot = 12 (SOT) + 2 (SOD) + 4 (packet: 3 header + 1 body)
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x93 }); // SOD
+    try buf.appendSlice(allocator, &.{ 0xC0, 0x10, 0x80, 0x00 }); // crafted packet
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 }); // EOC
+    return buf.toOwnedSlice(allocator);
+}
+
+test "deepValidate: zero-bitplane overflow → dedicated finding, not coding_pass_overflow" {
+    const allocator = std.testing.allocator;
+    const stream = try buildZbpOverflowStream(allocator);
+    defer allocator.free(stream);
+    var rep = try jp2z.internal.deepValidate(allocator, stream, true);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .zero_bitplane_overflow));
+    // Re-attribution: this cblk has exactly 1 pass; blaming the pass
+    // count is the misdirection we are removing.
+    try std.testing.expect(!hasFinding(rep, .coding_pass_overflow));
+}

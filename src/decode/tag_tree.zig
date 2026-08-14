@@ -268,3 +268,45 @@ test "TagTree: read returns false on bit-stream EOF mid-walk" {
     var reader = BitReader.init(&.{}, .{});
     try std.testing.expectEqual(false, tt.read(&reader, 0, 0, 5));
 }
+
+test "TagTree invariant: value is monotonically non-decreasing across rising thresholds" {
+    // T.800 B.10.2: a tag-tree node's decoded lower bound only ever
+    // rises as successive queries raise the threshold — the encoder's
+    // whole premise. A decoder that ever let a node's value DROP would
+    // desync the packet header. Drive one 1x1 leaf through thresholds
+    // 1,2,3,4 (three '0' then a '1' → value settles at 3) and assert
+    // the running lower bound never decreases.
+    const allocator = std.testing.allocator;
+    var tt = try TagTree.init(allocator, 1, 1);
+    defer tt.deinit(allocator);
+    var reader = BitReader.init(&.{0b00010000}, .{}); // 000 then 1
+    var prev: u32 = 0;
+    var thr: u32 = 1;
+    while (thr <= 4) : (thr += 1) {
+        _ = tt.read(&reader, 0, 0, thr);
+        try std.testing.expect(tt.nodes[0].value >= prev);
+        prev = tt.nodes[0].value;
+    }
+    // Final settled value is exactly 3 (three increments before the 1).
+    try std.testing.expectEqual(@as(u32, 3), tt.nodes[0].value);
+}
+
+test "TagTree invariant: once decoded, further higher-threshold queries return true without consuming bits" {
+    // A leaf whose exact value is known (decoded) must answer every
+    // higher threshold from state alone — reading more bits here would
+    // steal them from the NEXT code-block and desync the stream. This
+    // is the tag-tree analogue of inclusion monotonicity: a resolved
+    // node never re-queries the bitstream.
+    const allocator = std.testing.allocator;
+    var tt = try TagTree.init(allocator, 1, 1);
+    defer tt.deinit(allocator);
+    // Value 2, decoded: two '0' then '1', queried at threshold 3.
+    var reader = BitReader.init(&.{0b00100000}, .{});
+    try std.testing.expectEqual(true, tt.read(&reader, 0, 0, 3));
+    const consumed_after_first = reader.byte_pos * 8 + reader.bit_pos;
+    try std.testing.expectEqual(true, tt.nodes[0].decoded);
+    // Higher thresholds: value 2 < 5 and decoded → true, zero bits.
+    try std.testing.expectEqual(true, tt.read(&reader, 0, 0, 5));
+    try std.testing.expectEqual(true, tt.read(&reader, 0, 0, 64));
+    try std.testing.expectEqual(consumed_after_first, reader.byte_pos * 8 + reader.bit_pos);
+}
