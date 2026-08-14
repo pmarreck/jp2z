@@ -65,6 +65,8 @@ pub const FindingCode = enum(u32) {
     /// was present but jp2z does not yet apply it — decode fell back to
     /// COD/QCD defaults. Surfaced so consumers aren't silently misled
     /// (validate's "stricter than openjpeg" contract). See reviewer I1.
+    /// Also emitted for a JP2 box legally ignored per spec: a second+
+    /// jp2c codestream box (readers use the first — T.800 I.5.4).
     jp2_unsupported_marker_ignored = 145,
     /// SIZ geometry malformed — zero subsampling (XRsiz/YRsiz=0), bad
     /// Lsiz/Csiz, or degenerate tile grid. Renumbered 6→146 per Einstein

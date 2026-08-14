@@ -816,6 +816,7 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     var saw_ftyp = false;
     var saw_jp2h = false;
     var saw_jp2c = false;
+    var ihdr_dims: ?IhdrDims = null;
 
     while (pos < data.len) {
         if (data.len < pos + 8) {
@@ -860,11 +861,36 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             BoxType.ftyp => saw_ftyp = true,
             BoxType.jp2h => {
                 saw_jp2h = true;
-                parseJp2HeaderBox(report, body);
+                ihdr_dims = try parseJp2HeaderBox(report, allocator, body, pos + body_offset);
             },
             BoxType.jp2c => {
-                saw_jp2c = true;
-                try walkJ2k(report, allocator, body, extractor);
+                if (saw_jp2c) {
+                    // T.800 I.5.4: readers shall use the FIRST contiguous
+                    // codestream. Walking later ones would merge their
+                    // findings AND pollute the cblk extractor under the
+                    // same tile keys — surface the skip instead.
+                    try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, null);
+                } else {
+                    saw_jp2c = true;
+                    // T.800 I.5.3: the JP2 Header box shall fall before
+                    // the Contiguous Codestream box.
+                    if (!saw_jp2h) {
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, null);
+                    }
+                    // The C ABI documents finding offsets as byte offsets
+                    // into the INPUT data (the host file). walkJ2k emits
+                    // them relative to the jp2c payload it was handed, so
+                    // rebase everything it appends — findings here, and
+                    // extractor plan src_offsets (which become deep-finding
+                    // anchors in deepValidate) below.
+                    const findings_start = report.findings.items.len;
+                    try walkJ2k(report, allocator, body, extractor);
+                    const base: u64 = pos + body_offset;
+                    for (report.findings.items[findings_start..]) |*f| {
+                        if (f.offset) |o| f.offset = o + base;
+                    }
+                    if (extractor) |ex| ex.addSrcOffsetBase(@intCast(base));
+                }
             },
             else => {}, // unknown / optional boxes — ignore for M1
         }
@@ -875,35 +901,78 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     if (!saw_ftyp) try emit(report, allocator, .fail, .jp2_invalid_signature, null, null);
     if (!saw_jp2h) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
     if (!saw_jp2c) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
+
+    // T.800 I.5.3.1: ihdr HEIGHT/WIDTH "shall be equal to" the
+    // codestream's reference-grid dims. After the walk, report.width/
+    // height hold SIZ's values (SIZ overwrites ihdr's); a disagreeing
+    // container is lying about its payload.
+    if (ihdr_dims) |d| {
+        if (report.width != null and (report.width.? != d.w or report.height.? != d.h)) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off, null);
+        }
+    }
 }
+
+/// ihdr's declared dims + the host-file offset of the ihdr body, so
+/// walkJp2 can cross-check them against SIZ (T.800 I.5.3.1).
+const IhdrDims = struct { w: u32, h: u32, off: u64 };
 
 /// Walk the sub-boxes inside a `jp2h` container, looking for `ihdr`
 /// (Image Header — T.800 Annex I.5.3) to pull width/height. Other
 /// sub-boxes (colr, pclr, cmap, cdef, ...) are ignored for M1.
-fn parseJp2HeaderBox(report: *ValidationReport, body: []const u8) void {
+/// `base` is the jp2h BODY's host-file offset — findings and the
+/// returned ihdr offset are anchored host-relative. Handles XLBox
+/// (LBox=1) sub-boxes; malformed lengths emit bad_marker_length
+/// instead of silently abandoning the walk.
+fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []const u8, base: u64) Allocator.Error!?IhdrDims {
+    var dims: ?IhdrDims = null;
     var pos: usize = 0;
     while (pos + 8 <= body.len) {
         const lbox = std.mem.readInt(u32, body[pos..][0..4], .big);
         const tbox = std.mem.readInt(u32, body[pos + 4 ..][0..4], .big);
-        const box_total: usize = if (lbox == 0)
-            body.len - pos
-        else if (lbox >= 8)
-            lbox
-        else
-            return; // malformed — caller doesn't enforce here
-        if (@as(u64, pos) + box_total > body.len) return;
 
-        if (tbox == BoxType.ihdr and box_total >= 8 + 14) {
-            const ihdr_body = body[pos + 8 .. pos + box_total];
+        var box_total: usize = undefined;
+        var body_off: usize = 8;
+        if (lbox == 0) {
+            box_total = body.len - pos;
+        } else if (lbox == 1) {
+            // Extended length: 8-byte XLBox follows the type field.
+            if (pos + 16 > body.len) {
+                try emit(report, allocator, .fail, .truncated_stream, base + pos, null);
+                return dims;
+            }
+            const xlbox = std.mem.readInt(u64, body[pos + 8 ..][0..8], .big);
+            if (xlbox < 16 or xlbox > body.len - pos) {
+                try emit(report, allocator, .fail, .bad_marker_length, base + pos, null);
+                return dims;
+            }
+            box_total = @intCast(xlbox);
+            body_off = 16;
+        } else if (lbox >= 8) {
+            box_total = lbox;
+        } else {
+            // LBox 2..7 is unrepresentable (a box header alone is 8 bytes).
+            try emit(report, allocator, .fail, .bad_marker_length, base + pos, null);
+            return dims;
+        }
+        if (box_total < body_off or box_total > body.len - pos) {
+            try emit(report, allocator, .fail, .bad_marker_length, base + pos, null);
+            return dims;
+        }
+
+        if (tbox == BoxType.ihdr and box_total >= body_off + 14) {
+            const ihdr_body = body[pos + body_off .. pos + box_total];
             // ihdr layout: HEIGHT(u32) WIDTH(u32) NC(u16) BPC(u8) C(u8) ...
             const height = std.mem.readInt(u32, ihdr_body[0..4], .big);
             const width = std.mem.readInt(u32, ihdr_body[4..8], .big);
             report.height = height;
             report.width = width;
+            dims = .{ .w = width, .h = height, .off = base + pos + body_off };
         }
 
         pos += box_total;
     }
+    return dims;
 }
 
 /// Walk a J2K raw codestream. M1 scope: walks the main header from

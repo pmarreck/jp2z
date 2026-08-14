@@ -184,7 +184,9 @@ typedef enum {
     JP2Z_FINDING_JP2_TILE_DECODE_FAILED      = 143,
     JP2Z_FINDING_JP2_CODEBLOCK_DECODE_FAILED = 144,
     /* A COD/COC/QCC/RGN override jp2z does not yet apply was present:
-     * the stream is unsupported-valid, never invalid. Stays WARN. */
+     * the stream is unsupported-valid, never invalid. Stays WARN.
+     * Also emitted for a second+ jp2c codestream box, which is legally
+     * ignored (readers use the first — T.800 I.5.4). */
     JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED  = 145,
     JP2Z_FINDING_JP2_INVALID_SIZ             = 146,
     /* Informational */

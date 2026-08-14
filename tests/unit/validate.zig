@@ -2104,3 +2104,184 @@ test "deepValidate diagnostics: aggregate entropy findings carry first-offender 
         try std.testing.expect(f.code != .coding_pass_overflow);
     }
 }
+
+// ── M7 slice: embedded-stream bounds + JP2 box-layer strictness ────
+//
+// The C ABI (jp2z_core.h) documents finding offsets as "byte offset
+// into the input data" — the HOST file. For JP2 inputs the codestream
+// walker historically emitted offsets relative to the jp2c payload
+// while box-level findings used host offsets: two silent coordinate
+// systems in one report. These tests pin the host-relative contract
+// plus first-jp2c-only semantics (T.800 I.5.4), jp2h-before-jp2c
+// ordering (I.5.3), and jp2h sub-box strictness.
+
+/// Minimal synthetic 9/7 codestream (same bytes as the 9x7-INFO test).
+const synth_97_stream = [_]u8{
+    0xFF, 0x4F,
+    // SIZ — 4x4 mono 8-bit
+    0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x07, 0x01, 0x01,
+    // COD — qmfbid=0 (9/7)
+    0xFF, 0x52, 0x00, 0x0C,
+    0x00, 0x00, 0x00, 0x01, 0x00,
+    0x01, 0x04, 0x04, 0x00, 0x00,
+    // QCD
+    0xFF, 0x5C, 0x00, 0x03, 0x22,
+    // SOT
+    0xFF, 0x90, 0x00, 0x0A,
+    0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01,
+    // EOC
+    0xFF, 0xD9,
+};
+
+/// Wrap a raw codestream in a minimal well-formed JP2 shell:
+/// signature(12) + ftyp(20) + jp2h(30: ihdr only) + jp2c(8 + payload).
+/// Returns an owned buffer; the jp2c PAYLOAD starts at host offset 70.
+const jp2_shell_payload_base: u64 = 12 + 20 + 30 + 8;
+fn wrapInJp2(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    // Signature box
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
+    // ftyp: lbox=20 'ftyp' brand='jp2 ' minv=0 compat='jp2 '
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
+    // jp2h: lbox=30 'jp2h' { ihdr: lbox=22 'ihdr' h=4 w=4 nc=1 bpc=7 c=7 unk=0 ipr=0 }
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x1E, 0x6A, 0x70, 0x32, 0x68 });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 });
+    // jp2c
+    const jp2c_total: u32 = @intCast(8 + payload.len);
+    var lbox_bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox_bytes, jp2c_total, .big);
+    try buf.appendSlice(allocator, &lbox_bytes);
+    try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x63 });
+    try buf.appendSlice(allocator, payload);
+    return buf.toOwnedSlice(allocator);
+}
+
+fn findingOffset(rep: jp2z.ValidationReport, code: jp2z.FindingCode) ?u64 {
+    for (rep.findings.items) |f| if (f.code == code) return f.offset;
+    return null;
+}
+
+test "validate: JP2-embedded codestream findings carry HOST-file offsets" {
+    const allocator = std.testing.allocator;
+    // Metamorphic relation: wrapping the same codestream in a JP2 shell
+    // must shift every codestream finding's offset by exactly the
+    // payload's host base — no hand-computed marker positions needed.
+    var bare = try jp2z.validate(allocator, &synth_97_stream);
+    defer bare.deinit(allocator);
+    const bare_off = findingOffset(bare, .jp2_uses_9x7_wavelet) orelse return error.TestUnexpectedResult;
+
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+    var rep = try jp2z.validate(allocator, wrapped);
+    defer rep.deinit(allocator);
+    const wrapped_off = findingOffset(rep, .jp2_uses_9x7_wavelet) orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(bare_off + jp2_shell_payload_base, wrapped_off);
+}
+
+test "validate: second jp2c box is ignored per T.800 I.5.4 (WARN 145, no findings from its payload)" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+    // Append a second jp2c whose payload is a bare SOC — if walked, it
+    // would emit truncated_stream and tank the report.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, wrapped);
+    const second_jp2c_pos: u64 = buf.items.len;
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0A, 0x6A, 0x70, 0x32, 0x63, 0xFF, 0x4F });
+
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    // The second codestream must NOT have been walked...
+    try std.testing.expect(!hasFinding(rep, .truncated_stream));
+    try std.testing.expect(rep.isOk());
+    // ...and the skip must be surfaced, anchored at the extra box.
+    try std.testing.expectEqual(second_jp2c_pos, findingOffset(rep, .jp2_unsupported_marker_ignored) orelse return error.TestUnexpectedResult);
+    for (rep.findings.items) |f| {
+        if (f.code == .jp2_unsupported_marker_ignored)
+            try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    }
+}
+
+test "validate: jp2c before jp2h violates I.5.3 ordering → FAIL" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+    // Reorder: sig(12) + ftyp(20) + jp2c(...) + jp2h(30).
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, wrapped[0..32]); // sig + ftyp
+    try buf.appendSlice(allocator, wrapped[62..]); // jp2c box
+    try buf.appendSlice(allocator, wrapped[32..62]); // jp2h box
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: malformed jp2h sub-box length emits bad_marker_length (not silence)" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+    const mutant = try allocator.dupe(u8, wrapped);
+    defer allocator.free(mutant);
+    // jp2h body starts at 32+8=40; ihdr LBox is bytes 40..44. Corrupt it
+    // to 5 (invalid: 1 < lbox < 8).
+    std.mem.writeInt(u32, mutant[40..44], 5, .big);
+    var rep = try jp2z.validate(allocator, mutant);
+    defer rep.deinit(allocator);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
+
+test "validate: ihdr dims disagreeing with SIZ → FAIL (T.800 I.5.3.1 'shall be equal')" {
+    const allocator = std.testing.allocator;
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+    const mutant = try allocator.dupe(u8, wrapped);
+    defer allocator.free(mutant);
+    // ihdr body starts at 40+8=48: HEIGHT(u32) WIDTH(u32). SIZ says 4x4;
+    // lie in the container: 9x9.
+    std.mem.writeInt(u32, mutant[48..52], 9, .big);
+    std.mem.writeInt(u32, mutant[52..56], 9, .big);
+    var rep = try jp2z.validate(allocator, mutant);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: XLBox (lbox=1) ihdr sub-box is parsed — its lying dims are caught vs SIZ" {
+    const allocator = std.testing.allocator;
+    // Same mismatch check, but the ihdr is XLBox-encoded (lbox=1 +
+    // XLBox(u64)=30). If the sub-box walker aborts on lbox=1 instead of
+    // parsing it, the 9x9 lie goes unnoticed and this test fails.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
+    // jp2h: lbox=38 { ihdr with XLBox: lbox=1 'ihdr' xlbox=30 h=9 w=9 nc=1 bpc=7 c=7 unk=0 ipr=0 }
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x26, 0x6A, 0x70, 0x32, 0x68 });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x01, 0x69, 0x68, 0x64, 0x72 });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x09, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 });
+    // jp2c (SIZ inside says 4x4)
+    const jp2c_total: u32 = @intCast(8 + synth_97_stream.len);
+    var lbox_bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox_bytes, jp2c_total, .big);
+    try buf.appendSlice(allocator, &lbox_bytes);
+    try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x63 });
+    try buf.appendSlice(allocator, &synth_97_stream);
+
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}

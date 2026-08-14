@@ -80,6 +80,15 @@ pub const CblkExtractor = struct {
         self.* = undefined;
     }
 
+    /// Rebase every accumulated plan's src_offset by `base`. Used when
+    /// the walked codestream is embedded in a host container (JP2 jp2c
+    /// box) so deep-finding anchors are HOST-file offsets, matching the
+    /// C ABI contract ("byte offset into the input data").
+    pub fn addSrcOffsetBase(self: *CblkExtractor, base: usize) void {
+        var it = self.map.valueIterator();
+        while (it.next()) |entry| entry.src_offset += base;
+    }
+
     /// Record a per-packet contribution: appends `bytes` to the
     /// (tile, comp, ...) cblk's buffer, stamping subband rect /
     /// zero_bitplanes / cblksty on first sight. Updates total_passes
