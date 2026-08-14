@@ -898,9 +898,12 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         pos += box_total;
     }
 
-    if (!saw_ftyp) try emit(report, allocator, .fail, .jp2_invalid_signature, null, null);
-    if (!saw_jp2h) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
-    if (!saw_jp2c) try emit(report, allocator, .fail, .jp2_invalid_codestream, null, null);
+    // Required-box absence anchors at data.len — the walk exhausted the
+    // file without seeing the box (missing_eoi's "where it should have
+    // been" convention). No finding leaves here with a null offset.
+    if (!saw_ftyp) try emit(report, allocator, .fail, .jp2_invalid_signature, data.len, null);
+    if (!saw_jp2h) try emit(report, allocator, .fail, .jp2_invalid_codestream, data.len, null);
+    if (!saw_jp2c) try emit(report, allocator, .fail, .jp2_invalid_codestream, data.len, null);
 
     // T.800 I.5.3.1: ihdr HEIGHT/WIDTH "shall be equal to" the
     // codestream's reference-grid dims. After the walk, report.width/

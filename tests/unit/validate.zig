@@ -2285,3 +2285,35 @@ test "validate: XLBox (lbox=1) ihdr sub-box is parsed — its lying dims are cau
     try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
     try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
 }
+
+test "validate: absence findings (missing ftyp/jp2h/jp2c) carry an offset — no null anchors" {
+    const allocator = std.testing.allocator;
+    // Three JP2s each missing one required box. The absence finding
+    // anchors at data.len (walk exhausted the file), mirroring
+    // missing_eoi's "where it should have been" convention. Invariant:
+    // NO finding in any of these reports may carry a null offset.
+    const wrapped = try wrapInJp2(allocator, &synth_97_stream);
+    defer allocator.free(wrapped);
+
+    const cases = [_]struct { name: []const u8, data: []const u8 }{
+        // sig + jp2h + jp2c (ftyp removed: bytes 12..32 cut)
+        .{ .name = "no-ftyp", .data = try std.mem.concat(allocator, u8, &.{ wrapped[0..12], wrapped[32..] }) },
+        // sig + ftyp + jp2c (jp2h removed: bytes 32..62 cut)
+        .{ .name = "no-jp2h", .data = try std.mem.concat(allocator, u8, &.{ wrapped[0..32], wrapped[62..] }) },
+        // sig + ftyp + jp2h (jp2c removed: tail cut at 62)
+        .{ .name = "no-jp2c", .data = try allocator.dupe(u8, wrapped[0..62]) },
+    };
+    defer for (cases) |c| allocator.free(@constCast(c.data));
+
+    for (cases) |c| {
+        var rep = try jp2z.validate(allocator, c.data);
+        defer rep.deinit(allocator);
+        try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+        for (rep.findings.items) |f| {
+            if (f.offset == null) {
+                std.debug.print("null-offset finding {s} in case {s}\n", .{ @tagName(f.code), c.name });
+                return error.NullOffsetFinding;
+            }
+        }
+    }
+}
