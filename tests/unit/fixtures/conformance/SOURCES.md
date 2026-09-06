@@ -39,6 +39,11 @@ oracle suite stays accessible without bloating the repo.
 | `g3_colr.j2c` | 67,333 | Class G color (T.803 packed-header class) — PPM in 214 main-header segments (Nppm chunks span segments), 2 tiles, SOP+EPH (EPH inside the packed store), 3 layers, 5/3. Must-accept guard for the PPM walk (added 2026-09-06). |
 | `g4_colr.j2c` | 67,325 | Class G color — PPT in 214 tile-part-header segments over 2 tile-parts, otherwise as g3. Must-accept guard for the PPT walk. |
 | `p0_01.j2k` | 7,390 | Profile-0 test 1: 128×128 mono 5/3, QCD BEFORE COD in the main header (legal, A.4.1). Guards per-subband M_b derivation against marker order — was a strict c255 false positive (2026-09-06). |
+| `p0_02.j2k` | 6,183 | Profile-0 test 2: COC (32×32 cblks, TERMALL+PTERM+SEGSYM), dx=2, SOP+EPH, and a reserved FF30 marker after COM (Table A.2: no segment). Guards COC + reserved-marker skipping. |
+| `p0_03.j2k` | 12,845 | Profile-0 test 3: tile-part RGN (ROI shift 7), signed 4-bit, RPCL, 2×2 tiles, 8 layers. Guards the ROI-adjusted bit-plane count (coded planes = M_b + shift − zero bit-planes). (p0_15 is byte-identical and not vendored.) |
+| `p0_06.j2k` | 33,826 | Profile-0 test 6: 4 components with different sub-sampling and DIFFERENT wavelets per component (COC: 9/7 and 5/3), main + tile-part RGN. Validation walks it; decode refuses mixed wavelets explicitly. |
+| `p1_01.j2k` | 4,761 | Profile-1 test 1: COC (32×32 cblks, TERMALL+PTERM+SEGSYM), dx=2, image origin (5,128). Guards COC + sub-sampled tile-component geometry. |
+| `p1_07.j2k` | 569 | Profile-1 test 7: COC with custom precincts, component 1 sub-sampled 4:1, PCRL. Smallest ISO fixture. Guards per-component precinct partitions in a positional progression. |
 | `d2_colr.j2c` | 67,797 | Class D color (multi-component, no MCT): 4×2 tiles, 4 layers, tiles 1 and 3 carry tile-part COD overrides switching progression to RPCL/CPRL. Guards A.6.1 tile COD application (was max_abs 254). |
 | `p0_13.j2k` | 2,486 | Profile-0 test 13: 1×1 image with 257 components, per-component COC/QCC, RGN roishift 11. Guards Csiz > 16 acceptance and per-component overrides. |
 | `p1_06.j2k` | 3,356 | Profile-1: 16 tiles, one PPT per tile-part, SOP+EPH, 9/7, SEGSYM+VSC. Smallest real packed-header file; also the 9/7 multi-tile decode RED. |

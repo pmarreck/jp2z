@@ -122,7 +122,7 @@ pub fn reconstructComponentTile(
         while (j < ch) : (j += 1) {
             var i: u32 = 0;
             while (i < cw) : (i += 1) {
-                const coeff = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]);
+                const coeff = roiDescale(cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]), plan.roishift);
                 // Reversible band→tile pre-scale: truncating /2 (NOT >>1).
                 buf[(base_y + j) * tile_w + (base_x + i)] = @divTrunc(coeff, 2);
             }
@@ -146,6 +146,28 @@ pub fn levelShift(buf: []i32, prec: u8, is_signed: bool) void {
         const hi: i32 = (@as(i32, 1) << @intCast(prec)) - 1;
         for (buf) |*v| v.* = std.math.clamp(v.* +% dc, 0, hi);
     }
+}
+
+/// Undo an RGN ROI up-shift (T.800 H.2, openjpeg t1 `opj_t1_clbl_decode_processor`):
+/// a magnitude at or above 2^shift belongs to the ROI and is scaled back
+/// down by `shift`; smaller magnitudes are background and stay. Operates on
+/// the openjpeg sign-magnitude representation (half-bit included).
+fn roiDescale(v: i32, shift: u8) i32 {
+    if (shift == 0) return v;
+    if (shift >= 31) return 0;
+    const thresh: i32 = @as(i32, 1) << @intCast(shift);
+    const mag: i32 = if (v < 0) -v else v;
+    if (mag < thresh) return v;
+    const scaled = mag >> @intCast(shift);
+    return if (v < 0) -scaled else scaled;
+}
+
+test "roiDescale: background below 2^shift unchanged; ROI magnitudes shifted down; sign kept" {
+    try std.testing.expectEqual(@as(i32, 5), roiDescale(5, 0));
+    try std.testing.expectEqual(@as(i32, 100), roiDescale(100, 7)); // < 128: background
+    try std.testing.expectEqual(@as(i32, 2), roiDescale(256 + 3, 7)); // 259 >> 7 = 2
+    try std.testing.expectEqual(@as(i32, -2), roiDescale(-(256 + 3), 7));
+    try std.testing.expectEqual(@as(i32, 0), roiDescale(123456, 31));
 }
 
 /// Full cleanroom decode of a (reversible, single-tile) JP2/J2K
@@ -174,6 +196,14 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     // with the tile's params but would be reconstructed with the main
     // header's below: refuse rather than mis-render.
     if (list.tile_override_unsupported) return error.UnsupportedTileCodingOverride;
+    // COC may give components different wavelets (p0_06: 9/7 and 5/3 side
+    // by side). The two reconstruction paths below are image-wide; refuse
+    // rather than run one component through the wrong transform.
+    {
+        const w0 = params.codingFor(0).wavelet;
+        var k: u16 = 1;
+        while (k < ncomp) : (k += 1) if (params.codingFor(k).wavelet != w0) return error.UnsupportedMixedWavelets;
+    }
     // Bucket plans by (tile, component) once. The reconstruction sweep then
     // visits each plan O(1) times via a forward cursor (planRangeFor), instead
     // of re-scanning the whole flat list per tile×component — which was
@@ -205,7 +235,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
         }
     }
 
-    if (params.wavelet == .reversible_5x3) {
+    if (params.codingFor(0).wavelet == .reversible_5x3) {
         // ── Lossless 5/3 path (integer), multi-tile + sub-sampling aware ──
         // Reconstruct each tile at COMPONENT resolution (sub-sampled grid,
         // T.800 B.2/B.3), apply inverse MCT + DC level shift PER TILE (tiles
@@ -272,7 +302,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
                     .oy = tcy0 - ceilDiv(params.image_y0, dy),
                 };
                 const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
-                tbufs[c] = try reconstructComponentTile(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.num_decomp_levels);
+                tbufs[c] = try reconstructComponentTile(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.codingFor(c).num_decomp_levels);
                 tb_done += 1;
             }
 
@@ -358,7 +388,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
                     .oy = tcy0 - ceilDiv(params.image_y0, dy),
                 };
                 const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
-                tqbufs[c] = try reconstructComponentTile97(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.num_decomp_levels, precs[c]);
+                tqbufs[c] = try reconstructComponentTile97(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.codingFor(c).num_decomp_levels, precs[c]);
                 tb_done += 1;
             }
 
@@ -473,7 +503,7 @@ pub fn reconstructComponentTile97(
         while (j < ch) : (j += 1) {
             var i: u32 = 0;
             while (i < cw) : (i += 1) {
-                const t1 = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]);
+                const t1 = roiDescale(cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]), plan.roishift);
                 buf[(base_y + j) * tile_w + (base_x + i)] = @as(i64, t1) * scale_q; // Q16
             }
         }
@@ -521,34 +551,41 @@ test "inverseIct: known YCbCr->RGB vector (Q16) rounds to expected RGB" {
 }
 
 /// Max legitimate past-end 0xFF synthesis (MQ over-read) for a conforming
-/// code-block. General bound = 4, DERIVED from the decoder's register
-/// lookahead: INITDEC pre-loads 2 bytes before any symbol decodes, and the
-/// final symbol's RENORMD can pull <=2 more byteins (A is 16-bit => <=15
-/// shifts). Observed valid max is 3 (b1_mono byte-exact, p0_04 max_abs<=1);
-/// truncation/mis-decode runs far higher (e1_colr: 12-21). The old flat >2
-/// bound was openjpeg's PTERM-only check (t1.c check_pterm) mis-generalized.
+/// code-block. This is a CORPUS-CALIBRATED bound, not a derived one: T.800
+/// (Annex D, codeword truncation) lets an encoder drop trailing codeword
+/// bytes as long as decoding with 0xFF fill stays exact, so no hard bound
+/// exists without PTERM. The earlier "register lookahead = 4" rationale was
+/// falsified by two ISO-conformant encoders whose tier-1 output is
+/// byte-identical to openjpeg: p0_08 over-reads up to 10 and file6 up to 8
+/// (2026-09-06 census over all 57 conformance fixtures; every other file
+/// <= 3). Cap = 12 = observed maximum + 2. Mis-decode/truncation runs far
+/// higher (e1_colr desync class: 12-21 and beyond). Re-run the census
+/// (`zig build tile-hist` with JP2Z_DUMP_T1 over the corpus) before
+/// tightening it.
 /// complexity: O(1)
 fn overReadCap(cblksty: u8) u32 {
     // PTERM (cblksty bit 0x10, T.800 predictable termination): every terminated
-    // pass ends with a full flush, so the legitimate tail is bounded at 2 —
+    // pass ends with a full flush, so the legitimate tail IS bounded, at 2 —
     // openjpeg's check_pterm bound, applied here WITH its precondition (and as
-    // a strict finding rather than openjpeg's warning-only).
-    return if (cblksty & 0x10 != 0) 2 else 4;
+    // a strict finding rather than openjpeg's warning-only). The PTERM corpus
+    // files (p0_02, p1_01: cbsty 0x34) sit at 2.
+    return if (cblksty & 0x10 != 0) 2 else 12;
 }
 
 test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
     const PTERM: u8 = 0x10; // T.800 SPcod cblksty bit 4 — predictable termination
     // Under PTERM every terminated pass ends with a full flush, so the tail is
     // genuinely bounded at 2 (openjpeg t1.c check_pterm's >2, HERE its
-    // precondition actually holds). Without PTERM the register-lookahead bound
-    // of 4 applies.
+    // precondition actually holds). Without PTERM the corpus-calibrated cap
+    // of 12 applies (observed valid maximum 10: p0_08; 8: file6).
     const cases = [_]struct { sty: u8, over: u32, flag: bool }{
-        // non-PTERM: boundary at 4
+        // non-PTERM: boundary at 12
         .{ .sty = 0x00, .over = 0, .flag = false },
         .{ .sty = 0x00, .over = 3, .flag = false }, // b1_mono/p0_04 valid case
-        .{ .sty = 0x00, .over = 4, .flag = false },
-        .{ .sty = 0x00, .over = 5, .flag = true },
-        .{ .sty = 0x00, .over = 12, .flag = true }, // e1_colr mis-decode class
+        .{ .sty = 0x00, .over = 10, .flag = false }, // p0_08 valid case (census max)
+        .{ .sty = 0x00, .over = 12, .flag = false },
+        .{ .sty = 0x00, .over = 13, .flag = true },
+        .{ .sty = 0x00, .over = 21, .flag = true }, // e1_colr desync class
         // PTERM: boundary tightens to 2
         .{ .sty = PTERM, .over = 2, .flag = false },
         .{ .sty = PTERM, .over = 3, .flag = true }, // legal without PTERM, violation with
@@ -685,6 +722,14 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         }
         // Coding-pass budget (no decode needed): numbps bit-planes allow at
         // most 1 + 3*(numbps-1) = 3*numbps-2 passes. More is impossible.
+        // 31 is the ceiling of the tier-1 bit-plane index (u5; openjpeg
+        // refuses bpno_plus_one >= 31): M_b + ROI shift - zero_bitplanes past
+        // it cannot be decoded and cannot be conforming.
+        if (plan.numbps > 31) {
+            passbudget_count += 1;
+            if (first_passbudget == null) first_passbudget = plan;
+            continue;
+        }
         const max_passes: u32 = 3 * @as(u32, plan.numbps) - 2;
         if (plan.total_passes > max_passes) {
             passbudget_count += 1;

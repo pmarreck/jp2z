@@ -54,6 +54,10 @@ pub fn decodePlan(
     // is 1:1 with OpenJPEG's bpno_plus_one, so the MSB bp IS numbps,
     // NOT numbps-1. (The lowest bp processed lands at 1, never 0,
     // because a cblk of numbps planes is at most 3*numbps-2 passes.)
+    // A coded bit-plane count past 31 (M_b + ROI shift - zero_bitplanes)
+    // cannot be represented (openjpeg refuses bpno_plus_one >= 31); leave the
+    // block zero — deepValidate reports it as a pass-budget violation.
+    if (plan.numbps > 31) return cblk;
     const msb_bp: u5 = @intCast(plan.numbps);
     if (plan.segments.len == 0) {
         // No per-segment breakdown (synthetic test plans): decode the whole

@@ -17,8 +17,8 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 | PASS | 31 | byte-exact vs oracle |
 | NEAR | 4 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
 | FAIL | 1 | decoded but diverges (max_abs > 1) |
-| skip:* | 20 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
-| ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
+| skip:* | 17 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
+| ERROR | 4 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
 | CRASH | 0 | panic / non-zero exit (no record) |
 | TIMEOUT | 0 | exceeded 60s |
@@ -36,7 +36,10 @@ diverge from the oracle. Largest divergence first.
 
 | fixture | status | detail |
 |---------|--------|--------|
+| p0_05.j2k | ERROR | UnsupportedMixedWavelets |
+| p0_06.j2k | ERROR | UnsupportedMixedWavelets |
 | p0_13.j2k | ERROR | TooManyComponents |
+| p1_03.j2k | ERROR | UnsupportedMixedWavelets |
 
 ## Per-fixture detail (all 57, by status then name)
 
@@ -50,19 +53,19 @@ diverge from the oracle. Largest divergence first.
 | file9.jp2 | DECODED | skip:dim-mismatch | 768 | 512 | 1 | 0 |
 | p0_02.j2k | DECODED | skip:dim-mismatch | 64 | 126 | 1 | 0 |
 | p0_03.j2k | DECODED | skip:signed | 256 | 256 | 1 | 0 |
-| p0_05.j2k | DECODED | skip:dim-mismatch | 1024 | 1024 | 4 | 0 |
-| p0_06.j2k | DECODED | skip:dim-mismatch | 513 | 129 | 4 | 0 |
 | p0_07.j2k | DECODED | skip:signed | 2048 | 2048 | 3 | 0 |
 | p0_08.j2k | DECODED | skip:signed | 513 | 3072 | 3 | 0 |
 | p0_15.j2k | DECODED | skip:signed | 256 | 256 | 1 | 0 |
 | p1_01.j2k | DECODED | skip:dim-mismatch | 61 | 99 | 1 | 0 |
-| p1_03.j2k | DECODED | skip:dim-mismatch | 1024 | 1024 | 4 | 0 |
 | p1_07.j2k | DECODED | skip:dim-mismatch | 2 | 12 | 2 | 0 |
 | subsampling_1.jp2 | DECODED | skip:dim-mismatch | 1280 | 1024 | 3 | 0 |
 | subsampling_2.jp2 | DECODED | skip:dim-mismatch | 640 | 512 | 3 | 0 |
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 1953 | 1301 | 3 | 0 |
+| p0_05.j2k | ERROR | UnsupportedMixedWavelets |  |  |  | 0 |
+| p0_06.j2k | ERROR | UnsupportedMixedWavelets |  |  |  | 0 |
 | p0_13.j2k | ERROR | TooManyComponents |  |  |  | 0 |
+| p1_03.j2k | ERROR | UnsupportedMixedWavelets |  |  |  | 0 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
 | p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
 | p1_02.j2k | NEAR |  | 640 | 480 | 3 | 1 |

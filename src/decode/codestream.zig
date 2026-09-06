@@ -102,7 +102,29 @@ pub const QuantTable = struct {
     expn: [97]u8 = @splat(0),
     /// Per-subband quantization mantissa (11-bit) for irreversible dequant.
     mant: [97]u16 = @splat(0),
+    /// Subband entries the marker actually carried (style 1: derived for
+    /// all). A component whose decomposition needs more is reported by
+    /// checkQuantCoverage; the missing bands read as eps 0 / mant 0, which
+    /// is what openjpeg's zero-initialised stepsizes yield (p0_08).
+    entries: u16 = 0,
+    /// Codestream offset of the marker body (for coverage findings).
+    offset: usize = 0,
+    /// Set once a QCD/QCC marker filled this table; the coverage check
+    /// skips tables no marker supplied (a missing QCD is a different
+    /// finding, not a coverage shortfall).
+    present: bool = false,
 };
+/// Per-component coding style (T.800 A.6.2): the fields a COC may override
+/// for one component. The COD defaults are the fallback (`codingFor`).
+pub const CompCoding = struct {
+    num_decomp_levels: u8,
+    cblk_width_exp: u8,
+    cblk_height_exp: u8,
+    cblksty: u8,
+    wavelet: WaveletFilter,
+    precinct_sizes: [33]PrecinctSize,
+};
+
 pub const CodingParams = struct {
     progression_order: ProgressionOrder = .lrcp,
     num_layers: u16 = 0,
@@ -142,6 +164,15 @@ pub const CodingParams = struct {
     /// QCC overrides by component (first 16 components; a QCC for a later
     /// component is surfaced as unsupported).
     comp_quant: [16]?QuantTable = @splat(null),
+    /// COC overrides by component (T.800 A.6.2): decomposition count,
+    /// code-block size/style, wavelet, precincts. Precedence: tile-part COC >
+    /// tile-part COD > main COC > main COD (a tile-part COD clears inherited
+    /// overrides). A COC for a component past the 16 slots is c145.
+    comp_coding: [16]?CompCoding = @splat(null),
+    /// RGN ROI up-shift by component (T.800 A.6.3, implicit ROI): coded
+    /// bit-planes = M_b + shift - zero_bitplanes, and decoded magnitudes at
+    /// or above 2^shift are scaled back down by shift (H.2).
+    comp_roishift: [16]u8 = @splat(0),
     /// Per-component precision (bit depth) from SIZ Ssiz low 7 bits + 1.
     /// Indexed by component; up to 16 captured (enough for our fixtures).
     comp_prec: [16]u8 = @splat(8),
@@ -174,6 +205,27 @@ pub const CodingParams = struct {
             if (self.comp_quant[c]) |*t| return t;
         }
         return &self.quant;
+    }
+
+    /// Effective coding style for component `c`: its COC override when one
+    /// exists, else the COD defaults.
+    pub fn codingFor(self: *const CodingParams, c: u16) CompCoding {
+        if (c < self.comp_coding.len) {
+            if (self.comp_coding[c]) |cc| return cc;
+        }
+        return .{
+            .num_decomp_levels = self.num_decomp_levels,
+            .cblk_width_exp = self.cblk_width_exp,
+            .cblk_height_exp = self.cblk_height_exp,
+            .cblksty = self.cblksty,
+            .wavelet = self.wavelet,
+            .precinct_sizes = self.precinct_sizes,
+        };
+    }
+
+    /// ROI up-shift of component `c` (0 without RGN).
+    pub fn roishiftFor(self: *const CodingParams, c: u16) u8 {
+        return self.comp_roishift[@min(c, self.comp_roishift.len - 1)];
     }
 
     /// Look up M_b for component `c` at a (resolution, band) pair. `band`
@@ -240,25 +292,29 @@ pub const PacketIndex = struct {
 ///     for those (r, c) where (x, y) lies on r's precinct boundary.
 pub const PacketIterator = struct {
     params: CodingParams,
-    /// Tile-component ORIGIN (tcx0, tcy0). Non-zero for interior tiles of a
-    /// multi-tile image. CRITICAL: the per-resolution precinct geometry
-    /// depends on the ABSOLUTE origin, not just the size — a small interior
-    /// tile whose coarse resolutions collapse to zero extent has FEWER
-    /// packets than the same-size tile at origin 0 would. Getting this wrong
-    /// makes the iterator emit phantom packets for empty resolutions and
-    /// desync the whole tile's byte stream (the b1_mono image-origin bug).
+    /// Tile rectangle on the REFERENCE grid (tx0, ty0, width, height).
+    /// Each component's own tile-component rect is derived from it with the
+    /// component's sub-sampling (T.800 B.2/B.3): interior tiles and
+    /// sub-sampled components must not share component 0's geometry — a
+    /// coarse resolution that collapses to zero extent for one component
+    /// contributes NO packets for it (the b1_mono narrow-tile bug, now
+    /// per component).
     tile_x0: u32,
     tile_y0: u32,
     image_w: u32,
     image_h: u32,
 
-    /// Cached per-resolution geometry. Index r ∈ [0, num_decomp_levels].
-    precincts_at_r: [33]u32 = @splat(0),
-    pcw_at_r: [33]u32 = @splat(0),
-    pch_at_r: [33]u32 = @splat(0),
-    ref_stride_x_at_r: [33]u32 = @splat(1),
-    ref_stride_y_at_r: [33]u32 = @splat(1),
-    /// Reference-grid step for PCRL / CPRL outer iteration.
+    /// Per-component precinct geometry (COC gives each component its own
+    /// decomposition count and precinct partition; SIZ its own sub-sampling).
+    /// Components past the 16th read slot 15 — parseSizBody guarantees their
+    /// descriptors repeat it, and COC/RGN for them are surfaced as c145.
+    geo: [16]CompGeo = @splat(.{}),
+    /// max over components of (decomp + 1): the resolution loop bound.
+    max_resolutions: u8 = 0,
+    /// RPCL steps each r by the MIN reference-grid stride over components.
+    rpcl_stride_x_at_r: [33]u32 = @splat(1),
+    rpcl_stride_y_at_r: [33]u32 = @splat(1),
+    /// PCRL / CPRL step by the MIN stride over all (component, r).
     min_stride_x: u32 = 1,
     min_stride_y: u32 = 1,
 
@@ -277,6 +333,75 @@ pub const PacketIterator = struct {
 
     done: bool = false,
 
+    pub const CompGeo = struct {
+        /// Tile-component rect on the component's sub-sampled grid.
+        tcx0: u32 = 0,
+        tcy0: u32 = 0,
+        tcw: u32 = 0,
+        tch: u32 = 0,
+        dx: u32 = 1,
+        dy: u32 = 1,
+        num_decomp_levels: u8 = 0,
+        num_resolutions: u8 = 0,
+        precinct_sizes: [33]PrecinctSize = @splat(.{}),
+        precincts_at_r: [33]u32 = @splat(0),
+        pcw_at_r: [33]u32 = @splat(0),
+        pch_at_r: [33]u32 = @splat(0),
+        /// Reference-grid stride of resolution r: dx · 2^(PPx + level).
+        ref_stride_x_at_r: [33]u32 = @splat(1),
+        ref_stride_y_at_r: [33]u32 = @splat(1),
+    };
+
+    /// Tile-component rect of component `c` for a reference-grid tile
+    /// rect (T.800 B-12): tcx0 = ceil(tx0/dx), tcx1 = ceil(tx1/dx).
+    pub fn compRect(params: *const CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32, c: u16) struct { tcx0: u32, tcy0: u32, tcw: u32, tch: u32, dx: u32, dy: u32 } {
+        const ci: usize = @min(c, params.comp_dx.len - 1);
+        const dx: u32 = params.comp_dx[ci];
+        const dy: u32 = params.comp_dy[ci];
+        const tcx0 = (tile_x0 + dx - 1) / dx;
+        const tcy0 = (tile_y0 + dy - 1) / dy;
+        const tcx1 = (tile_x0 + image_w + dx - 1) / dx;
+        const tcy1 = (tile_y0 + image_h + dy - 1) / dy;
+        return .{ .tcx0 = tcx0, .tcy0 = tcy0, .tcw = tcx1 - tcx0, .tch = tcy1 - tcy0, .dx = dx, .dy = dy };
+    }
+
+    fn geoFor(self: *const PacketIterator, c: u16) *const CompGeo {
+        return &self.geo[@min(c, self.geo.len - 1)];
+    }
+
+    /// Precincts of (component, resolution); 0 beyond the component's resolutions.
+    pub fn precinctsAt(self: *const PacketIterator, c: u16, r: u8) u32 {
+        const g = self.geoFor(c);
+        return if (r < g.num_resolutions) g.precincts_at_r[r] else 0;
+    }
+
+    /// Does (component, r) emit a packet at reference-grid (x, y)? Maps the
+    /// position onto the component's grid: off-grid positions (x % dx != 0)
+    /// never emit except at the tile origin, where openjpeg's pi.c pins a
+    /// partial first precinct (the `x == tx0` case of isOnPrecinctBoundary).
+    fn emitsAt(self: *const PacketIterator, c: u16, r: u8, x: u32, y: u32) bool {
+        const g = self.geoFor(c);
+        if (r >= g.num_resolutions or g.precincts_at_r[r] == 0) return false;
+        const at_origin_x = x == self.tile_x0;
+        const at_origin_y = y == self.tile_y0;
+        if (!at_origin_x and x % g.dx != 0) return false;
+        if (!at_origin_y and y % g.dy != 0) return false;
+        const xc: u32 = if (at_origin_x) g.tcx0 else x / g.dx;
+        const yc: u32 = if (at_origin_y) g.tcy0 else y / g.dy;
+        const ppx: u4 = @intCast(g.precinct_sizes[r].x_exp);
+        const ppy: u4 = @intCast(g.precinct_sizes[r].y_exp);
+        return subbands.isOnPrecinctBoundary(g.tcx0, g.tcy0, g.num_decomp_levels, r, ppx, ppy, xc, yc);
+    }
+
+    fn precinctAt(self: *const PacketIterator, c: u16, r: u8, x: u32, y: u32) u32 {
+        const g = self.geoFor(c);
+        const xc: u32 = if (x == self.tile_x0) g.tcx0 else x / g.dx;
+        const yc: u32 = if (y == self.tile_y0) g.tcy0 else y / g.dy;
+        const ppx: u4 = @intCast(g.precinct_sizes[r].x_exp);
+        const ppy: u4 = @intCast(g.precinct_sizes[r].y_exp);
+        return subbands.precinctIndexAt(g.tcx0, g.tcy0, g.tcw, g.tch, g.num_decomp_levels, r, ppx, ppy, xc, yc);
+    }
+
     pub fn init(params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PacketIterator {
         var iter: PacketIterator = .{
             .params = params,
@@ -291,32 +416,63 @@ pub const PacketIterator = struct {
             .x = tile_x0,
             .y = tile_y0,
         };
-        const num_resolutions: u8 = params.num_decomp_levels + 1;
         var min_sx: u32 = std.math.maxInt(u32);
         var min_sy: u32 = std.math.maxInt(u32);
-        var any_precincts: bool = false;
-        var r: u8 = 0;
-        while (r < num_resolutions) : (r += 1) {
-            const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
-            const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-            const grid = subbands.numPrecincts(
-                tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
-            iter.pcw_at_r[r] = grid.width;
-            iter.pch_at_r[r] = grid.height;
-            iter.precincts_at_r[r] = grid.width * grid.height;
-            if (iter.precincts_at_r[r] > 0) any_precincts = true;
-            const stride = subbands.referenceGridStride(
-                params.num_decomp_levels, r, ppx, ppy);
-            iter.ref_stride_x_at_r[r] = stride.width;
-            iter.ref_stride_y_at_r[r] = stride.height;
-            if (stride.width < min_sx) min_sx = stride.width;
-            if (stride.height < min_sy) min_sy = stride.height;
+        var rpcl_sx: [33]u32 = @splat(std.math.maxInt(u32));
+        var rpcl_sy: [33]u32 = @splat(std.math.maxInt(u32));
+        var any_precincts = false;
+        var max_res: u8 = 0;
+        const ncomp_geo: u16 = @intCast(@min(@as(usize, params.num_components), iter.geo.len));
+        var c: u16 = 0;
+        while (c < ncomp_geo) : (c += 1) {
+            const cc = params.codingFor(c);
+            const rect = compRect(&params, tile_x0, tile_y0, image_w, image_h, c);
+            var g: CompGeo = .{
+                .tcx0 = rect.tcx0,
+                .tcy0 = rect.tcy0,
+                .tcw = rect.tcw,
+                .tch = rect.tch,
+                .dx = rect.dx,
+                .dy = rect.dy,
+                .num_decomp_levels = cc.num_decomp_levels,
+                .num_resolutions = cc.num_decomp_levels + 1,
+                .precinct_sizes = cc.precinct_sizes,
+            };
+            var r: u8 = 0;
+            while (r < g.num_resolutions) : (r += 1) {
+                const ppx: u4 = @intCast(cc.precinct_sizes[r].x_exp);
+                const ppy: u4 = @intCast(cc.precinct_sizes[r].y_exp);
+                const grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, r, ppx, ppy);
+                g.pcw_at_r[r] = grid.width;
+                g.pch_at_r[r] = grid.height;
+                g.precincts_at_r[r] = grid.width * grid.height;
+                if (g.precincts_at_r[r] > 0) any_precincts = true;
+                const stride = subbands.referenceGridStride(cc.num_decomp_levels, r, ppx, ppy);
+                // Component-grid stride → reference grid (openjpeg pi.c:
+                // comp->dx << (pdx + levelno)); saturate rather than wrap.
+                const sx: u32 = std.math.mul(u32, stride.width, rect.dx) catch std.math.maxInt(u32);
+                const sy: u32 = std.math.mul(u32, stride.height, rect.dy) catch std.math.maxInt(u32);
+                g.ref_stride_x_at_r[r] = sx;
+                g.ref_stride_y_at_r[r] = sy;
+                if (sx < rpcl_sx[r]) rpcl_sx[r] = sx;
+                if (sy < rpcl_sy[r]) rpcl_sy[r] = sy;
+                if (sx < min_sx) min_sx = sx;
+                if (sy < min_sy) min_sy = sy;
+            }
+            if (g.num_resolutions > max_res) max_res = g.num_resolutions;
+            iter.geo[c] = g;
         }
-        iter.min_stride_x = if (num_resolutions > 0) min_sx else 1;
-        iter.min_stride_y = if (num_resolutions > 0) min_sy else 1;
+        iter.max_resolutions = max_res;
+        var r: usize = 0;
+        while (r < 33) : (r += 1) {
+            iter.rpcl_stride_x_at_r[r] = if (rpcl_sx[r] == std.math.maxInt(u32)) 1 else rpcl_sx[r];
+            iter.rpcl_stride_y_at_r[r] = if (rpcl_sy[r] == std.math.maxInt(u32)) 1 else rpcl_sy[r];
+        }
+        iter.min_stride_x = if (min_sx == std.math.maxInt(u32)) 1 else min_sx;
+        iter.min_stride_y = if (min_sy == std.math.maxInt(u32)) 1 else min_sy;
 
         iter.done = params.num_layers == 0 or
-            num_resolutions == 0 or
+            max_res == 0 or
             params.num_components == 0 or
             image_w == 0 or image_h == 0 or
             !any_precincts;
@@ -324,15 +480,14 @@ pub const PacketIterator = struct {
     }
 
     pub fn total(self: PacketIterator) usize {
-        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
         var total_p: usize = 0;
-        var r: u8 = 0;
-        while (r < num_resolutions) : (r += 1) {
-            total_p += @as(usize, self.precincts_at_r[r]);
+        var c: u16 = 0;
+        while (c < self.params.num_components) : (c += 1) {
+            const g = self.geoFor(c);
+            var r: u8 = 0;
+            while (r < g.num_resolutions) : (r += 1) total_p += @as(usize, g.precincts_at_r[r]);
         }
-        return @as(usize, self.params.num_layers) *
-            total_p *
-            @as(usize, self.params.num_components);
+        return @as(usize, self.params.num_layers) * total_p;
     }
 
     pub fn next(self: *PacketIterator) ?PacketIndex {
@@ -344,18 +499,15 @@ pub const PacketIterator = struct {
         };
     }
 
-    // ── LRCP / RLCP — indexed iteration with per-r precinct count ──
+    // ── LRCP / RLCP — indexed iteration with per-(c, r) precinct count ──
 
     fn nextIndexed(self: *PacketIterator) ?PacketIndex {
-        // Skip any resolution with zero precincts. A resolution collapses to
-        // zero extent (⇒ zero precincts) when the tile-component's absolute
-        // origin pushes its coarse levels below one reference-grid cell — a
-        // small interior tile of a multi-tile image. Such a resolution
-        // contributes NO packets (that is exactly what `total()` counts, and
-        // what openjpeg emits). Without this skip the iterator emits a phantom
-        // packet per empty resolution and desyncs the whole tile's byte stream
-        // (the b1_mono narrow-tile bug).
-        while (self.precincts_at_r[self.resolution] == 0) {
+        // Skip any (component, resolution) with zero precincts: a resolution
+        // beyond the component's own decomposition count (COC), or one that
+        // collapses to zero extent for this component's tile rect. Such a
+        // pair contributes NO packets (that is exactly what `total()`
+        // counts, and what openjpeg emits).
+        while (self.precinctsAt(self.component, self.resolution) == 0) {
             self.advanceIndexed();
             if (self.done) return null;
         }
@@ -370,7 +522,7 @@ pub const PacketIterator = struct {
     }
 
     fn advanceIndexed(self: *PacketIterator) void {
-        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
+        const num_resolutions: u8 = self.max_resolutions;
         const dims: [4]Dim = switch (self.params.progression_order) {
             .lrcp => .{ .layer, .resolution, .component, .precinct },
             .rlcp => .{ .resolution, .layer, .component, .precinct },
@@ -390,7 +542,7 @@ pub const PacketIterator = struct {
                     self.resolution += 1;
                     if (self.resolution < num_resolutions) {
                         // New resolution → reset precinct (precinct
-                        // count is per-r). Component is untouched.
+                        // count is per-(c, r)). Component is untouched.
                         self.precinct = 0;
                         return;
                     }
@@ -399,12 +551,13 @@ pub const PacketIterator = struct {
                 },
                 .component => {
                     self.component += 1;
+                    self.precinct = 0;
                     if (self.component < self.params.num_components) return;
                     self.component = 0;
                 },
                 .precinct => {
                     self.precinct += 1;
-                    if (self.precinct < self.precincts_at_r[self.resolution]) return;
+                    if (self.precinct < self.precinctsAt(self.component, self.resolution)) return;
                     self.precinct = 0;
                 },
             }
@@ -412,34 +565,25 @@ pub const PacketIterator = struct {
         self.done = true;
     }
 
-    // ── RPCL — resolution outer; each r uses its OWN stride ──
+    // ── RPCL — resolution outer; each r steps by its MIN stride over components ──
 
     fn nextRpcl(self: *PacketIterator) ?PacketIndex {
-        // A visited position can be a non-emitter only at the tile-origin
-        // row/col when the tile's r-level origin IS precinct-aligned (the
-        // partial-precinct edge case doesn't apply) yet the origin itself
-        // isn't a stride multiple — skip such positions without emitting.
-        // Zero-precinct (collapsed) resolutions contribute no packets.
+        // Nesting (outer→inner): r, y, x, c, l. A (c) that does not emit at
+        // this (r, x, y) — off its grid, beyond its resolutions, or an empty
+        // resolution — is skipped to the next component, not the next
+        // position: other components may still emit here.
         while (!self.done) {
             const r = self.resolution;
-            const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
-            const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
-            if (self.precincts_at_r[r] == 0 or
-                !subbands.isOnPrecinctBoundary(
-                    self.tile_x0, self.tile_y0, self.params.num_decomp_levels,
-                    r, ppx, ppy, self.x, self.y))
-            {
-                self.advanceRpclPosition();
+            if (!self.emitsAt(self.component, r, self.x, self.y)) {
+                self.layer = 0;
+                self.advanceRpclComponent();
                 continue;
             }
-            const p_idx = subbands.precinctIndexAt(
-                self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
-                r, ppx, ppy, self.x, self.y);
             const result: PacketIndex = .{
                 .layer = self.layer,
                 .resolution = r,
                 .component = self.component,
-                .precinct = p_idx,
+                .precinct = self.precinctAt(self.component, r, self.x, self.y),
             };
             self.advanceRpcl();
             return result;
@@ -452,6 +596,10 @@ pub const PacketIterator = struct {
         self.layer += 1;
         if (self.layer < self.params.num_layers) return;
         self.layer = 0;
+        self.advanceRpclComponent();
+    }
+
+    fn advanceRpclComponent(self: *PacketIterator) void {
         self.component += 1;
         if (self.component < self.params.num_components) return;
         self.component = 0;
@@ -459,13 +607,13 @@ pub const PacketIterator = struct {
     }
 
     /// Advance the RPCL position cursor (x → y → r) by the CURRENT
-    /// resolution's own stride, stepping to the next stride MULTIPLE on
-    /// the absolute reference grid (openjpeg's `x += dx - (x % dx)` — an
+    /// resolution's stride, stepping to the next stride MULTIPLE on the
+    /// absolute reference grid (openjpeg's `x += dx - (x % dx)` — an
     /// unaligned tile origin steps to the grid, not by a fixed offset)
     /// and resetting carries to the tile origin, not 0.
     fn advanceRpclPosition(self: *PacketIterator) void {
-        const sx = self.ref_stride_x_at_r[self.resolution];
-        const sy = self.ref_stride_y_at_r[self.resolution];
+        const sx = self.rpcl_stride_x_at_r[self.resolution];
+        const sy = self.rpcl_stride_y_at_r[self.resolution];
         self.x += sx - (self.x % sx);
         if (self.x < self.tile_x0 + self.image_w) return;
         self.x = self.tile_x0;
@@ -473,47 +621,31 @@ pub const PacketIterator = struct {
         if (self.y < self.tile_y0 + self.image_h) return;
         self.y = self.tile_y0;
         self.resolution += 1;
-        if (self.resolution < self.params.num_decomp_levels + 1) return;
+        if (self.resolution < self.max_resolutions) return;
         self.done = true;
     }
 
     // ── PCRL / CPRL — reference-grid outer; (r) filtered on-boundary ──
 
     fn nextPositional(self: *PacketIterator) ?PacketIndex {
-        const num_resolutions: u8 = self.params.num_decomp_levels + 1;
         // At entry, (x, y, c, r, l) is the *candidate* state. The
-        // outer loop skips past invalid r (not on its own precinct
-        // boundary at (x, y)) and advances the outer dims when
+        // outer loop skips past invalid r (not on the component's own
+        // precinct boundary at (x, y)) and advances the outer dims when
         // necessary. Emits when current r is on boundary.
         while (!self.done) {
-            // Find the next r ≥ self.resolution that is on boundary
-            // at (x, y) for the current precinct exponents. Collapsed
-            // (zero-precinct) resolutions contribute no packets.
-            while (self.resolution < num_resolutions) {
-                const ppx: u4 = @intCast(self.params.precinct_sizes[self.resolution].x_exp);
-                const ppy: u4 = @intCast(self.params.precinct_sizes[self.resolution].y_exp);
-                if (self.precincts_at_r[self.resolution] != 0 and
-                    subbands.isOnPrecinctBoundary(
-                        self.tile_x0, self.tile_y0,
-                        self.params.num_decomp_levels, self.resolution,
-                        ppx, ppy, self.x, self.y))
-                {
-                    break;
-                }
+            const num_resolutions: u8 = self.geoFor(self.component).num_resolutions;
+            // Find the next r ≥ self.resolution that emits at (x, y) for
+            // THIS component.
+            while (self.resolution < num_resolutions and !self.emitsAt(self.component, self.resolution, self.x, self.y)) {
                 self.resolution += 1;
             }
             if (self.resolution < num_resolutions) {
                 const r = self.resolution;
-                const ppx: u4 = @intCast(self.params.precinct_sizes[r].x_exp);
-                const ppy: u4 = @intCast(self.params.precinct_sizes[r].y_exp);
-                const p_idx = subbands.precinctIndexAt(
-                    self.tile_x0, self.tile_y0, self.image_w, self.image_h, self.params.num_decomp_levels,
-                    r, ppx, ppy, self.x, self.y);
                 const result: PacketIndex = .{
                     .layer = self.layer,
                     .resolution = r,
                     .component = self.component,
-                    .precinct = p_idx,
+                    .precinct = self.precinctAt(self.component, r, self.x, self.y),
                 };
                 // Advance: l → r → (carry to next-outer dim per order)
                 self.layer += 1;
@@ -602,15 +734,26 @@ pub const PocSequencer = struct {
         var seq: PocSequencer = .{
             .inner = PacketIterator.init(params, tile_x0, tile_y0, image_w, image_h),
         };
-        const num_resolutions: u8 = params.num_decomp_levels + 1;
+        const num_resolutions: u8 = seq.inner.max_resolutions;
         var acc: usize = 0;
         var r: u8 = 0;
         while (r < num_resolutions) : (r += 1) {
             seq.rc_offset[r] = acc;
-            acc += @as(usize, seq.inner.precincts_at_r[r]) * @as(usize, params.num_components);
+            var c: u16 = 0;
+            while (c < params.num_components) : (c += 1) acc += @as(usize, seq.inner.precinctsAt(c, r));
         }
         seq.rc_total = acc;
         return seq;
+    }
+
+    /// Within-resolution base of component `c` in the canonical index:
+    /// Σ_{c' < c} precincts(c', r). Per-component precinct counts differ
+    /// under COC / sub-sampling, so this is a sum, not a multiply.
+    fn compOffset(self: *const PocSequencer, r: u8, c: u16) usize {
+        var acc: usize = 0;
+        var k: u16 = 0;
+        while (k < c) : (k += 1) acc += @as(usize, self.inner.precinctsAt(k, r));
+        return acc;
     }
 
     pub fn deinit(self: *PocSequencer, allocator: Allocator) void {
@@ -669,7 +812,7 @@ pub const PocSequencer = struct {
     fn indexOf(self: *const PocSequencer, pi: PacketIndex) usize {
         return @as(usize, pi.layer) * self.rc_total +
             self.rc_offset[pi.resolution] +
-            @as(usize, pi.component) * @as(usize, self.inner.precincts_at_r[pi.resolution]) +
+            self.compOffset(pi.resolution, pi.component) +
             @as(usize, pi.precinct);
     }
 
@@ -1045,15 +1188,6 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // PPM segments (A.7.4) keyed by Zppm; merged into per-tile-part
     // chunks once the main header ends (a chunk may span segments).
     var ppm = PpmCollector{};
-    // T.800 A.4.1: after SIZ, COD and QCD may appear in either order, but
-    // the per-subband M_b table QCD populates is sized by COD's
-    // decomposition count. A QCD seen before COD is held here and parsed
-    // once COD lands (or at the end of the main header if COD never does),
-    // so marker order cannot zero the high-frequency M_b (p0_01, file8).
-    var pending_qcd: ?struct { body: []const u8, off: usize } = null;
-    var pending_qcc: std.ArrayListUnmanaged(struct { body: []const u8, off: usize }) = .empty;
-    defer pending_qcc.deinit(allocator);
-    var saw_cod = false;
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1066,19 +1200,22 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         }
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[pos + 1]);
 
+        // T.800 Table A.2: markers FF30..FF3F are reserved and have NO
+        // marker segment (no Lxxx). Skip the two bytes; nothing to parse
+        // (p0_02 places FF30 after its COM).
+        if (marker >= 0xFF30 and marker <= 0xFF3F) {
+            pos += 2;
+            continue;
+        }
+
         // Delimiting markers — main header ends.
         switch (marker) {
             @intFromEnum(Marker.sot) => {
-                // A QCD that never met a COD: parse it now so its
-                // structural findings still surface.
-                if (pending_qcd) |q| {
-                    pending_qcd = null;
-                    try parseQcdBody(report, allocator, q.body, q.off);
-                }
-                if (report.coding_params) |*cp| {
-                    for (pending_qcc.items) |q| try parseQccBody(report, allocator, cp, q.body, q.off);
-                }
-                pending_qcc.clearRetainingCapacity();
+                // T.800 A.4.1 leaves COD/COC/QCD/QCC order free after SIZ.
+                // Quantization tables parse body-driven, so only the coverage
+                // check (an entry per subband for every component) waits for
+                // the whole main header.
+                if (report.coding_params) |*cp| try checkQuantCoverage(report, allocator, cp);
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
                 var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
@@ -1115,41 +1252,22 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         // at pos+2 and ends at pos+lxxx.
         const body = data[pos + 2 .. pos + lxxx];
         switch (marker) {
-            @intFromEnum(Marker.cod) => {
-                try parseCodBody(report, allocator, body, pos);
-                saw_cod = true;
-                if (pending_qcd) |q| {
-                    pending_qcd = null;
-                    try parseQcdBody(report, allocator, q.body, q.off);
-                }
-                if (report.coding_params) |*cp| {
-                    for (pending_qcc.items) |q| try parseQccBody(report, allocator, cp, q.body, q.off);
-                }
-                pending_qcc.clearRetainingCapacity();
-            },
-            @intFromEnum(Marker.qcd) => if (saw_cod) {
-                try parseQcdBody(report, allocator, body, pos);
-            } else {
-                pending_qcd = .{ .body = body, .off = pos }; // last-wins, like the direct path
-            },
+            @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
+            @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
             // QCC (A.6.5) is APPLIED: a per-component quantization table.
-            // Like QCD it needs COD's decomposition count, so one seen
-            // before COD is queued and parsed when COD lands.
             @intFromEnum(Marker.qcc) => if (report.coding_params) |*cp| {
-                if (saw_cod) {
-                    try parseQccBody(report, allocator, cp, body, pos + 2);
-                } else {
-                    try pending_qcc.append(allocator, .{ .body = body, .off = pos + 2 });
-                }
+                try parseQccBody(report, allocator, cp, body, pos + 2);
             },
-            // Reviewer I1: COC/RGN override per-component coding or ROI
-            // up-shift. jp2z does not yet apply them, so decode silently
-            // falls back to COD defaults — surface a finding so a consumer
-            // is told (validate's stricter-than-openjpeg contract). pos-2 is
-            // the marker offset.
-            @intFromEnum(Marker.coc),
-            @intFromEnum(Marker.rgn),
-            => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos - 2, null),
+            // COC (A.6.2) and RGN (A.6.3) are APPLIED: per-component coding
+            // style and ROI up-shift. A COC carries its own SPcoc, so its
+            // order relative to COD is free.
+            @intFromEnum(Marker.coc) => if (report.coding_params) |*cp| {
+                const ok = try parseCocBody(report, allocator, cp, body, pos + 2);
+                if (!ok) report.coding_params = null;
+            },
+            @intFromEnum(Marker.rgn) => if (report.coding_params) |*cp| {
+                try parseRgnBody(report, allocator, cp, body, pos + 2);
+            },
             // POC is APPLIED, not ignored: entries parsed here become the
             // default progression-volume list for every tile's packet walk.
             // SIZ precedes POC in a conforming main header (T.800 A.5.1),
@@ -1535,13 +1653,10 @@ fn walkTileParts(
                         const isot: u32 = isot16;
                         const xsiz: u32 = params.image_x0 + report.width.?;
                         const ysiz: u32 = params.image_y0 + report.height.?;
+                        // The tile's REFERENCE-grid rect; every component's own
+                        // sub-sampled tile-component rect is derived inside the
+                        // walk (T.800 B.2/B.3), never component 0's for all.
                         const tr = params.tileRect(xsiz, ysiz, isot);
-                        const dx: u32 = params.comp_dx[0];
-                        const dy: u32 = params.comp_dy[0];
-                        const tcx0: u32 = (tr.x0 + dx - 1) / dx;
-                        const tcy0: u32 = (tr.y0 + dy - 1) / dy;
-                        const tcw: u32 = (tr.x1 + dx - 1) / dx - tcx0;
-                        const tch: u32 = (tr.y1 + dy - 1) / dy - tcy0;
                         // A first-tile-part QCD overrides the main header's
                         // quantization FOR THIS TILE (T.800 A.6.4): Mb per
                         // subband (pass budgets, tier-1 bitplanes) and the
@@ -1556,14 +1671,25 @@ fn walkTileParts(
                         // d2_colr switches progression on tiles 1 and 3; f1_mono's
                         // tile 4 declares 7 layers against the main header's 4.
                         if (tp_ov.cod) |span| {
+                            // A tile-part COD outranks every main-header COC
+                            // (A.6.2 precedence): clear inherited overrides first.
+                            tile_params.comp_coding = @splat(null);
                             tile_ok = try parseCodInto(report, allocator, &tile_params, data[span.start..span.end], span.start);
-                            // Decode reconstructs with the MAIN header's
-                            // decomposition/wavelet/MCT; a tile that changes any
-                            // of those is validated here but refused by decode.
-                            if (extractor) |ex| {
-                                if (tile_params.num_decomp_levels != params.num_decomp_levels or tile_params.wavelet != params.wavelet or tile_params.mct != params.mct) {
-                                    ex.tile_override_unsupported = true;
-                                }
+                        }
+                        for (tp_ov.coc.items) |span| {
+                            if (!try parseCocBody(report, allocator, &tile_params, data[span.start..span.end], span.start)) tile_ok = false;
+                        }
+                        // Decode reconstructs every tile with the MAIN header's
+                        // per-component decomposition/wavelet and MCT; a tile
+                        // whose COD/COC changes any of those is validated here
+                        // but refused by decode.
+                        if (extractor) |ex| {
+                            if (tile_params.mct != params.mct) ex.tile_override_unsupported = true;
+                            var k: u16 = 0;
+                            while (k < params.num_components and k < 16) : (k += 1) {
+                                const a = tile_params.codingFor(k);
+                                const b = params.codingFor(k);
+                                if (a.num_decomp_levels != b.num_decomp_levels or a.wavelet != b.wavelet) ex.tile_override_unsupported = true;
                             }
                         }
                         if (tp_ov.has_qcd) {
@@ -1575,6 +1701,10 @@ fn walkTileParts(
                         for (tp_ov.qcc.items) |q| {
                             try parseQccBody(report, allocator, &tile_params, data[q.start..q.end], q.start);
                         }
+                        // Tile-part RGN outranks the main header's for its component.
+                        for (tp_ov.rgn.items) |span| {
+                            try parseRgnBody(report, allocator, &tile_params, data[span.start..span.end], span.start);
+                        }
                         if (!tile_ok) {
                             // Unwalkable tile geometry (findings already emitted):
                             // no walk for this tile, and no later part may build
@@ -1582,7 +1712,7 @@ fn walkTileParts(
                             _ = tiles.remove(isot16);
                             if (tp_state.getPtr(isot16)) |s| s.broken = true;
                         } else {
-                            gop.value_ptr.* = TileWalk.init(allocator, tile_params, tcw, tch, tcx0, tcy0, isot) catch |e| {
+                            gop.value_ptr.* = TileWalk.init(allocator, tile_params, tr.x1 - tr.x0, tr.y1 - tr.y0, tr.x0, tr.y0, isot) catch |e| {
                                 // Don't leave a half-built entry in the map.
                                 _ = tiles.remove(isot16);
                                 return e;
@@ -1595,6 +1725,8 @@ fn walkTileParts(
                         if (tp_ov.cod) |span| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, span.start - 4, null);
                         if (tp_ov.has_qcd) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
                         for (tp_ov.qcc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
+                        for (tp_ov.coc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
+                        for (tp_ov.rgn.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
                     }
                     if (tiles.getPtr(isot16)) |tw| {
                         // POC entries from THIS tile-part's header accumulate
@@ -1714,11 +1846,17 @@ const TileOverrides = struct {
     /// code-block size/style, wavelet, precincts). Applied FIRST at tile
     /// init, since QCD/QCC sizing depends on its decomposition count.
     cod: ?struct { start: usize, end: usize } = null,
+    /// COC / RGN bodies in this tile-part header (A.6.2 / A.6.3), applied
+    /// to the tile's params after its COD (tile COC > tile COD > main COC).
+    coc: std.ArrayListUnmanaged(struct { start: usize, end: usize }) = .empty,
+    rgn: std.ArrayListUnmanaged(struct { start: usize, end: usize }) = .empty,
 
     fn deinit(self: *TileOverrides, allocator: Allocator) void {
         self.plt.deinit(allocator);
         self.ppt.deinit(allocator);
         self.qcc.deinit(allocator);
+        self.coc.deinit(allocator);
+        self.rgn.deinit(allocator);
     }
 };
 
@@ -1750,13 +1888,17 @@ fn scanTilePartHeaderMarkers(
         if (data[p] != 0xFF) return out; // not a marker boundary — stop
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[p + 1]);
         if (marker == @intFromEnum(Marker.sod)) return out;
+        if (marker >= 0xFF30 and marker <= 0xFF3F) {
+            p += 2; // reserved, no segment (Table A.2)
+            continue;
+        }
         const lseg = std.mem.readInt(u16, data[p + 2 ..][0..2], .big);
         if (lseg < 2 or p + 2 + lseg > hdr_end) return out; // malformed length — bail
         switch (marker) {
-            // COC/RGN are per-component overrides jp2z does not yet apply.
-            @intFromEnum(Marker.coc),
-            @intFromEnum(Marker.rgn),
-            => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, p, null),
+            // Tile-part COC / RGN are APPLIED to the tile: record body spans;
+            // the caller parses them after the tile COD (COC) and last (RGN).
+            @intFromEnum(Marker.coc) => try out.coc.append(allocator, .{ .start = p + 4, .end = p + 2 + @as(usize, lseg) }),
+            @intFromEnum(Marker.rgn) => try out.rgn.append(allocator, .{ .start = p + 4, .end = p + 2 + @as(usize, lseg) }),
             // Tile-part COD is APPLIED (the tile's coding style, A.6.1):
             // record its body span; the caller parses it into the owning
             // tile's params before QCD/QCC (last one wins, like QCD).
@@ -1941,94 +2083,195 @@ fn parseCodInto(
     if (mct_raw > 1) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null);
     }
-    // SPcod. Out-of-range decomp levels / cblk exponents are CRASH-class,
-    // not warn-class: T.800 caps decomposition at 32 and cblk exponents at
-    // 8, and the geometry downstream sizes [33] arrays and computes
-    // `exp + 2` in u8 — a hostile 200/255 here panics ReleaseSafe and is
-    // UB in ReleaseFast. FAIL and un-publish params (the walk cannot be
-    // driven safely), same containment as the invalid-precinct case.
+    // Scod reserved bits 3-7 must be zero. Surface as WARN:
+    // unknown-but-decodable per Part 1 rules.
+    const scod = body[0];
+    if (scod & 0xF8 != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+    }
+    // SPcod (shared with COC): decomposition, code-block exponents/style,
+    // wavelet, precincts. Out-of-range geometry is CRASH-class downstream
+    // and un-publishes/skips (caller) rather than walks.
+    var cc: CompCoding = .{ .num_decomp_levels = 0, .cblk_width_exp = 0, .cblk_height_exp = 0, .cblksty = 0, .wavelet = .reversible_5x3, .precinct_sizes = @splat(.{}) };
+    // Scod(1) + SGcod(4) = 5 bytes precede SPcod; the caller checked body.len >= 10.
+    const walkable = try parseSPcodInto(report, allocator, body[5..], offset + 5, scod & 0x01 != 0, &cc);
+
+    // Update CodingParams (which parseSizBody seeded with num_components).
+    if (cp_opt) |cp| {
+        if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
+        cp.num_layers = num_layers;
+        cp.mct = mct_raw == 1;
+        cp.scod = scod;
+        if (walkable) {
+            cp.num_decomp_levels = cc.num_decomp_levels;
+            cp.cblk_width_exp = cc.cblk_width_exp;
+            cp.cblk_height_exp = cc.cblk_height_exp;
+            cp.wavelet = cc.wavelet;
+            cp.cblksty = cc.cblksty;
+            cp.precinct_sizes = cc.precinct_sizes;
+        }
+    }
+    return walkable;
+}
+
+/// Validate + parse an SPcod/SPcoc block (T.800 A.6.1 Table A.15 / A.6.2):
+/// `sp[0]` decomposition levels, `sp[1..2]` code-block exponents, `sp[3]`
+/// code-block style, `sp[4]` wavelet, then one precinct byte per
+/// resolution when `user_precincts`. Findings anchor at `offset` (the
+/// codestream offset of `sp[0]`). Fills `out` and returns whether the
+/// geometry is walkable: out-of-range decomposition / code-block
+/// exponents and a zero HF precinct exponent are CRASH-class downstream
+/// (array sizing, u6 shifts), so they FAIL and the caller must not walk
+/// with them.
+fn parseSPcodInto(
+    report: *ValidationReport,
+    allocator: Allocator,
+    sp: []const u8,
+    offset: usize,
+    user_precincts: bool,
+    out: *CompCoding,
+) Allocator.Error!bool {
+    if (sp.len < 5) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return false;
+    }
     var geometry_unsafe = false;
-    const decomp_levels = body[5];
+    const decomp_levels = sp[0];
     if (decomp_levels > 32) {
-        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 5, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, null);
         geometry_unsafe = true;
     }
-    const cblkw_exp = body[6];
-    const cblkh_exp = body[7];
+    const cblkw_exp = sp[1];
+    const cblkh_exp = sp[2];
     // Code-block dimension exponent: 0..8 maps to actual size 4..256.
     if (cblkw_exp > 8 or cblkh_exp > 8) {
-        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 6, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 1, null);
         geometry_unsafe = true;
     } else if (@as(u16, cblkw_exp) + 2 + @as(u16, cblkh_exp) + 2 > 12) {
         // T.800 A.6.1: xcb + ycb <= 12 (code-block area cap, 4096
         // samples). Each exponent can be individually legal while the
         // pair violates the cap — normative, so FAIL, but the geometry
-        // is still safely walkable (params stay published).
-        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 6, null);
+        // is still safely walkable.
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 1, null);
     }
-    const cblksty = body[8];
-    // Reserved bits must be zero: Scod bits 3-7, cblksty bits 6-7
-    // (cblksty 0x40 is HTJ2K's HT flag — T.814, not Part 1). Surface a
-    // set reserved bit as WARN: unknown-but-decodable per Part 1 rules.
-    if (body[0] & 0xF8 != 0) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
-    }
+    const cblksty = sp[3];
+    // Reserved cblksty bits 6-7 must be zero (0x40 is HTJ2K's HT flag —
+    // T.814, not Part 1). Surface as WARN: unknown-but-decodable.
     if (cblksty & 0xC0 != 0) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 8, null);
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 3, null);
     }
     // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
-    const qmfbid = body[9];
+    const qmfbid = sp[4];
     switch (qmfbid) {
-        0 => try emit(report, allocator, .info, .jp2_uses_9x7_wavelet, offset + 9, null),
-        1 => try emit(report, allocator, .info, .jp2_uses_5x3_wavelet, offset + 9, null),
-        else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 9, null),
+        0 => try emit(report, allocator, .info, .jp2_uses_9x7_wavelet, offset + 4, null),
+        1 => try emit(report, allocator, .info, .jp2_uses_5x3_wavelet, offset + 4, null),
+        else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null),
     }
-
-    const scod = body[0]; // Scod is COD body offset 0 — handy here too
-    // Precinct sizes (Scod bit 0 = 1 → user-defined; else default 2^15).
-    const num_resolutions: u8 = decomp_levels + 1;
-    const expects_user_precincts = (scod & 0x01) != 0;
-    const precinct_byte_offset: usize = 10; // Scod(1) + SGcod(5) + SPcod-fixed(4) = 10
-    const needed_precinct_bytes: usize = if (expects_user_precincts) @as(usize, num_resolutions) else 0;
-    if (body.len < precinct_byte_offset + needed_precinct_bytes) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + body.len, null);
+    const num_resolutions: usize = @as(usize, decomp_levels) + 1;
+    const needed_precinct_bytes: usize = if (user_precincts) num_resolutions else 0;
+    if (sp.len < 5 + needed_precinct_bytes) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + sp.len, null);
     }
+    if (geometry_unsafe) return false;
 
-    // Update CodingParams (which parseSizBody seeded with num_components).
+    out.num_decomp_levels = decomp_levels;
+    out.cblk_width_exp = cblkw_exp;
+    out.cblk_height_exp = cblkh_exp;
+    out.cblksty = cblksty;
+    if (qmfbid <= 1) out.wavelet = @enumFromInt(qmfbid);
+    // Precinct sizes (user-defined; else the default 2^15 per resolution).
+    out.precinct_sizes = @splat(.{});
     var invalid_precinct = false;
-    if (cp_opt) |cp| {
-        if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
-        cp.num_layers = num_layers;
-        cp.num_decomp_levels = decomp_levels;
-        cp.cblk_width_exp = cblkw_exp;
-        cp.cblk_height_exp = cblkh_exp;
-        if (qmfbid <= 1) cp.wavelet = @enumFromInt(qmfbid);
-        cp.mct = mct_raw == 1;
-        cp.cblksty = cblksty;
-        cp.scod = scod;
-        if (expects_user_precincts and body.len >= precinct_byte_offset + needed_precinct_bytes) {
-            var r: usize = 0;
-            while (r < @as(usize, num_resolutions) and r < cp.precinct_sizes.len) : (r += 1) {
-                const byte = body[precinct_byte_offset + r];
-                const x_exp: u4 = @intCast(byte & 0x0F);
-                const y_exp: u4 = @intCast((byte >> 4) & 0x0F);
-                // T.800 B.6: PPx/PPy must be >= 1 for every resolution ABOVE the
-                // lowest (r>0) — the HF precinct partition halves the exponent, so a
-                // 0 there is non-conformant and would underflow the u6 code-block
-                // geometry (crash in TileWalk.init while sizing the pool).
-                if (r > 0 and (x_exp == 0 or y_exp == 0)) invalid_precinct = true;
-                cp.precinct_sizes[r] = .{ .x_exp = x_exp, .y_exp = y_exp };
-            }
+    if (user_precincts and sp.len >= 5 + needed_precinct_bytes) {
+        var r: usize = 0;
+        while (r < num_resolutions and r < out.precinct_sizes.len) : (r += 1) {
+            const byte = sp[5 + r];
+            const x_exp: u4 = @intCast(byte & 0x0F);
+            const y_exp: u4 = @intCast((byte >> 4) & 0x0F);
+            // T.800 B.6: PPx/PPy must be >= 1 for every resolution ABOVE the
+            // lowest (r>0) — the HF precinct partition halves the exponent, so a
+            // 0 there is non-conformant and would underflow the u6 code-block
+            // geometry (crash in TileWalk.init while sizing the pool).
+            if (r > 0 and (x_exp == 0 or y_exp == 0)) invalid_precinct = true;
+            out.precinct_sizes[r] = .{ .x_exp = x_exp, .y_exp = y_exp };
         }
     }
     if (invalid_precinct) {
-        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + precinct_byte_offset, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 5, null);
+        return false;
     }
-    // A non-conformant precinct partition / out-of-range geometry cannot
-    // be safely walked: the caller un-publishes (main header) or skips the
-    // tile (tile-part COD) so the packet walk + decodeCleanroom stop
-    // cleanly instead of crashing on it.
-    return !(invalid_precinct or geometry_unsafe);
+    return true;
+}
+
+/// COC (T.800 A.6.2): Ccoc (1 byte when Csiz < 257, else 2), Scoc (bit 0 =
+/// user precincts; other bits reserved), SPcoc in SPcod layout. Overrides
+/// the coding style of ONE component. `offset` addresses `body[0]`.
+/// Returns whether the override is walkable (an unsafe one is reported and
+/// not installed).
+fn parseCocBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    cp: *CodingParams,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!bool {
+    const cw: usize = if (cp.num_components < 257) 1 else 2;
+    if (body.len < cw + 1 + 5) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return true;
+    }
+    const c: u16 = if (cw == 1) body[0] else std.mem.readInt(u16, body[0..2], .big);
+    if (c >= cp.num_components) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "COC names a component beyond Csiz");
+        return true;
+    }
+    const scoc = body[cw];
+    if (scoc & 0xFE != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + cw, "COC Scoc reserved bits set");
+    }
+    var cc = cp.codingFor(c);
+    const ok = try parseSPcodInto(report, allocator, body[cw + 1 ..], offset + cw + 1, scoc & 0x01 != 0, &cc);
+    if (!ok) return false;
+    if (c >= cp.comp_coding.len) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "COC for a component beyond the 16 jp2z stores");
+        return true;
+    }
+    cp.comp_coding[c] = cc;
+    return true;
+}
+
+/// RGN (T.800 A.6.3): Crgn (1 or 2 bytes), Srgn (0 = implicit ROI, the only
+/// Part 1 style), SPrgn = ROI up-shift (0..37). `offset` addresses `body[0]`.
+fn parseRgnBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    cp: *CodingParams,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    const cw: usize = if (cp.num_components < 257) 1 else 2;
+    if (body.len < cw + 2) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    const c: u16 = if (cw == 1) body[0] else std.mem.readInt(u16, body[0..2], .big);
+    if (c >= cp.num_components) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "RGN names a component beyond Csiz");
+        return;
+    }
+    if (body[cw] != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + cw, "RGN Srgn is not the implicit ROI style");
+    }
+    const shift = body[cw + 1];
+    if (shift > 37) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + cw + 1, "RGN SPrgn exceeds 37");
+        return;
+    }
+    if (c >= cp.comp_roishift.len) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "RGN for a component beyond the 16 jp2z stores");
+        return;
+    }
+    cp.comp_roishift[c] = shift;
 }
 
 /// Main-header COD: parse into the report's params; un-publish them when
@@ -2067,17 +2310,19 @@ fn parseQcdBody(
     }
 }
 
-/// Parse a QCD body into `cp` — used for BOTH the main-header QCD
-/// (cp = report.coding_params) and a TILE-PART-HEADER QCD override
-/// (cp = the owning tile's params copy; T.800 A.6.4 allows QCD in the
-/// first tile-part header of a tile, and p1_04 carries one on 63 of its
-/// 64 tiles — ignoring them mis-computes Mb AND the dequant stepsizes
-/// for every overridden tile).
+/// Parse a QCD/QCC body (Sqcd + SPqcd, T.800 A.6.4/A.6.5) into a
+/// QuantTable, BODY-driven: exactly the subband entries the marker carries
+/// are read (style 0: one byte each; style 2: two; style 1: LL only, the
+/// rest derived per E.5), and the remaining bands default to eps 0 /
+/// mant 0 — openjpeg's zero-initialised stepsizes, so a component whose
+/// decomposition needs more bands than the marker signalled decodes the
+/// same way (p0_08). Whether a table covers its components is checked
+/// separately (checkQuantCoverage), once every COD/COC is known, so the
+/// parse depends on no other marker's order.
 fn parseQuantTable(
     report: *ValidationReport,
     allocator: Allocator,
     table: *QuantTable,
-    num_decomp_levels: u8,
     body: []const u8,
     offset: usize,
 ) Allocator.Error!void {
@@ -2091,76 +2336,88 @@ fn parseQuantTable(
     if (quant_style > 2) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
     }
+    table.* = .{ .guard_bits = guard_bits, .quant_style = quant_style, .offset = offset, .present = true };
+    // Default every band to eps 0 (M_b = G_b - 1), mant 0.
+    table.mb = @splat(if (guard_bits >= 1) guard_bits - 1 else 0);
+    table.expn = @splat(0);
+    table.mant = @splat(0);
+    switch (quant_style) {
+        // Style 0: no quantization (reversible / 5/3). One SPqcd byte per
+        // subband — eps_b in bits 7..3, low 3 reserved.
+        0 => {
+            const count: usize = @min(body.len - 1, table.mb.len);
+            var sb: usize = 0;
+            while (sb < count) : (sb += 1) {
+                const eps: u8 = body[1 + sb] >> 3;
+                const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
+                table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                table.expn[sb] = eps;
+            }
+            table.entries = @intCast(count);
+        },
+        // Style 2: scalar expounded (irreversible / 9/7). Two bytes per
+        // subband: eps_b in bits 15..11, mantissa mu_b in 10..0.
+        2 => {
+            const count: usize = @min((body.len - 1) / 2, table.mb.len);
+            var sb: usize = 0;
+            while (sb < count) : (sb += 1) {
+                const off2: usize = 1 + 2 * sb;
+                const eps: u8 = body[off2] >> 3;
+                const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
+                table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                table.expn[sb] = eps;
+                table.mant[sb] = ((@as(u16, body[off2]) & 0x07) << 8) | @as(u16, body[off2 + 1]);
+            }
+            table.entries = @intCast(count);
+            if ((body.len - 1) % 2 != 0) try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + body.len - 1, "odd SPqcd byte count for scalar expounded quantization");
+        },
+        // Style 1: scalar derived (irreversible). Only LL's (expn,mant)
+        // is encoded (2 bytes); siblings derive per T.800 E.5:
+        //   expn_b = max(0, expn_0 - floor((b-1)/3)); mant_b = mant_0.
+        1 => {
+            if (body.len < 3) {
+                try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+                return;
+            }
+            const expn0: u8 = body[1] >> 3;
+            const mant0: u16 = ((@as(u16, body[1]) & 0x07) << 8) | @as(u16, body[2]);
+            var sb: usize = 0;
+            while (sb < table.mb.len) : (sb += 1) {
+                const dec_levels: u8 = if (sb == 0) 0 else @intCast((sb - 1) / 3);
+                const e: u8 = if (expn0 > dec_levels) expn0 - dec_levels else 0;
+                table.expn[sb] = e;
+                table.mant[sb] = mant0;
+                const sum: u16 = @as(u16, guard_bits) + @as(u16, e);
+                table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+            }
+            table.entries = @intCast(table.mb.len);
+        },
+        else => {},
+    }
+}
 
-    // Populate per-subband M_b (T.800 A.6.4 Table A.30 + E.1). SIZ/COD
-    // parsing seeded num_components / num_decomp_levels; we lay M_b
-    // across subband index space here so the tier-1 dispatcher can pick
-    // it up per (resolution, band).
-    {
-        table.guard_bits = guard_bits;
-        table.quant_style = quant_style;
-        // u16: parseCodBody rejects decomp > 32 (un-publishing params), but
-        // this math must not be one marker-ordering quirk away from a u8
-        // overflow panic (1 + 3*200 was exactly that before the range fix).
-        const num_subbands: u16 = 1 + 3 * @as(u16, num_decomp_levels);
-        switch (quant_style) {
-            // Style 0: no quantization (reversible / 5/3). Each subband
-            // gets one SPqcd byte — eps_b in bits 7..3, low 3 reserved.
-            0 => {
-                const needed: usize = 1 + @as(usize, num_subbands);
-                if (body.len < needed) {
-                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
-                    return;
-                }
-                var sb: u8 = 0;
-                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
-                    const eps: u8 = body[1 + @as(usize, sb)] >> 3;
-                    // M_b = G_b + eps_b - 1; clamp at 0 if the sum is 0.
-                    const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
-                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
-                }
-            },
-            // Style 2: scalar expounded (irreversible / 9/7). Two bytes
-            // per subband: eps_b in bits 15..11, mantissa mu_b in 10..0.
-            // We only need eps_b for M_b; mantissa belongs to dequant.
-            2 => {
-                const needed: usize = 1 + 2 * @as(usize, num_subbands);
-                if (body.len < needed) {
-                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
-                    return;
-                }
-                var sb: u8 = 0;
-                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
-                    const off2: usize = 1 + 2 * @as(usize, sb);
-                    const eps: u8 = body[off2] >> 3;
-                    const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
-                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
-                    table.expn[sb] = eps;
-                    table.mant[sb] = ((@as(u16, body[off2]) & 0x07) << 8) | @as(u16, body[off2 + 1]);
-                }
-            },
-            // Style 1: scalar derived (irreversible). Only LL's (expn,mant)
-            // is encoded (2 bytes); siblings derive per T.800 E.5:
-            //   expn_b = max(0, expn_0 - floor((b-1)/3)); mant_b = mant_0.
-            1 => {
-                if (body.len < 3) {
-                    try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
-                    return;
-                }
-                const expn0: u8 = body[1] >> 3;
-                const mant0: u16 = ((@as(u16, body[1]) & 0x07) << 8) | @as(u16, body[2]);
-                var sb: u8 = 0;
-                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
-                    const dec_levels: u8 = if (sb == 0) 0 else @intCast((@as(u16, sb) - 1) / 3);
-                    const e: u8 = if (expn0 > dec_levels) expn0 - dec_levels else 0;
-                    table.expn[sb] = e;
-                    table.mant[sb] = mant0;
-                    const sum: u16 = @as(u16, guard_bits) + @as(u16, e);
-                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
-                }
-            },
-            else => {},
-        }
+/// Every component's effective quantization table must carry an entry for
+/// each of its subbands (1 + 3·decomposition levels). Runs once all COD /
+/// COC / QCD / QCC of a header are known — the check is what depends on
+/// marker order, so it lives after the walk, not inside the parse.
+fn checkQuantCoverage(report: *ValidationReport, allocator: Allocator, cp: *const CodingParams) Allocator.Error!void {
+    var c: u16 = 0;
+    const n: u16 = @intCast(@min(@as(usize, cp.num_components), cp.comp_quant.len));
+    var reported_offsets: [17]usize = undefined;
+    var reported: usize = 0;
+    while (c < n) : (c += 1) {
+        const t = cp.quantFor(c);
+        const needed: u16 = 1 + 3 * @as(u16, cp.codingFor(c).num_decomp_levels);
+        if (!t.present or t.entries >= needed) continue;
+        // One finding per table, not per component sharing it.
+        var seen = false;
+        for (reported_offsets[0..reported]) |o| if (o == t.offset) {
+            seen = true;
+        };
+        if (seen) continue;
+        reported_offsets[reported] = t.offset;
+        reported += 1;
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, t.offset, "quantization marker carries fewer subband entries than a component's decomposition needs");
     }
 }
 
@@ -2174,7 +2431,7 @@ fn parseQcdInto(
     body: []const u8,
     offset: usize,
 ) Allocator.Error!void {
-    try parseQuantTable(report, allocator, &cp.quant, cp.num_decomp_levels, body, offset);
+    try parseQuantTable(report, allocator, &cp.quant, body, offset);
 }
 
 /// QCC (T.800 A.6.5): Cqcc (1 byte when Csiz < 257, else 2) names the
@@ -2203,7 +2460,7 @@ fn parseQccBody(
         return;
     }
     var table: QuantTable = .{};
-    try parseQuantTable(report, allocator, &table, cp.num_decomp_levels, body[cw..], offset + cw);
+    try parseQuantTable(report, allocator, &table, body[cw..], offset + cw);
     cp.comp_quant[c] = table;
 }
 
@@ -2221,6 +2478,10 @@ fn findSod(data: []const u8, tp_start: usize, tp_end: usize) ?usize {
         if (data[pos] != 0xFF) return null;
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[pos + 1]);
         if (marker == @intFromEnum(Marker.sod)) return pos;
+        if (marker >= 0xFF30 and marker <= 0xFF3F) {
+            pos += 2; // reserved, no segment (Table A.2)
+            continue;
+        }
         // Length-prefixed marker — skip it.
         if (pos + 4 > tp_end or pos + 4 > data.len) return null;
         const lxxx = std.mem.readInt(u16, data[pos + 2 ..][0..2], .big);
@@ -2247,14 +2508,15 @@ fn findSod(data: []const u8, tp_start: usize, tp_end: usize) ?usize {
 /// one-shot container — init, walk once, deinit.
 const TileWalk = struct {
     params: jp2z.CodingParams,
+    /// Tile rectangle on the REFERENCE grid (origin + extent). Each
+    /// component's tile-component rect derives from it via its own
+    /// sub-sampling (PacketIterator.compRect) — never component 0's.
     image_w: u32,
     image_h: u32,
     tile_x0: u32,
     tile_y0: u32,
     tile_index: u32,
-    precincts_at_r: [33]u32,
-    resolution_offset: [33]usize,
-    slots_per_component: usize,
+    layout: SlotLayout,
     states: []packet_header.SubbandState,
     initialised: usize,
     iter: PocSequencer,
@@ -2265,10 +2527,30 @@ const TileWalk = struct {
     total: usize,
     packets_seen: usize,
 
+    /// Flat per-component SubbandState pool layout. Per-component because
+    /// COC and sub-sampling give components different resolution counts and
+    /// precinct grids:
+    ///   slot(c, r, sb, p) = base(c) + res_offset[c][r] + sb·precincts_at_r[c][r] + p
+    /// Components past the 16th share slot 15's geometry (their SIZ
+    /// descriptors repeat it; COC/RGN for them are c145), each with its own
+    /// contiguous run: base(c) = base(15) + (c - 15)·slots[15].
+    const SlotLayout = struct {
+        precincts_at_r: [16][33]u32 = @splat(@splat(0)),
+        res_offset: [16][33]usize = @splat(@splat(0)),
+        slots: [16]usize = @splat(0),
+        base: [16]usize = @splat(0),
+
+        fn index(self: *const SlotLayout, c: u16, r: u8, sb: u8, p: u32) usize {
+            const cm: usize = @min(c, self.slots.len - 1);
+            const b: usize = if (c < self.base.len) self.base[c] else self.base[self.base.len - 1] + (@as(usize, c) - (self.base.len - 1)) * self.slots[self.slots.len - 1];
+            return b + self.res_offset[cm][r] + @as(usize, sb) * @as(usize, self.precincts_at_r[cm][r]) + @as(usize, p);
+        }
+    };
+
     /// Build the per-component slot pool (one SubbandState per
     /// (component, resolution, subband, precinct)) and seed the packet
-    /// iterator. `image_w`/`image_h` are this tile's COMPONENT extent
-    /// (sub-sampled), not the reference grid.
+    /// iterator. `image_w`/`image_h`/`tile_x0`/`tile_y0` are the tile's
+    /// REFERENCE-grid rect; per-component rects are derived here.
     fn init(
         allocator: Allocator,
         params: jp2z.CodingParams,
@@ -2278,30 +2560,38 @@ const TileWalk = struct {
         tile_y0: u32,
         tile_index: u32,
     ) Allocator.Error!TileWalk {
-        const num_resolutions: u8 = params.num_decomp_levels + 1;
-
-        var precincts_at_r: [33]u32 = @splat(0);
-        var resolution_offset: [33]usize = @splat(0);
-        var slots_per_component: usize = 0;
+        var layout: SlotLayout = .{};
+        const ngeo: u16 = @intCast(@min(@as(usize, params.num_components), layout.slots.len));
+        var running: usize = 0;
         {
-            var r: u8 = 0;
-            while (r < num_resolutions) : (r += 1) {
-                resolution_offset[r] = slots_per_component;
-                const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
-                const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-                const grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
-                precincts_at_r[r] = grid.width * grid.height;
-                slots_per_component += @as(usize, subbands.subbandCount(r)) * @as(usize, precincts_at_r[r]);
+            var c: u16 = 0;
+            while (c < ngeo) : (c += 1) {
+                const cc = params.codingFor(c);
+                const rect = PacketIterator.compRect(&params, tile_x0, tile_y0, image_w, image_h, c);
+                var slots: usize = 0;
+                var r: u8 = 0;
+                while (r < cc.num_decomp_levels + 1) : (r += 1) {
+                    layout.res_offset[c][r] = slots;
+                    const ppx: u4 = @intCast(cc.precinct_sizes[r].x_exp);
+                    const ppy: u4 = @intCast(cc.precinct_sizes[r].y_exp);
+                    const grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, r, ppx, ppy);
+                    layout.precincts_at_r[c][r] = grid.width * grid.height;
+                    slots += @as(usize, subbands.subbandCount(r)) * @as(usize, layout.precincts_at_r[c][r]);
+                }
+                layout.slots[c] = slots;
+                layout.base[c] = running;
+                running += slots;
             }
         }
-
-        const total_slots: usize = slots_per_component * @as(usize, params.num_components);
+        // Components past the 16th: one more run of slot 15's size each.
+        var total_slots: usize = running;
+        if (params.num_components > ngeo) total_slots += (@as(usize, params.num_components) - ngeo) * layout.slots[layout.slots.len - 1];
         const states = try allocator.alloc(packet_header.SubbandState, total_slots);
         errdefer allocator.free(states);
 
-        // slotIndex is monotonic in the (c,r,sb,p) nesting below, so on
-        // OOM mid-loop every slot < `initialised` is live — a single
-        // prefix free covers partial init.
+        // Slots are filled in ascending index order below, so on OOM
+        // mid-loop every slot < `initialised` is live — a single prefix
+        // free covers partial init.
         var initialised: usize = 0;
         errdefer {
             var i: usize = 0;
@@ -2310,13 +2600,16 @@ const TileWalk = struct {
         {
             var c: u16 = 0;
             while (c < params.num_components) : (c += 1) {
+                const cc = params.codingFor(c);
+                const rect = PacketIterator.compRect(&params, tile_x0, tile_y0, image_w, image_h, c);
+                const cm: usize = @min(c, layout.slots.len - 1);
                 var r: u8 = 0;
-                while (r < num_resolutions) : (r += 1) {
+                while (r < cc.num_decomp_levels + 1) : (r += 1) {
                     const sb_count = subbands.subbandCount(r);
-                    const pcount = precincts_at_r[r];
-                    const ppx: u4 = @intCast(params.precinct_sizes[r].x_exp);
-                    const ppy: u4 = @intCast(params.precinct_sizes[r].y_exp);
-                    const grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, r, ppx, ppy);
+                    const pcount = layout.precincts_at_r[cm][r];
+                    const ppx: u4 = @intCast(cc.precinct_sizes[r].x_exp);
+                    const ppy: u4 = @intCast(cc.precinct_sizes[r].y_exp);
+                    const grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, r, ppx, ppy);
                     var sb: u8 = 0;
                     while (sb < sb_count) : (sb += 1) {
                         var p: u32 = 0;
@@ -2324,11 +2617,11 @@ const TileWalk = struct {
                             const prc_x = p % grid.width;
                             const prc_y = p / grid.width;
                             const cblks = subbands.cblksInPrecinctSubband(
-                                tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels,
+                                rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels,
                                 r, sb, prc_x, prc_y, ppx, ppy,
-                                params.cblk_width_exp, params.cblk_height_exp,
+                                cc.cblk_width_exp, cc.cblk_height_exp,
                             );
-                            const slot = slotIndex(@intCast(c), r, sb, p, resolution_offset, precincts_at_r, slots_per_component);
+                            const slot = layout.index(c, r, sb, p);
                             states[slot] = try packet_header.SubbandState.initFromGrid(
                                 allocator,
                                 cblks.width,
@@ -2352,9 +2645,7 @@ const TileWalk = struct {
             .tile_index = tile_index,
             .tile_x0 = tile_x0,
             .tile_y0 = tile_y0,
-            .precincts_at_r = precincts_at_r,
-            .resolution_offset = resolution_offset,
-            .slots_per_component = slots_per_component,
+            .layout = layout,
             .states = states,
             .initialised = initialised,
             .iter = iter,
@@ -2400,14 +2691,7 @@ fn walkTilePartBody(
     phdr: ?*PackedHeaders,
 ) Allocator.Error!TilePartResult {
     const params = tw.params;
-    const image_w = tw.image_w;
-    const image_h = tw.image_h;
-    const tile_x0 = tw.tile_x0;
-    const tile_y0 = tw.tile_y0;
     const states = tw.states;
-    const resolution_offset = tw.resolution_offset;
-    const precincts_at_r = tw.precincts_at_r;
-    const slots_per_component = tw.slots_per_component;
 
     var body_pos: usize = 0;
     // PLT cross-check state (A.7.3): entry N describes the Nth packet of
@@ -2443,6 +2727,11 @@ fn walkTilePartBody(
             body_pos += 6;
         }
 
+        // This packet's component: its own coding style (COC), tile-component
+        // rect (sub-sampling) and ROI shift (RGN).
+        const comp: u16 = @intCast(pi.component);
+        const cc = params.codingFor(comp);
+        const rect = PacketIterator.compRect(&params, tw.tile_x0, tw.tile_y0, tw.image_w, tw.image_h, comp);
         // Per-packet view: SubbandStates for (component, resolution,
         // all-subbands-at-r, this-precinct). value-copied in (will be
         // copied out after readPacketHeader has mutated state).
@@ -2450,7 +2739,7 @@ fn walkTilePartBody(
         const sb_count = subbands.subbandCount(pi.resolution);
         var sb: u8 = 0;
         while (sb < sb_count) : (sb += 1) {
-            const slot = slotIndex(@intCast(pi.component), pi.resolution, sb, pi.precinct, resolution_offset, precincts_at_r, slots_per_component);
+            const slot = tw.layout.index(comp, pi.resolution, sb, pi.precinct);
             view_buf[sb] = states[slot];
         }
         const view = view_buf[0..sb_count];
@@ -2459,7 +2748,7 @@ fn walkTilePartBody(
         const hdr_bytes: []const u8 = if (phdr) |pk| pk.buf[pk.pos..] else tp_body[body_pos..];
         var reader = BitReader.init(hdr_bytes, .{ .ff_stuffing = true });
         const seg_alloc: ?Allocator = if (extractor != null) allocator else null;
-        const contribution_len = (try packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty, seg_alloc)) orelse {
+        const contribution_len = (try packet_header.readPacketHeader(&reader, view, pi.layer, cc.cblksty, seg_alloc)) orelse {
             if (phdr) |pk| {
                 // The store ran dry mid-header: PPM/PPT holds fewer header
                 // bytes than this tile-part's packets need.
@@ -2473,7 +2762,7 @@ fn walkTilePartBody(
         // Write back the (mutated) SubbandState entries.
         sb = 0;
         while (sb < sb_count) : (sb += 1) {
-            const slot = slotIndex(@intCast(pi.component), pi.resolution, sb, pi.precinct, resolution_offset, precincts_at_r, slots_per_component);
+            const slot = tw.layout.index(comp, pi.resolution, sb, pi.precinct);
             states[slot] = view[sb];
         }
 
@@ -2504,9 +2793,10 @@ fn walkTilePartBody(
         // rect + zero_bitplanes + cblksty on first sight and tracks the
         // running total_passes.
         if (extractor) |ex| {
-            const ppx: u4 = @intCast(params.precinct_sizes[pi.resolution].x_exp);
-            const ppy: u4 = @intCast(params.precinct_sizes[pi.resolution].y_exp);
-            const prc_grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
+            const ppx: u4 = @intCast(cc.precinct_sizes[pi.resolution].x_exp);
+            const ppy: u4 = @intCast(cc.precinct_sizes[pi.resolution].y_exp);
+            const prc_grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, pi.resolution, ppx, ppy);
+            const roishift: u8 = params.roishiftFor(comp);
             const prc_x_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct % prc_grid.width;
             const prc_y_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct / prc_grid.width;
             const data_base = body_pos + hdr_span_in_body;
@@ -2533,12 +2823,12 @@ fn walkTilePartBody(
                             // emit() below catches the structural issue.
                             break;
                         }
-                        const rect = subbands.cblkSubbandRect(
-                            tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels,
+                        const cb_rect = subbands.cblkSubbandRect(
+                            rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels,
                             pi.resolution, ex_sb,
                             prc_x_in_grid, prc_y_in_grid,
                             ppx, ppy,
-                            params.cblk_width_exp, params.cblk_height_exp,
+                            cc.cblk_width_exp, cc.cblk_height_exp,
                             gx, gy,
                         );
                         try ex.appendContribution(.{
@@ -2550,16 +2840,20 @@ fn walkTilePartBody(
                             .grid_x = gx,
                             .grid_y = gy,
                         }, tp_body[data_base + bytes_so_far .. data_base + bytes_so_far + L], .{
-                            .sb_x0 = rect.x0,
-                            .sb_y0 = rect.y0,
-                            .sb_x1 = rect.x1,
-                            .sb_y1 = rect.y1,
+                            .sb_x0 = cb_rect.x0,
+                            .sb_y0 = cb_rect.y0,
+                            .sb_x1 = cb_rect.x1,
+                            .sb_y1 = cb_rect.y1,
                             .zero_bitplanes = cb.zero_bitplanes,
-                            .m_b = params.mbForSubband(@intCast(pi.component), pi.resolution, band_for_key),
-                            .qcd_expn = params.quantFor(@intCast(pi.component)).expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
-                            .qcd_mant = params.quantFor(@intCast(pi.component)).mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            // Coded bit-planes = M_b + ROI shift (T.800 H.1: the
+                            // encoder up-shifts ROI coefficients by SPrgn), minus
+                            // the zero bit-planes — folded into plan.numbps.
+                            .m_b = params.mbForSubband(comp, pi.resolution, band_for_key) +| roishift,
+                            .qcd_expn = params.quantFor(comp).expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .qcd_mant = params.quantFor(comp).mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .roishift = roishift,
                             .src_offset = body_offset_in_data + data_base + bytes_so_far,
-                            .cblksty = params.cblksty,
+                            .cblksty = cc.cblksty,
                             .total_passes = cb.total_passes,
                             .segments = cb.segments.items,
                         });
@@ -2622,24 +2916,6 @@ fn walkTilePartBody(
 }
 
 
-/// 4-D index into the flat per-component SubbandState pool. Layout:
-///   slot(c, r, sb, p) = c·slots_per_component
-///                     + resolution_offset[r]
-///                     + sb·precincts_at_r[r]
-///                     + p
-fn slotIndex(
-    component: u16,
-    resolution: u8,
-    subband_idx: u8,
-    precinct: u32,
-    resolution_offset: [33]usize,
-    precincts_at_r: [33]u32,
-    slots_per_component: usize,
-) usize {
-    const base = @as(usize, component) * slots_per_component;
-    const sb_offset = @as(usize, subband_idx) * @as(usize, precincts_at_r[resolution]);
-    return base + resolution_offset[resolution] + sb_offset + @as(usize, precinct);
-}
 
 fn isKnownMainHeaderMarker(marker: u16) bool {
     return switch (marker) {

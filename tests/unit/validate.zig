@@ -1605,13 +1605,22 @@ test "validate: main-header COC/QCC/RGN each emit jp2_unsupported_marker_ignored
         0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
         0xFF, 0xD9,
     };
-    const coc = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
-    const rgn = prefix ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ suffix;
-    inline for (.{ coc, rgn }) |s| {
+    // COC / RGN are APPLIED (2026-09-06, per-component overrides): a
+    // well-formed COC (Ccoc=0, Scoc=0, SPcoc decomp 1 cblk 64x64 5/3) and a
+    // well-formed RGN (Crgn=0, Srgn=0, shift 8) are silent; a truncated COC
+    // surfaces structurally (bad_marker_length), never as "ignored".
+    const coc_ok = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x09, 0x00, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01 } ++ suffix;
+    const rgn_ok = prefix ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ suffix;
+    inline for (.{ coc_ok, rgn_ok }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
-        try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
+        try std.testing.expect(!hasFinding(report, .jp2_unsupported_marker_ignored));
     }
+    const coc_short = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    var rep_coc_short = try jp2z.validate(std.testing.allocator, &coc_short);
+    defer rep_coc_short.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep_coc_short, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(hasFinding(rep_coc_short, .bad_marker_length));
     // QCC is APPLIED (2026-09-06): a well-formed one (Cqcc=0, Sqcc G=2 style 0,
     // 4 SPqcc bytes for decomp=1) is silent; a truncated one surfaces
     // structurally (like QCD), never as "ignored".
@@ -1676,13 +1685,20 @@ test "validate: tile-part-header COC/QCC/RGN each emit jp2_unsupported_marker_ig
     // SOT (Lsot=10, Isot=0, Psot=0 → to EOC, TPsot=0, TNsot=1).
     const sot = [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
     const sod_eoc = [_]u8{ 0xFF, 0x93, 0xFF, 0xD9 }; // SOD then EOC (empty body)
-    const coc = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
-    const rgn = prefix ++ sot ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ sod_eoc;
-    inline for (.{ coc, rgn }) |s| {
+    // Tile-part COC / RGN are APPLIED (2026-09-06): well-formed ones are
+    // silent; a truncated COC surfaces structurally.
+    const coc_ok = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x09, 0x00, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01 } ++ sod_eoc;
+    const rgn_ok = prefix ++ sot ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ sod_eoc;
+    inline for (.{ coc_ok, rgn_ok }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
-        try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
+        try std.testing.expect(!hasFinding(report, .jp2_unsupported_marker_ignored));
     }
+    const coc_short = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
+    var rep_coc_short = try jp2z.validate(std.testing.allocator, &coc_short);
+    defer rep_coc_short.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep_coc_short, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(hasFinding(rep_coc_short, .bad_marker_length));
     // Negatives: an EMPTY tile-part header, one carrying a BENIGN marker
     // (COM 0xFF64 — not a coding override), and one carrying a WELL-FORMED
     // POC (applied, not ignored) may not fire the finding. The benign case
@@ -2361,6 +2377,8 @@ const MiniStreamOpts = struct {
     layers: u16 = 1,
     /// COD Scod: bit 1 SOP, bit 2 EPH (custom precincts are not used here).
     scod: u8 = 0,
+    /// COD SGcod progression order (0 LRCP, 1 RLCP, 2 RPCL, 3 PCRL, 4 CPRL).
+    prog: u8 = 0,
     /// COD decomposition levels. >0 needs a matching `qcd_body`.
     decomp: u8 = 0,
     /// QCD body after Lqcd (Sqcd + SPqcd). Default: style 0, G=2, one LL byte.
@@ -2403,7 +2421,7 @@ fn buildPackedMiniStream(allocator: std.mem.Allocator, o: MiniStreamOpts) ![]u8 
         try buf.appendSlice(allocator, &.{ prec, 0x01, 0x01 });
     }
     // COD — Scod, LRCP, `layers`, no MCT, `decomp`, cblk 64x64, 5/3
-    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, 0x00, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, 0x00, 0x01 };
+    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, o.prog, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, 0x00, 0x01 };
     std.mem.writeInt(u16, cod[6..8], o.layers, .big);
     // QCD — Lqcd = 2 + body
     var qcd: std.ArrayList(u8) = .empty;
@@ -3185,4 +3203,191 @@ test "cleanroom: d2_colr (tile-part COD switches progression on tiles 1 and 3) b
             }
         }
     }
+}
+
+// ── COC / RGN per-component overrides (T.800 A.6.2 / A.6.3) ────────
+//
+// COC gives one component its own decomposition count, code-block size and
+// style, wavelet and precincts; RGN gives it an ROI up-shift that pushes
+// the coded bit-planes past M_b. Both were c145-ignored. Ten ISO fixtures
+// use them and EVERY one failed strict validation for it: the packet walk
+// drove the component with the main COD geometry (desync → false entropy
+// findings) or the pass budget ignored the ROI shift (false c253/c255).
+
+const p0_02_j2k = @embedFile("fixtures/conformance/p0_02.j2k");
+const p0_03_j2k = @embedFile("fixtures/conformance/p0_03.j2k");
+const p0_06_j2k = @embedFile("fixtures/conformance/p0_06.j2k");
+const p1_01_j2k = @embedFile("fixtures/conformance/p1_01.j2k");
+const p1_07_j2k = @embedFile("fixtures/conformance/p1_07.j2k");
+const p0_02_t1_oracle = @embedFile("fixtures/oracles/p0_02.t1.bin");
+const p0_03_t1_oracle = @embedFile("fixtures/oracles/p0_03.t1.bin");
+const p1_01_t1_oracle = @embedFile("fixtures/oracles/p1_01.t1.bin");
+const p1_07_t1_oracle = @embedFile("fixtures/oracles/p1_07.t1.bin");
+
+test "validate: main-header COC (decomp 1 on component 1) walks every packet in LRCP, RPCL and CPRL — no c145" {
+    const allocator = std.testing.allocator;
+    // Csiz=2, COD decomp 0. COC for component 1: Lcoc=9, Ccoc=1, Scoc=0,
+    // SPcoc decomp=1 cblk 64x64 cbsty 0 5/3. Packets: comp 0 → 1 (r0),
+    // comp 1 → 2 (r0, r1) = 3 empty packets in any progression.
+    for ([_]u8{ 0, 2, 4 }) |prog| {
+        const stream = try buildPackedMiniStream(allocator, .{
+            .components = 2,
+            .prog = prog,
+            .main_extra = &.{ 0xFF, 0x53, 0x00, 0x09, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01 },
+            .body = &.{ 0x00, 0x00, 0x00 },
+        });
+        defer allocator.free(stream);
+        var rep = try jp2z.validate(allocator, stream);
+        defer rep.deinit(allocator);
+        try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+        try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+        try std.testing.expect(!hasFinding(rep, .jp2_packets_under_read));
+        try std.testing.expect(rep.isOk());
+    }
+}
+
+test "validate: main-header RGN (ROI shift 8 on component 0) is applied — no c145, clean walk" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep.isOk());
+}
+
+test "deepValidate strict: the six vendored COC/RGN ISO fixtures accept with no ignored marker" {
+    const allocator = std.testing.allocator;
+    const fixtures = [_]struct { name: []const u8, data: []const u8 }{
+        .{ .name = "p0_02", .data = p0_02_j2k }, // COC, TERMALL+PTERM+SEGSYM, dx=2
+        .{ .name = "p0_03", .data = p0_03_j2k }, // tile-part RGN shift 7, signed 4-bit, RPCL, 2x2 tiles
+        .{ .name = "p0_06", .data = p0_06_j2k }, // COC (9/7 vs 5/3 per component), main+tile RGN, 4 comps
+        .{ .name = "p0_13", .data = p0_13_j2k }, // 257 comps, COC, QCC, RGN
+        .{ .name = "p1_01", .data = p1_01_j2k }, // COC
+        .{ .name = "p1_07", .data = p1_07_j2k }, // COC with custom precincts, dx=4 on comp 1
+    };
+    for (fixtures) |f| {
+        var rep = try jp2z.internal.deepValidate(allocator, f.data, true);
+        defer rep.deinit(allocator);
+        if (rep.overall == .fail or hasFinding(rep, .jp2_unsupported_marker_ignored)) {
+            std.debug.print("\n[coc/rgn] {s}: overall={s}\n", .{ f.name, @tagName(rep.overall) });
+            for (rep.findings.items) |fd| if (fd.severity == .warn or fd.severity == .fail) std.debug.print("  {s} {s} @{?d}\n", .{ @tagName(fd.severity), @tagName(fd.code), fd.offset });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "corpus: the three large COC fixtures (p0_05, p0_08, p1_03) accept under strict validation" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const root_z = std.c.getenv("OPENJPEG_DATA") orelse return error.SkipZigTest;
+    const root = std.mem.span(root_z);
+    for ([_][]const u8{ "p0_05.j2k", "p0_08.j2k", "p1_03.j2k" }) |name| {
+        const path = try std.fs.path.join(allocator, &.{ root, "input", "conformance", name });
+        defer allocator.free(path);
+        var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+        defer file.close(io);
+        var fr = file.reader(io, &.{});
+        const data = try fr.interface.allocRemaining(allocator, .limited(8 * 1024 * 1024));
+        defer allocator.free(data);
+        var rep = try jp2z.internal.deepValidate(allocator, data, true);
+        defer rep.deinit(allocator);
+        if (rep.overall == .fail or hasFinding(rep, .jp2_unsupported_marker_ignored)) {
+            std.debug.print("\n[coc corpus] {s}: overall={s}\n", .{ name, @tagName(rep.overall) });
+            for (rep.findings.items) |fd| if (fd.severity == .warn or fd.severity == .fail) std.debug.print("  {s} {s} @{?d}\n", .{ @tagName(fd.severity), @tagName(fd.code), fd.offset });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+/// Byte-perfect tier-1 comparison of every oracle record against the
+/// matching jp2z plan. The dump hardcodes tile 0 and records ABSOLUTE
+/// band coordinates, so plans are keyed by (component, resolution, band,
+/// bandOrigin(tile-component origin) + subband-internal rect), with the
+/// tile-component origin on the component's sub-sampled grid and the
+/// component's own decomposition count.
+fn expectT1Oracle(allocator: std.mem.Allocator, data: []const u8, dump: []const u8, label: []const u8) !void {
+    const records = try parseOracleDump(allocator, dump);
+    defer freeOracleRecords(allocator, records);
+    var list = try jp2z.internal.extractCblkPlans(allocator, data);
+    defer list.deinit(allocator);
+    var rep = try jp2z.validate(allocator, data);
+    defer rep.deinit(allocator);
+    const p = rep.coding_params orelse return error.NoCodingParams;
+    const xsiz = p.image_x0 + rep.width.?;
+    const ysiz = p.image_y0 + rep.height.?;
+    var compared: u32 = 0;
+    for (records) |rec| {
+        for (list.plans) |plan| {
+            if (plan.component != rec.component or plan.resolution != rec.resno or plan.band != rec.orient) continue;
+            const tr = p.tileRect(xsiz, ysiz, plan.tile);
+            const ci: usize = @min(plan.component, 15);
+            const dx: u32 = p.comp_dx[ci];
+            const dy: u32 = p.comp_dy[ci];
+            const tcx0 = (tr.x0 + dx - 1) / dx;
+            const tcy0 = (tr.y0 + dy - 1) / dy;
+            const decomp = p.codingFor(plan.component).num_decomp_levels;
+            const bo = jp2z.internal.bandOrigin(tcx0, tcy0, decomp, plan.resolution, plan.band);
+            if (bo.x0 + plan.sb_x0 != rec.cblk_x0 or bo.y0 + plan.sb_y0 != rec.cblk_y0) continue;
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            if (cblk.coeffs.len != rec.data.len) {
+                std.debug.print("\n[{s} oracle] tile {d} c{d} r{d} b{d} sb({d},{d}): size {d} vs oracle {d}\n", .{ label, plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, cblk.coeffs.len, rec.data.len });
+                return error.TestUnexpectedResult;
+            }
+            for (cblk.coeffs, 0..) |c, i| {
+                const ours = jp2z.internal.coeffToOpenJpegI32(c);
+                if (ours != rec.data[i]) {
+                    std.debug.print("\n[{s} oracle] tile {d} c{d} r{d} b{d} sb({d},{d}) numbps {d}/{d} passes {d}: [{d}] ours={d} oj={d}\n", .{ label, plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.numbps, rec.numbps, plan.total_passes, i, ours, rec.data[i] });
+                    return error.MismatchedCoefficients;
+                }
+            }
+            compared += 1;
+            break;
+        }
+    }
+    if (compared != records.len) {
+        std.debug.print("\n[{s} oracle] matched {d} of {d} records\n", .{ label, compared, records.len });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "oracle dump: p0_02 (COC: cblk 32, TERMALL+PTERM+SEGSYM, dx=2) byte-perfect" {
+    try expectT1Oracle(std.testing.allocator, p0_02_j2k, p0_02_t1_oracle, "p0_02");
+}
+
+test "oracle dump: p1_01 (COC) byte-perfect" {
+    try expectT1Oracle(std.testing.allocator, p1_01_j2k, p1_01_t1_oracle, "p1_01");
+}
+
+test "oracle dump: p1_07 (COC with custom precincts, component 1 dx=4) byte-perfect" {
+    try expectT1Oracle(std.testing.allocator, p1_07_j2k, p1_07_t1_oracle, "p1_07");
+}
+
+test "oracle dump: p0_03 (tile-part RGN shift 7: coded planes = M_b + 7 - zbp) byte-perfect pre-descale" {
+    try expectT1Oracle(std.testing.allocator, p0_03_j2k, p0_03_t1_oracle, "p0_03");
+}
+
+test "validate: reserved markers FF30..FF3F carry no segment — skipped in main and tile-part headers (p0_02's FF30)" {
+    // T.800 Table A.2. p0_02 puts FF30 right after its COM; the walker read
+    // the next two bytes (the SOT marker itself) as a length and declared
+    // the stream truncated at the first tile-part.
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x30 }, .tp_hdr_extra = &.{ 0xFF, 0x3F } });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(!hasFinding(rep, .truncated_stream));
+    try std.testing.expect(!hasFinding(rep, .unknown_marker));
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+}
+
+const p0_13_t1_oracle = @embedFile("fixtures/oracles/p0_13.t1.bin");
+
+test "oracle dump: p0_13 (257 components, COC decomp/cblk per component, QCC, RGN shift 11) byte-perfect" {
+    // The Phase-1 openjpeg wrapper panics on this file (16-bit output cast,
+    // 257 components), so the dump comes from opj_decompress; the tier-1
+    // comparison itself needs no decode.
+    try expectT1Oracle(std.testing.allocator, p0_13_j2k, p0_13_t1_oracle, "p0_13");
 }

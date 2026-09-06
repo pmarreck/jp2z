@@ -58,6 +58,7 @@ pub const CblkExtractor = struct {
         /// render path dequantizes with the right stepsize per tile.
         qcd_expn: u8 = 0,
         qcd_mant: u16 = 0,
+        roishift: u8 = 0,
         /// Codestream byte offset of the first contribution (plan anchor).
         src_offset: usize = 0,
         cblksty: u8 = 0,
@@ -112,6 +113,7 @@ pub const CblkExtractor = struct {
             m_b: u8,
             qcd_expn: u8,
             qcd_mant: u16,
+            roishift: u8 = 0,
             src_offset: usize,
             cblksty: u8,
             total_passes: u32,
@@ -129,6 +131,7 @@ pub const CblkExtractor = struct {
                 .m_b = meta.m_b,
                 .qcd_expn = meta.qcd_expn,
                 .qcd_mant = meta.qcd_mant,
+                .roishift = meta.roishift,
                 .src_offset = meta.src_offset,
                 .cblksty = meta.cblksty,
             };
@@ -170,6 +173,7 @@ pub const CblkExtractor = struct {
                 .numbps = if (entry.m_b > entry.zero_bitplanes) entry.m_b - entry.zero_bitplanes else 0,
                 .qcd_expn = entry.qcd_expn,
                 .qcd_mant = entry.qcd_mant,
+                .roishift = entry.roishift,
                 .src_offset = entry.src_offset,
                 .total_passes = entry.total_passes,
                 .cblksty = entry.cblksty,

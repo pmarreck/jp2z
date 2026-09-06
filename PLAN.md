@@ -131,6 +131,34 @@ those fixtures, and OpenJPEG retirement is gated on it).
       AND the coding-pass budget was under-counted. CodeBlockState now
       records last_contribution_passes; the extractor keys on it. RED:
       crafted 1-pass/0-byte packet + the 7 e1 cblks vs oracle values.
+- [x] **COC + RGN per-component overrides, per-component sub-sampled
+      geometry** (2026-09-06 ~1:20pm EDT). Ten ISO fixtures use COC/RGN and
+      EVERY one failed strict validation for it. Now: CompCoding (decomp,
+      cblk, cbsty, wavelet, precincts) per component with tile COC > tile
+      COD > main COC > main COD; RGN shift folded into numbps (coded planes
+      = M_b + shift − zbp) and descaled after tier-1 (H.2); the packet
+      iterator, POC sequencer index, tile-walk slot pool and extractor all
+      key on (component, resolution) with each component's OWN sub-sampled
+      tile rect (was component 0's for all — p1_07's 4:1 component). Also
+      found on the way: reserved markers FF30..FF3F have no segment (p0_02:
+      walker read the SOT as a length); quantization tables are now body-
+      driven with a per-component coverage check (p0_08's QCC lengths),
+      which retired the QCD-before-COD queue; the non-PTERM over-read cap
+      was recalibrated 4→12 from a 57-file census (p0_08 10, file6 8).
+      RED: crafted COC in LRCP/RPCL/CPRL, crafted RGN, 6 vendored fixtures
+      (+3 corpus-gated), byte-perfect T1 oracles for p0_02/p0_03/p1_01/
+      p1_07/p0_13. Census: tier-1 byte-perfect vs openjpeg on ALL 57
+      conformance fixtures. Matrix 23 controls, 0 FP, floors 15/15/21.
+- [ ] **Per-component wavelets in decode.** COC lets components use
+      different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
+      Validation walks them; decodeCleanroom now REFUSES explicitly
+      (error.UnsupportedMixedWavelets) where the sweep used to grade a
+      silently wrong decode as skip:dim-mismatch. Slice: choose the 5/3 or
+      9/7 reconstruction per component (tile buffers already per component).
+- [ ] **Phase-1 openjpeg wrapper panics on valid inputs** (oracle-only
+      code, scheduled for retirement): 257 components → 16-bit output cast
+      overflow (openjpeg_wrapper.zig:208); 2-component image → colour-space
+      switch `unreachable` (:150). Guard both (error, not panic) or retire.
 - [x] **Tile-part COD overrides** (2026-09-06 ~12:30pm EDT). A.6.1: a
       first-tile-part COD is the tile's coding style (progression, layers,
       MCT, decomp, cblk, wavelet, precincts). parseCodBody → parseCodInto
@@ -171,8 +199,6 @@ those fixtures, and OpenJPEG retirement is gated on it).
         the cleanroom emits codestream order. Decode-only: parse cdef in
         the jp2h walk and permute planes; a crafted mini-JP2 with distinct
         component precisions makes the permutation observable.
-      - **p0_13 (ERROR TooManyComponents)**: needs COC + RGN per-component
-        overrides (QCC landed) + >16-slot decode buffers.
 - [ ] **Toward 100% — residual catchable-corruption classes (audit list):**
       SIZ Rsiz capability value (must be 0 for Part 1 or a known profile
       bit set); COM/CRG/PLM body sanity; COC/QCC per-component override

@@ -40,14 +40,26 @@ switch progression) joins as control 17. No ISO control carries an
 ignored marker any more; the C smoke test's c145 invariant now uses a
 crafted RGN-bearing stream.
 
+2026-09-06 (night): COC and RGN per-component overrides are applied
+(A.6.2 / A.6.3), with per-component sub-sampled tile geometry throughout
+the packet walk. Six more ISO fixtures join as controls (p0_02, p0_03,
+p0_06, p0_13, p1_01, p1_07) — every one of them had been a strict FALSE
+POSITIVE while the markers were ignored, as had the three large COC files
+(p0_05, p0_08, p1_03; corpus-gated test). The MQ over-read cap without
+PTERM is recalibrated 4 → 12 from a census over all 57 conformance files
+(valid maxima: p0_08 10, file6 8, all others <= 3); per-fixture dumps show
+the previous 17 controls keep exactly their 13/13/17 detections. p0_03 and
+p0_13 are undetected by all three entropy probes (a signed 4-bit ROI file
+and a 1×1 image: weak probes, not lost sensitivity).
+
 | Family | Valid controls | False-positive rejects | Unsupported controls accepted | Known-invalid sniper misses | Known-invalid bolter misses | Known-invalid shotgun misses |
 |---|---:|---:|---:|---:|---:|---:|
-| Raw J2K/J2C codestream | 17 | 0 | 0 | 0/17 | 0/17 | 0/17 |
+| Raw J2K/J2C codestream | 23 | 0 | 0 | 0/23 | 0/23 | 0/23 |
 | JP2 container | 3 | 0 | 0 | 0/3 | 0/3 | 0/3 |
 
 Known-invalid mutations damage the mandatory SOC marker at three scales:
 one bit (sniper), one byte (bolter/boltgun), and up to 1 KiB (shotgun).
-All 60 are rejected. All controls and mutations completed classification;
+All 78 are rejected. All controls and mutations completed classification;
 the indeterminate count is zero.
 
 The same scales are also applied inside each first tile-part entropy body.
@@ -58,9 +70,9 @@ independent semantic or specification-grounded label.
 
 | Family | Entropy sniper detected | Entropy bolter detected | Entropy shotgun detected |
 |---|---:|---:|---:|
-| Raw J2K/J2C codestream | 13/17 | 13/17 | 17/17 |
+| Raw J2K/J2C codestream | 15/23 | 15/23 | 21/23 |
 | JP2 container | 3/3 | 3/3 | 3/3 |
-| Total | 16/20 | 16/20 | 20/20 |
+| Total | 18/26 | 18/26 | 24/26 |
 
 The test locks these values as minimum sensitivity floors. Higher detection
 counts pass. The independent OpenJPEG oracle remains available only to the

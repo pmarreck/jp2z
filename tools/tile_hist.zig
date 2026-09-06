@@ -35,6 +35,19 @@ pub fn main() !void {
             }
         }
     }
+    // The tier-1 differential needs only the plans + the oracle dump, so it
+    // runs BEFORE the cleanroom decode: a file the decoder refuses (mixed
+    // wavelets, >16 components) can still have its tier-1 attributed.
+    if (std.c.getenv("JP2Z_DUMP_T1")) |dp| {
+        // The in-process wrapper appends the dump as it decodes. When it
+        // cannot decode a file the CLI can (`opj_decompress` writes the same
+        // dump; the Phase-1 wrapper refuses >16 components and unknown
+        // colour spaces), a pre-generated dump still serves the diff.
+        _ = jp2z.internal.openjpegDecode(a, data) catch |e| {
+            std.debug.print("openjpegDecode failed: {s} (using the dump as found)\n", .{@errorName(e)});
+        };
+        try t1Diff(a, io, data, std.mem.span(dp));
+    }
     const img = jp2z.internal.decodeCleanroom(a, data) catch |e| {
         std.debug.print("decodeCleanroom failed: {s}\n", .{@errorName(e)});
         std.process.exit(3);
@@ -85,7 +98,6 @@ pub fn main() !void {
         }
     }
     std.debug.print("{d}/{d} tiles with max_abs > 1\n", .{ bad_tiles, nt.x * nt.y });
-    if (std.c.getenv("JP2Z_DUMP_T1")) |dp| try t1Diff(a, io, data, std.mem.span(dp));
 }
 
 // ── Optional tier-1 differential (JP2Z_DUMP_T1) ─────────────────────
@@ -140,15 +152,17 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
     const records = try parseOracleDump(a, dump);
     var list = try jp2z.internal.extractCblkPlans(a, data);
     defer list.deinit(a);
-    const p = (try jp2z.internal.inspect(a, data)) orelse return error.NoCodingParams;
-    const img_w = (try jp2z.internal.decodeCleanroom(a, data)).width;
-    const img_h = (try jp2z.internal.decodeCleanroom(a, data)).height;
-    const xsiz = p.image_x0 + img_w;
-    const ysiz = p.image_y0 + img_h;
+    var vrep = try jp2z.validate(a, data);
+    defer vrep.deinit(a);
+    const p = vrep.coding_params orelse return error.NoCodingParams;
+    const xsiz = p.image_x0 + vrep.width.?;
+    const ysiz = p.image_y0 + vrep.height.?;
     var matched: u32 = 0;
     var mismatched: u32 = 0;
     var numbps_diff: u32 = 0;
     var shown: u32 = 0;
+    var max_over: u32 = 0;
+    var max_under: u32 = 0;
     // mismatch histogram by resolution (0..32) and band (0..3)
     var hist: [33][4]u32 = @splat(@splat(0));
     var total: [33][4]u32 = @splat(@splat(0));
@@ -157,7 +171,12 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
             if (plan.component != rec.component or plan.resolution != rec.resno or plan.band != rec.orient) continue;
             // Translate jp2z's tile-relative subband coords to absolute band coords.
             const tr = p.tileRect(xsiz, ysiz, plan.tile);
-            const bo = jp2z.internal.bandOrigin(tr.x0, tr.y0, p.num_decomp_levels, plan.resolution, plan.band);
+            // Tile-component origin on the component's sub-sampled grid, with
+            // the component's own decomposition count (COC).
+            const ci: usize = @min(plan.component, 15);
+            const dxc: u32 = p.comp_dx[ci];
+            const dyc: u32 = p.comp_dy[ci];
+            const bo = jp2z.internal.bandOrigin((tr.x0 + dxc - 1) / dxc, (tr.y0 + dyc - 1) / dyc, p.codingFor(plan.component).num_decomp_levels, plan.resolution, plan.band);
             const abs_x0 = bo.x0 + plan.sb_x0;
             const abs_y0 = bo.y0 + plan.sb_y0;
             if (abs_x0 != rec.cblk_x0 or abs_y0 != rec.cblk_y0) continue;
@@ -166,6 +185,12 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
             if (@as(u32, plan.numbps) != rec.numbps) numbps_diff += 1;
             var cblk = try jp2z.internal.decodePlan(a, plan);
             defer cblk.deinit(a);
+            // Byte-budget view of the same code-block (what deepValidate judges).
+            if (cblk.over_read > max_over) max_over = cblk.over_read;
+            if (cblk.under_read > max_under) max_under = cblk.under_read;
+            if (cblk.over_read > 4 or cblk.under_read > 2) {
+                std.debug.print("  BUDGET tile {d} c{d} r{d} b{d} sb({d},{d}) passes {d} bytes {d} segs {d} numbps {d}: over_read {d} under_read {d}\n", .{ plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.total_passes, plan.data.len, plan.segments.len, plan.numbps, cblk.over_read, cblk.under_read });
+            }
             var bad: usize = 0;
             var first_bad: ?usize = null;
             var k: usize = 0;
@@ -192,7 +217,7 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
             break;
         }
     }
-    std.debug.print("t1-diff: oracle records {d}, jp2z plans {d}, matched {d}, mismatched {d}, numbps-diff {d}\n", .{ records.len, list.plans.len, matched, mismatched, numbps_diff });
+    std.debug.print("t1-diff: oracle records {d}, jp2z plans {d}, matched {d}, mismatched {d}, numbps-diff {d}; budget max over_read {d} max under_read {d}\n", .{ records.len, list.plans.len, matched, mismatched, numbps_diff, max_over, max_under });
     var r: usize = 0;
     while (r < 33) : (r += 1) {
         var b: usize = 0;

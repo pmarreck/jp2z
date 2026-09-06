@@ -66,6 +66,10 @@ pub const CblkDecodePlan = struct {
     /// so the render path must not reach for a global QCD table.
     qcd_expn: u8 = 0,
     qcd_mant: u16 = 0,
+    /// RGN ROI up-shift of the owning component (T.800 A.6.3). Already
+    /// folded into `numbps` (coded planes = M_b + roishift - zero_bitplanes);
+    /// reconstruction scales magnitudes >= 2^roishift back down (H.2).
+    roishift: u8 = 0,
     /// Byte offset in the codestream of this cblk's FIRST contribution —
     /// the anchor a diagnostic finding points a consumer at (aggregate
     /// deep findings name their first offender; hunting an unanchored

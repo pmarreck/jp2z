@@ -40,6 +40,14 @@ const fixtures = [_]Fixture{
     // Tile-part COD overrides (A.6.1): tiles 1 and 3 switch progression to
     // RPCL/CPRL. Was max_abs 254 with the main COD driving every tile.
     .{ .name = "d2_colr.j2c", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/d2_colr.j2c") },
+    // COC / RGN per-component overrides (A.6.2 / A.6.3). Every one of these
+    // was a strict FALSE POSITIVE while the markers were c145-ignored.
+    .{ .name = "p0_02.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_02.j2k") },
+    .{ .name = "p0_03.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_03.j2k") },
+    .{ .name = "p0_06.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_06.j2k") },
+    .{ .name = "p0_13.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_13.j2k") },
+    .{ .name = "p1_01.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_01.j2k") },
+    .{ .name = "p1_07.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_07.j2k") },
     .{ .name = "file1.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file1.jp2") },
     .{ .name = "file9.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file9.jp2") },
     // Real-encoder multi-tile lossy JP2 (12 tiles, 8 layers, RPCL, custom
@@ -94,6 +102,7 @@ fn entropyRange(data: []const u8, start: usize) ?struct { start: usize, end: usi
 
 fn runMatrix(allocator: std.mem.Allocator) !Stats {
     var stats = Stats{};
+    const dump_per_fixture = std.c.getenv("MUTATION_MATRIX_DUMP") != null;
     for (fixtures) |fixture| {
         stats.controls += 1;
         stats.controls_by_family[@intFromEnum(fixture.family)] += 1;
@@ -136,10 +145,12 @@ fn runMatrix(allocator: std.mem.Allocator) !Stats {
                 else => unreachable,
             }
             stats.entropy_probes_by_class[class] += 1;
-            if ((try strictOutcome(allocator, mutant)).rejected) {
+            const detected = (try strictOutcome(allocator, mutant)).rejected;
+            if (detected) {
                 stats.entropy_detected_by_class[class] += 1;
                 stats.entropy_detected_by_family_and_class[familyClassIndex(fixture.family, class)] += 1;
             }
+            if (dump_per_fixture) std.debug.print("mutation-matrix: {s} entropy class {d} detected={}\n", .{ fixture.name, class, detected });
         }
     }
     return stats;
@@ -151,7 +162,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual(@as(usize, 0), stats.false_positive_rejects);
     try std.testing.expectEqual([_]usize{ fixtures.len, fixtures.len, fixtures.len }, stats.known_corrupt_by_class);
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
-    try std.testing.expectEqual([_]usize{ 17, 3 }, stats.controls_by_family);
+    try std.testing.expectEqual([_]usize{ 23, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
@@ -159,7 +170,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
     // are probes rather than known-invalid files, so improvement may raise the
     // counts without invalidating the gate.
-    const sensitivity_floor = [_]usize{ 13, 13, 17, 3, 3, 3 };
+    const sensitivity_floor = [_]usize{ 15, 15, 21, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }

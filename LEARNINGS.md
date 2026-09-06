@@ -420,3 +420,42 @@ parseQccBody) with the tile's copy as the target, applied in dependency
 order (COD first, then QCD, then QCC), and a per-tile "broken" ledger so an
 unwalkable tile COD cannot let a later tile-part build a walk over the main
 header's geometry.
+
+## 2026-09-06 — COC/RGN: ten false positives, one census, and a cap that was never derived
+
+Every ISO fixture carrying COC or RGN (ten of 57) failed strict validation.
+The markers were "surfaced but ignored" (c145), which sounds safe and was
+not: a component walked with the main header's decomposition count and
+component 0's tile rect desyncs its packets, and a ROI shift the pass
+budget does not know about turns a valid 25-pass code-block into a c253.
+Applying them meant threading (component, resolution) through the packet
+iterator, the POC sequencer's canonical index, the tile-walk slot pool and
+the extractor, and giving each component its OWN sub-sampled tile rect —
+p1_07's 4:1 component had been laid out on component 0's grid.
+
+Three things fell out of the same fixtures that were not COC/RGN at all:
+- p0_02 puts a reserved marker (FF30) after its COM. T.800 Table A.2 says
+  FF30..FF3F have no segment; every jp2z walker (and my own marker census
+  script) read the next two bytes as a length. One conformance file exists
+  to test exactly this.
+- p0_08's QCC lengths differ per component. Sizing a quantization table by
+  the main COD's decomposition count was the QCD-before-COD bug in a new
+  coat; the fix is body-driven parsing plus a coverage check once every
+  COD/COC is known, which also retired the marker-order queue.
+- The MQ over-read cap of 4 had a derivation ("register lookahead") that
+  two conformant encoders falsify (p0_08 over-reads 10, file6 8, tier-1
+  byte-identical to openjpeg). T.800 allows codeword truncation with 0xFF
+  fill, so no hard bound exists without PTERM. The honest cap is
+  corpus-calibrated: a census over all 57 files, the cap at the observed
+  maximum plus a margin, and the per-fixture matrix dump proving the
+  previous 17 controls kept every detection. A bound with a story is not a
+  bound; a bound with a census is.
+
+The census itself is the result to keep: tier-1 output is now byte-perfect
+against openjpeg on all 57 ISO conformance fixtures, oracle dumps included
+for the COC/RGN/ROI cases so it stays that way.
+
+Process notes, again: two files were mangled by perl `s|...|...|` on text
+containing `|` capture syntax — the exact failure LEARNINGS already
+recorded this morning. The rule is now absolute: any edit whose text
+contains `|` goes through the exact-match Edit tool, never a regex.
