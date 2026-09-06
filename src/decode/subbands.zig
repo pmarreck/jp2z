@@ -65,11 +65,15 @@ pub const ResRect = struct {
 /// For r = num_decomp_levels this returns the full tile-component size.
 pub fn resolutionExtent(tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32, num_decomp_levels: u8, r: u8) ResRect {
     std.debug.assert(r <= num_decomp_levels);
-    const shift: u5 = @intCast(num_decomp_levels - r);
+    // T.800 allows 32 decomposition levels, so the shift reaches 32: a
+    // 5-bit shift amount overflowed on legal input (nonregression fuzz
+    // corpus: issue775, issue823, oss-fuzz2785 all panicked here). Every
+    // helper below computes in u64 with a 6-bit shift.
+    const shift: u6 = @intCast(num_decomp_levels - r);
     const x0 = ceilShift(tile_x0, shift);
     const y0 = ceilShift(tile_y0, shift);
-    const x1 = ceilShift(tile_x0 + image_w, shift);
-    const y1 = ceilShift(tile_y0 + image_h, shift);
+    const x1 = ceilShift64(@as(u64, tile_x0) + image_w, shift);
+    const y1 = ceilShift64(@as(u64, tile_y0) + image_h, shift);
     return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1, .width = x1 - x0, .height = y1 - y0 };
 }
 
@@ -156,11 +160,16 @@ pub fn numPrecincts(
 /// each (r, c) "is (x, y) on a precinct boundary for me?".
 pub fn referenceGridStride(num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4) GridSize {
     std.debug.assert(r <= num_decomp_levels);
-    const x_shift: u5 = @intCast(@as(u8, ppx) + num_decomp_levels - r);
-    const y_shift: u5 = @intCast(@as(u8, ppy) + num_decomp_levels - r);
+    // PPx up to 15 plus up to 32 levels: the exponent reaches 47. A stride
+    // past the reference grid's u32 range saturates — the positional
+    // iterators only compare it against tile extents, which fit u32.
+    const x_shift: u6 = @intCast(@as(u8, ppx) + num_decomp_levels - r);
+    const y_shift: u6 = @intCast(@as(u8, ppy) + num_decomp_levels - r);
+    const w: u64 = @as(u64, 1) << x_shift;
+    const h: u64 = @as(u64, 1) << y_shift;
     return .{
-        .width = @as(u32, 1) << x_shift,
-        .height = @as(u32, 1) << y_shift,
+        .width = if (w > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(w),
+        .height = if (h > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(h),
     };
 }
 
@@ -183,7 +192,7 @@ pub fn precinctIndexAt(
     x: u32,
     y: u32,
 ) u32 {
-    const levelno: u5 = @intCast(num_decomp_levels - r);
+    const levelno: u6 = @intCast(num_decomp_levels - r);
     const pwidth = numPrecincts(tile_x0, tile_y0, image_w, image_h, num_decomp_levels, r, ppx, ppy).width;
     const trx0 = ceilDivPow2U32(tile_x0, levelno);
     const try0 = ceilDivPow2U32(tile_y0, levelno);
@@ -194,8 +203,9 @@ pub fn precinctIndexAt(
     return py * pwidth + px;
 }
 
-fn ceilDivPow2U32(a: u32, s: u5) u32 {
-    return (a + ((@as(u32, 1) << s) - 1)) >> s;
+fn ceilDivPow2U32(a: u32, s: u6) u32 {
+    // u64: `a + 2^s - 1` overflows u32 for a near 2^32 and s up to 47.
+    return @intCast((@as(u64, a) + ((@as(u64, 1) << s) - 1)) >> s);
 }
 
 
@@ -209,14 +219,14 @@ fn ceilDivPow2U32(a: u32, s: u5) u32 {
 /// Only a precinct's top-left visited position triggers, so PCRL/CPRL/RPCL
 /// emit each (r, precinct) exactly once.
 pub fn isOnPrecinctBoundary(tile_x0: u32, tile_y0: u32, num_decomp_levels: u8, r: u8, ppx: u4, ppy: u4, x: u32, y: u32) bool {
-    const levelno: u5 = @intCast(num_decomp_levels - r);
+    const levelno: u6 = @intCast(num_decomp_levels - r);
     const stride = referenceGridStride(num_decomp_levels, r, ppx, ppy);
     const trx0 = ceilDivPow2U32(tile_x0, levelno);
     const try0 = ceilDivPow2U32(tile_y0, levelno);
     const x_ok = (x % stride.width == 0) or
-        (x == tile_x0 and (trx0 << levelno) % stride.width != 0);
+        (x == tile_x0 and (@as(u64, trx0) << levelno) % stride.width != 0);
     const y_ok = (y % stride.height == 0) or
-        (y == tile_y0 and (try0 << levelno) % stride.height != 0);
+        (y == tile_y0 and (@as(u64, try0) << levelno) % stride.height != 0);
     return x_ok and y_ok;
 }
 
@@ -481,10 +491,16 @@ pub fn totalCodeBlocksPerLayerPerComponent(
 }
 
 
-fn ceilShift(n: u32, shift: u5) u32 {
-    if (shift == 0) return n;
-    const divisor: u32 = @as(u32, 1) << shift;
-    return ceilDivU32(n, divisor);
+fn ceilShift(n: u32, shift: u6) u32 {
+    return ceilShift64(n, shift);
+}
+
+/// ceil(n / 2^shift) for a u64 numerator that fits u32 after the shift
+/// (tile extents are u32; shift <= 47).
+fn ceilShift64(n: u64, shift: u6) u32 {
+    if (shift == 0) return @intCast(n);
+    const divisor: u64 = @as(u64, 1) << shift;
+    return @intCast((n + divisor - 1) / divisor);
 }
 
 fn ceilDivU32(a: u32, b: u32) u32 {

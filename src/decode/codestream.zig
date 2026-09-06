@@ -245,9 +245,11 @@ pub const CodingParams = struct {
     /// Number of tiles across (x) and down (y). 1x1 for single-tile.
     pub fn numTilesXY(self: CodingParams, xsiz: u32, ysiz: u32) struct { x: u32, y: u32 } {
         if (self.tile_w == 0 or self.tile_h == 0) return .{ .x = 1, .y = 1 };
-        const nx = (xsiz - self.tile_x0 + self.tile_w - 1) / self.tile_w;
-        const ny = (ysiz - self.tile_y0 + self.tile_h - 1) / self.tile_h;
-        return .{ .x = @max(1, nx), .y = @max(1, ny) };
+        // u64: every operand is a legal u32 (A.5.1), but Ysiz + YTsiz can
+        // exceed 2^32 (issue823 fuzz corpus). The quotient always fits u32.
+        const nx = (@as(u64, xsiz) - self.tile_x0 + self.tile_w - 1) / self.tile_w;
+        const ny = (@as(u64, ysiz) - self.tile_y0 + self.tile_h - 1) / self.tile_h;
+        return .{ .x = @intCast(@max(1, nx)), .y = @intCast(@max(1, ny)) };
     }
 
     /// Component-coordinate rect of tile `isot` (T.800 B.3). xsiz/ysiz are
@@ -256,10 +258,14 @@ pub const CodingParams = struct {
         const nt = self.numTilesXY(xsiz, ysiz);
         const p = isot % nt.x; // tile column
         const q = isot / nt.x; // tile row
-        const x0 = @max(self.tile_x0 + p * self.tile_w, self.image_x0);
-        const y0 = @max(self.tile_y0 + q * self.tile_h, self.image_y0);
-        const x1 = @min(self.tile_x0 + (p + 1) * self.tile_w, xsiz);
-        const y1 = @min(self.tile_y0 + (q + 1) * self.tile_h, ysiz);
+        // u64 intermediates: (q + 1) * YTsiz overflows u32 for legal SIZ
+        // values; the clamps against the image extents bring it back to u32.
+        const tw: u64 = self.tile_w;
+        const th: u64 = self.tile_h;
+        const x0: u32 = @intCast(@min(@max(self.tile_x0 + p * tw, self.image_x0), xsiz));
+        const y0: u32 = @intCast(@min(@max(self.tile_y0 + q * th, self.image_y0), ysiz));
+        const x1: u32 = @intCast(@min(self.tile_x0 + (p + 1) * tw, xsiz));
+        const y1: u32 = @intCast(@min(self.tile_y0 + (q + 1) * th, ysiz));
         return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
     }
 };
@@ -1349,6 +1355,12 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     }
 }
 
+/// Dev diagnostic: when set, the packet walk prints every contribution
+/// (layer, passes, bytes, lblock) for this one code-block to stderr.
+/// Null in production — the only I/O in this module, and only when a tool
+/// (tools/tile_hist.zig via JP2Z_TRACE_CBLK) asks for it.
+pub var debug_trace_key: ?cblk_extract.CblkKey = null;
+
 /// Packed packet headers for ONE tile-part (PPM: T.800 A.7.4, PPT: A.7.5).
 /// The packet walk reads headers (and EPH, when signalled) from
 /// `buf[pos..]` while packet bodies (and SOP) stay in the tile-part body.
@@ -1618,10 +1630,15 @@ fn walkTileParts(
                 s.broken = true;
                 part_ok = false;
             } else if (s.tnsot != 0 and @as(u16, tpsot) + 1 > @as(u16, s.tnsot)) {
-                // More tile-parts than the declared TNsot.
-                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 10, null);
-                s.broken = true;
-                part_ok = false;
+                // More tile-parts than TNsot declares. An encoder off-by-one
+                // seen across a family of real-world files (openjpeg's
+                // nonregression corpus: issue206, issue208, issue235, issue254,
+                // text_GBR, the eci CIELab set — all declare TNsot=5 and emit
+                // six parts); openjpeg ignores TNsot entirely. Surface it and
+                // keep walking: the TPsot sequence and the completion ledger
+                // still guard the structure, and stopping here would leave the
+                // remaining tile-parts un-validated.
+                try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 11, "more tile-parts than TNsot declares");
             }
             if (s.tnsot == 0) {
                 s.tnsot = tnsot; // first nonzero declaration is authoritative
@@ -2893,6 +2910,11 @@ fn walkTilePartBody(
                         // the exhausted stream; the budget check counts them too).
                         if (cb.last_contribution_passes == 0) continue;
                         const L: usize = cb.last_contribution_length;
+                        if (debug_trace_key) |k| {
+                            if (k.tile == tw.tile_index and k.component == comp and k.resolution == pi.resolution and k.band == band_for_key and k.precinct == pi.precinct and k.grid_x == gx and k.grid_y == gy) {
+                                std.debug.print("trace cblk: layer {d} passes {d} bytes {d} lblock {d} total_passes {d} zbp {d} src_offset {d}\n", .{ pi.layer, cb.last_contribution_passes, L, cb.lblock, cb.total_passes, cb.zero_bitplanes, body_offset_in_data + data_base + bytes_so_far });
+                            }
+                        }
                         if (data_base + bytes_so_far + L > tp_body.len) {
                             // Bounds-mismatched contribution; the post-loop
                             // emit() below catches the structural issue.

@@ -244,6 +244,13 @@ pub const internal = struct {
     /// absolute cblk coordinates (multi-tile fixtures).
     pub const bandOrigin = @import("decode/subbands.zig").bandOrigin;
 
+    pub const CblkKey = @import("decode/cblk_extract.zig").CblkKey;
+    /// Dev diagnostic: trace one code-block's packet contributions (see
+    /// codestream.debug_trace_key). Not part of any stable surface.
+    pub fn setTraceCblk(key: ?CblkKey) void {
+        @import("decode/codestream.zig").debug_trace_key = key;
+    }
+
     pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
     /// Full cleanroom decode (5/3 reversible): codestream -> sample planes.
     pub fn decodeCleanroom(allocator: std.mem.Allocator, data: []const u8) !CleanroomImage {

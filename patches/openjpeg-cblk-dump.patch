@@ -26,7 +26,7 @@
              *(job->pret) = OPJ_FALSE;
              opj_free(job);
              return;
-@@ -1993,8 +2001,80 @@
+@@ -1993,8 +2001,94 @@
  #endif
      return;
  }
@@ -80,6 +80,20 @@
 +    OPJ_UINT32 data_len = w * h * (OPJ_UINT32)sizeof(OPJ_INT32);
 +    OPJ_INT32* src = t1->data;
 +    jp2z_dump_maybe_init();
++    /* jp2z tier-2 per-code-block oracle: with JP2Z_DUMP_T2 set, print the
++     * total passes and bytes T2 handed this block so the jp2z packet-header
++     * walker's per-block accounting can be diffed against openjpeg's. */
++    if (getenv("JP2Z_DUMP_T2") != NULL) {
++        OPJ_UINT32 passes = 0, bytes = 0, i;
++        for (i = 0; i < cblk->real_num_segs; i++) {
++            passes += cblk->segs[i].real_num_passes;
++        }
++        for (i = 0; i < cblk->numchunks; i++) {
++            bytes += cblk->chunks[i].len;
++        }
++        fprintf(stderr, "jp2zCB t=%u c=%u r=%u b=%u p=%u x0=%d y0=%d passes=%u bytes=%u\n",
++                tile_idx, comp_idx, resno, orient, precinct_idx, x0, y0, passes, bytes);
++    }
 +    if (jp2z_dump_fp == NULL) {
 +        return;
 +    }
@@ -107,7 +121,7 @@
  static OPJ_BOOL opj_t1_decode_cblk(opj_t1_t *t1,
                                     opj_tcd_cblk_dec_t* cblk,
                                     OPJ_UINT32 orient,
-@@ -2002,7 +2082,11 @@
+@@ -2002,7 +2096,11 @@
                                     OPJ_UINT32 cblksty,
                                     opj_event_mgr_t *p_manager,
                                     opj_mutex_t* p_manager_mutex,
@@ -120,7 +134,7 @@
  {
      opj_mqc_t *mqc = &(t1->mqc);   /* MQC component */
  
-@@ -2179,6 +2263,9 @@
+@@ -2179,6 +2277,9 @@
      if (cblk->decoded_data) {
          t1->data = original_t1_data;
      }

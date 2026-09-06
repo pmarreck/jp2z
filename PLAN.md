@@ -158,6 +158,32 @@ those fixtures, and OpenJPEG retirement is gated on it).
       (+3 corpus-gated), byte-perfect T1 oracles for p0_02/p0_03/p1_01/
       p1_07/p0_13. Census: tier-1 byte-perfect vs openjpeg on ALL 57
       conformance fixtures. Matrix 23 controls, 0 FP, floors 15/15/21.
+- [x] **Fuzz-corpus hardening + tier-2 oracle** (2026-09-06 ~2:20pm EDT).
+      Nonregression census (151 openjpeg-data files) found 7 panics on
+      legal-but-extreme SIZ/COD values: geometry helpers shifted u5 (32
+      decomposition levels overflow), numTilesXY/tileRect did the ceil in
+      u32 (issue823: Ysiz 0xFFF60001 + YTsiz 0xF0000100 > 2^32). All widened
+      to u64 with RED tests. TNsot under-declaration downgraded to WARN
+      (walk continues; issue208/235/text_GBR/mem-b2b now accepted).
+      Diagnostics: JP2Z_TRACE_CBLK per-contribution trace, the openjpeg
+      patch now prints `jp2zCB ... passes= bytes=` per code-block under
+      JP2Z_DUMP_T2, tile-hist prints the matching `oursCB` under
+      JP2Z_DUMP_CB and decodes the layer-0 share alone under JP2Z_LAYER0
+      (plan.first_passes/first_len). kodak_2layers_lrcp: tier-2 agrees
+      with openjpeg on all 9768 blocks; layer 0 alone is budget-clean on
+      all 7263 multi-layer blocks; every anomaly is in layer 2, and JasPer
+      rejects the file (jpc_dec_decodepkt failed) — a TRUE positive that
+      openjpeg decodes leniently. JasPer also rejects 15 more of the 22
+      "openjpeg accepts / jp2z FAILs" files. tile-hist still panics on
+      issue823 in decodeCleanroom (tool-only: the CLI refuses the file).
+- [ ] **Surplus coding passes (test_lossless.j2k, ClearCanvas DICOM
+      OpenJPEG-1.x lineage).** Blocks declare 3·numbps−2 + {2,5,8} passes;
+      the bytes are real (budget clean when all passes are decoded), and
+      openjpeg + JasPer produce byte-identical full-range output by
+      ignoring passes below plane 0. jp2z runs them at a clamped plane and
+      writes bit 0 (T1 diff: ours=±1 where oj=0). Plan: surplus passes
+      keep MQ/state fidelity but never write magnitude; finding 253 → WARN
+      (decodable by convention), numbps>31 stays FAIL.
 - [ ] **Per-component wavelets in decode.** COC lets components use
       different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
       Validation walks them; decodeCleanroom now REFUSES explicitly

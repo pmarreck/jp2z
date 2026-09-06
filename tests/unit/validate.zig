@@ -3633,3 +3633,109 @@ test "validate: cdef naming a channel beyond NC, or two channels for one colour 
     try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
     try std.testing.expect(hasFinding(r2, .jp2_invalid_codestream));
 }
+
+// ── Geometry at the legal extremes must not panic ───────────────────
+//
+// T.800 allows 32 decomposition levels and 2^15 precincts; the geometry
+// helpers held their shift amounts in u5, so a level count of 32 (or
+// PPx 15 + level) overflowed the shift on LEGAL input. Seven files of
+// openjpeg's nonregression fuzz corpus crashed the validator there.
+
+test "validate: 32 decomposition levels with 2^15 precincts walks without panicking" {
+    const allocator = std.testing.allocator;
+    // COD: Scod=1 (user precincts), decomp=32, 33 precinct bytes of 0xFF
+    // (PPx=PPy=15). QCD style 0: 1 + 3*32 = 97 subband bytes.
+    var cod = std.ArrayList(u8).empty;
+    defer cod.deinit(allocator);
+    try cod.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 12 + 33, 0x01, 0x00, 0x00, 0x01, 0x00, 0x20, 0x04, 0x04, 0x00, 0x01 });
+    try cod.appendNTimes(allocator, 0xFF, 33);
+    var qcd = std.ArrayList(u8).empty;
+    defer qcd.deinit(allocator);
+    try qcd.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 3 + 97, 0x40 });
+    try qcd.appendNTimes(allocator, 0x40, 97);
+    // 4x4 tile with 32 levels: every resolution is non-empty (1x1 up to 4x4),
+    // one precinct each → 33 empty packets.
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
+    try body.appendNTimes(allocator, 0x00, 33);
+    // Build by hand: SOC + SIZ(4x4) + COD + QCD + SOT + SOD + body + EOC.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, cod.items);
+    try buf.appendSlice(allocator, qcd.items);
+    const psot: u32 = @intCast(12 + 2 + body.items.len);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00 });
+    var psot_b: [4]u8 = undefined;
+    std.mem.writeInt(u32, &psot_b, psot, .big);
+    try buf.appendSlice(allocator, &psot_b);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x01, 0xFF, 0x93 });
+    try buf.appendSlice(allocator, body.items);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 });
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.overall != .fail);
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+    // And the strict deep pass, which reaches the same geometry from the extractor.
+    var deep = try jp2z.internal.deepValidate(allocator, buf.items, true);
+    defer deep.deinit(allocator);
+    try std.testing.expect(deep.overall != .fail);
+}
+
+test "validate: more tile-parts than TNsot declares → WARN, the extra part still walks" {
+    const allocator = std.testing.allocator;
+    // COD 2 layers → 2 packets; tile-part 0 carries packet 1, tile-part 1
+    // packet 2; both declare TNsot=1 (an encoder off-by-one seen in the
+    // wild). The second part must be walked (walked_to_end), not refused.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    // Part 0: Psot=15, TPsot=0, TNsot=1, SOD, one empty packet.
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01, 0xFF, 0x93, 0x00 });
+    // Part 1: TPsot=1, TNsot=1 (one too few), SOD, the second empty packet.
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x01, 0x01, 0xFF, 0x93, 0x00 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 });
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.overall == .warn);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+    try std.testing.expect(!hasFinding(rep, .truncated_stream));
+}
+
+test "audit: SIZ tile-count ceil must not overflow u32 when Ysiz + YTsiz exceed 2^32 (issue823 fuzz corpus)" {
+    // issue823.jp2: Ysiz 0xFFF60001, YTsiz 0xF0000100. Every A.5.1 range
+    // check passes, but ceil((Ysiz - YTOsiz) / YTsiz) computed as
+    // (a + b - 1) / b overflows u32 → panic. The grid is 1 × 2 tiles.
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const tall = try patched(allocator, base, 12, &.{ 0xFF, 0xF6, 0x00, 0x01 });
+    defer allocator.free(tall);
+    const data = try patched(allocator, tall, 28, &.{ 0xF0, 0x00, 0x01, 0x00 });
+    defer allocator.free(data);
+    var report = try jp2z.validate(allocator, data);
+    defer report.deinit(allocator);
+    const cp = report.coding_params.?;
+    const nt = cp.numTilesXY(cp.image_x0 + report.width.?, cp.image_y0 + report.height.?);
+    try std.testing.expectEqual(@as(u32, 1), nt.x);
+    try std.testing.expectEqual(@as(u32, 2), nt.y);
+}

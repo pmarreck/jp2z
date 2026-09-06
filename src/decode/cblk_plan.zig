@@ -78,6 +78,11 @@ pub const CblkDecodePlan = struct {
     /// Total EBCOT coding passes contributed to this cblk across all
     /// packets. Becomes the `total_passes` arg to `decodeCblkPasses`.
     total_passes: u32,
+    /// Passes / bytes delivered by the cblk's FIRST packet contribution
+    /// (its layer-0 share). Diagnostic: lets a tool decode the first layer
+    /// alone and attribute a byte-budget anomaly to a later layer.
+    first_passes: u32 = 0,
+    first_len: u32 = 0,
     /// Code-block style flags (COD's `cblksty`). Drives segment
     /// boundaries inside the byte stream and a handful of other
     /// per-pass behaviours.

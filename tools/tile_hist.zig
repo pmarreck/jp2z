@@ -35,6 +35,16 @@ pub fn main() !void {
             }
         }
     }
+    if (std.c.getenv("JP2Z_TRACE_CBLK")) |spec| {
+        var it = std.mem.splitScalar(u8, std.mem.span(spec), ',');
+        var v: [7]u32 = undefined;
+        var i: usize = 0;
+        while (it.next()) |tok| : (i += 1) {
+            if (i >= 7) break;
+            v[i] = std.fmt.parseInt(u32, tok, 10) catch 0;
+        }
+        if (i == 7) jp2z.internal.setTraceCblk(.{ .tile = v[0], .component = @intCast(v[1]), .resolution = @intCast(v[2]), .band = @intCast(v[3]), .precinct = v[4], .grid_x = v[5], .grid_y = v[6] });
+    }
     // The tier-1 differential needs only the plans + the oracle dump, so it
     // runs BEFORE the cleanroom decode: a file the decoder refuses (mixed
     // wavelets, >16 components) can still have its tier-1 attributed.
@@ -157,12 +167,32 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
     const p = vrep.coding_params orelse return error.NoCodingParams;
     const xsiz = p.image_x0 + vrep.width.?;
     const ysiz = p.image_y0 + vrep.height.?;
+    // JP2Z_DUMP_CB: tier-2 accounting oracle. Prints every jp2z code-block
+    // plan as `oursCB ...` in the same key/value shape as the patched
+    // openjpeg's `jp2zCB ...` stderr line (JP2Z_DUMP_T2), so the two can be
+    // sorted and diffed on (t,c,r,b,p,x0,y0) → (passes, bytes).
+    if (std.c.getenv("JP2Z_DUMP_CB") != null) {
+        for (list.plans) |plan| {
+            const tr = p.tileRect(xsiz, ysiz, plan.tile);
+            const ci: usize = @min(plan.component, 15);
+            const dxc: u32 = p.comp_dx[ci];
+            const dyc: u32 = p.comp_dy[ci];
+            const bo = jp2z.internal.bandOrigin((tr.x0 + dxc - 1) / dxc, (tr.y0 + dyc - 1) / dyc, p.codingFor(plan.component).num_decomp_levels, plan.resolution, plan.band);
+            std.debug.print("oursCB t={d} c={d} r={d} b={d} p={d} x0={d} y0={d} passes={d} bytes={d}\n", .{ plan.tile, plan.component, plan.resolution, plan.band, plan.precinct, bo.x0 + plan.sb_x0, bo.y0 + plan.sb_y0, plan.total_passes, plan.data.len });
+        }
+    }
     var matched: u32 = 0;
     var mismatched: u32 = 0;
     var numbps_diff: u32 = 0;
     var shown: u32 = 0;
     var max_over: u32 = 0;
     var max_under: u32 = 0;
+    var layer0_blocks: u32 = 0;
+    var layer0_over: u32 = 0;
+    var layer0_under: u32 = 0;
+    var layer0_max_over: u32 = 0;
+    var layer0_max_under: u32 = 0;
+    defer if (layer0_blocks > 0) std.debug.print("layer0-only: {d} multi-layer cblks, over_read>12 on {d}, under_read>2 on {d}, max over {d} under {d}\n", .{ layer0_blocks, layer0_over, layer0_under, layer0_max_over, layer0_max_under });
     // mismatch histogram by resolution (0..32) and band (0..3)
     var hist: [33][4]u32 = @splat(@splat(0));
     var total: [33][4]u32 = @splat(@splat(0));
@@ -188,8 +218,23 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
             // Byte-budget view of the same code-block (what deepValidate judges).
             if (cblk.over_read > max_over) max_over = cblk.over_read;
             if (cblk.under_read > max_under) max_under = cblk.under_read;
+            // JP2Z_LAYER0: decode only the first contribution (layer-0 share)
+            // and report its budget, to attribute anomalies to a later layer.
+            if (std.c.getenv("JP2Z_LAYER0") != null and plan.first_passes < plan.total_passes and plan.segments.len <= 1) {
+                var p0 = plan;
+                p0.data = plan.data[0..plan.first_len];
+                p0.total_passes = plan.first_passes;
+                p0.segments = &.{};
+                var c0 = try jp2z.internal.decodePlan(a, p0);
+                defer c0.deinit(a);
+                layer0_blocks += 1;
+                if (c0.over_read > 12) layer0_over += 1;
+                if (c0.under_read > 2) layer0_under += 1;
+                if (c0.over_read > layer0_max_over) layer0_max_over = c0.over_read;
+                if (c0.under_read > layer0_max_under) layer0_max_under = c0.under_read;
+            }
             if (cblk.over_read > 4 or cblk.under_read > 2) {
-                std.debug.print("  BUDGET tile {d} c{d} r{d} b{d} sb({d},{d}) passes {d} bytes {d} segs {d} numbps {d}: over_read {d} under_read {d}\n", .{ plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.total_passes, plan.data.len, plan.segments.len, plan.numbps, cblk.over_read, cblk.under_read });
+                std.debug.print("  BUDGET @{d} tile {d} c{d} r{d} b{d} prc{d} sb({d},{d}) passes {d} bytes {d} segs {d} numbps {d}: over_read {d} under_read {d}\n", .{ plan.src_offset, plan.tile, plan.component, plan.resolution, plan.band, plan.precinct, plan.sb_x0, plan.sb_y0, plan.total_passes, plan.data.len, plan.segments.len, plan.numbps, cblk.over_read, cblk.under_read });
             }
             var bad: usize = 0;
             var first_bad: ?usize = null;

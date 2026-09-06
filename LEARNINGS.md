@@ -478,3 +478,33 @@ stop each case being argued separately:
 And one deliberate omission, recorded so it is not "found" again: POC
 REpoc/CEpoc may legally exceed the real resolution/component counts
 (B.12.1.3 clamps them), so no bounds check is added for them.
+
+## "openjpeg accepts it" is not ground truth: bring a third decoder (2026-09-06)
+
+The nonregression census had 22 files that `opj_decompress` decodes and
+jp2z FAILs. Reading them as jp2z false positives was wrong for most of
+them. Method that settled it, cheapest first:
+
+1. **Tier-2 oracle per code-block.** The patched openjpeg now prints
+   `jp2zCB t= c= r= b= p= x0= y0= passes= bytes=` per block (env
+   `JP2Z_DUMP_T2`); tile-hist prints `oursCB` in the same shape (env
+   `JP2Z_DUMP_CB`). `sort -u` the openjpeg side (the tool decodes twice),
+   join on (t,c,r,b,x0,y0), diff the values. kodak_2layers_lrcp: 0
+   differences in passes/bytes on 9768 blocks. The patch hardcodes
+   precinct 0 on the openjpeg side — ignore `p=`.
+2. **Layer-0-only decode** (`JP2Z_LAYER0`, plan.first_passes/first_len):
+   if the first layer alone is budget-clean on every block, the anomaly is
+   in a later layer's declared passes/lengths, not in the walker.
+3. **JasPer** (`nix shell nixpkgs#jasper -c jasper --input f --output o
+   --output-format pgx`), the ISO reference-software lineage, as a third
+   vote. It rejected kodak ("jpc_dec_decodepkt failed") and 15 more of the
+   22; it accepted test_lossless and produced output byte-identical to
+   openjpeg's (compare PGX with scratch `pgxcmp.lua`).
+
+openjpeg never checks that a code-block consumed its declared bytes and
+silently drops coding passes below bit-plane 0, so it accepts streams
+whose packet headers are internally inconsistent. A jp2z FAIL that
+openjpeg alone contradicts is undecided until step 3.
+
+Encoder identity lives in the COM marker (`strings -n 6 file | head`):
+kodak is "DCP-Werkstatt", test_lossless is "ClearCanvas DICOM OpenJPEG".

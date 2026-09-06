@@ -63,6 +63,9 @@ pub const CblkExtractor = struct {
         src_offset: usize = 0,
         cblksty: u8 = 0,
         total_passes: u32 = 0,
+        /// Passes / bytes of the FIRST packet contribution (layer-0 share).
+        first_passes: u32 = 0,
+        first_len: u32 = 0,
         /// Per-segment {passes, byte_len} (LAZY/TERMALL). Heap-owned
         /// copy of the latest CodeBlockState snapshot; freed in deinit
         /// or transferred to the plan in finalize.
@@ -134,6 +137,8 @@ pub const CblkExtractor = struct {
                 .roishift = meta.roishift,
                 .src_offset = meta.src_offset,
                 .cblksty = meta.cblksty,
+                .first_passes = meta.total_passes,
+                .first_len = @intCast(bytes.len),
             };
         }
         gop.value_ptr.total_passes = meta.total_passes;
@@ -176,6 +181,8 @@ pub const CblkExtractor = struct {
                 .roishift = entry.roishift,
                 .src_offset = entry.src_offset,
                 .total_passes = entry.total_passes,
+                .first_passes = entry.first_passes,
+                .first_len = entry.first_len,
                 .cblksty = entry.cblksty,
                 .data = data,
                 .segments = entry.segments,
