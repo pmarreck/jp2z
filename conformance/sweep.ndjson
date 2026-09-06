@@ -49,8 +49,8 @@
 {"fixture":"p1_02.j2k","status":"NEAR","detail":"","w":640,"h":480,"comps":3,"max_abs":1}
 {"fixture":"p1_03.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":1024,"h":1024,"comps":4,"max_abs":0}
 {"fixture":"p1_04.j2k","status":"NEAR","detail":"","w":1024,"h":1024,"comps":1,"max_abs":1}
-{"fixture":"p1_05.j2k","status":"FAIL","detail":"","w":512,"h":512,"comps":3,"max_abs":18}
-{"fixture":"p1_06.j2k","status":"NEAR","detail":"","w":12,"h":12,"comps":3,"max_abs":1}
+{"fixture":"p1_05.j2k","status":"NEAR","detail":"","w":512,"h":512,"comps":3,"max_abs":1}
+{"fixture":"p1_06.j2k","status":"PASS","detail":"","w":12,"h":12,"comps":3,"max_abs":0}
 {"fixture":"p1_07.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":2,"h":12,"comps":2,"max_abs":0}
 {"fixture":"subsampling_1.jp2","status":"DECODED","detail":"skip:dim-mismatch","w":1280,"h":1024,"comps":3,"max_abs":0}
 {"fixture":"subsampling_2.jp2","status":"DECODED","detail":"skip:dim-mismatch","w":640,"h":512,"comps":3,"max_abs":0}

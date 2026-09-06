@@ -223,17 +223,15 @@ pub const internal = struct {
     }
 
     /// OpenJPEG-style i32 sign-magnitude encoding for one decoded
-    /// coefficient. `half_bit_pos` comes from `halfBitPos(msb_bp, total_passes)`.
-    pub fn coeffToOpenJpegI32(coeff: @import("decode/ebcot.zig").Coeff, half_bit_pos: u5) i32 {
-        return @import("decode/cblk_dispatch.zig").coeffToOpenJpegI32(coeff, half_bit_pos);
+    /// coefficient (magnitude bits plus its own reconstruction half-bit).
+    pub fn coeffToOpenJpegI32(coeff: @import("decode/ebcot.zig").Coeff) i32 {
+        return @import("decode/cblk_dispatch.zig").coeffToOpenJpegI32(coeff);
     }
 
-    /// Position of OpenJPEG's "half-bit" reconstruction marker for the
-    /// given (msb_bp, total_passes) pair. Used to convert our raw
-    /// bit-plane magnitude to OpenJPEG's centred-bin representation.
-    pub fn halfBitPos(msb_bp: u5, total_passes: u32) u5 {
-        return @import("decode/cblk_dispatch.zig").halfBitPos(msb_bp, total_passes);
-    }
+    /// Absolute band origin for (tile origin, resolution, openjpeg bandno):
+    /// translates a plan's subband-internal rect to the T1 oracle dump's
+    /// absolute cblk coordinates (multi-tile fixtures).
+    pub const bandOrigin = @import("decode/subbands.zig").bandOrigin;
 
     pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
     /// Full cleanroom decode (5/3 reversible): codestream -> sample planes.

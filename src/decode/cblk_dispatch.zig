@@ -112,107 +112,71 @@ test "decodePlan: non-empty plan runs the EBCOT pipeline (no crash)" {
     for (cblk.coeffs) |c| try std.testing.expect(!c.visited);
 }
 
-/// Bit-plane position at which to insert OpenJPEG's "+0.5 of last bin"
-/// reconstruction half-bit. T.800 D.4 (and OpenJPEG t1.c) keep the
-/// post-decode coefficient centred in its quantization interval by
-/// adding `(1 << (bp_min - 1))` to the magnitude, where `bp_min` is the
-/// deepest bit-plane that received a coding pass. When the decoder ran
-/// down to bp=0 the half-bit collapses to bit 0 of the magnitude.
-///
-/// Pass schedule (matches `decodeCblkPasses`): pass 0 is CL@msb_bp,
-/// then every group of 3 subsequent passes drops one bit-plane.
-pub fn halfBitPos(msb_bp: u5, total_passes: u32) u5 {
-    if (total_passes == 0) return 0;
-    // ceil((total_passes - 1) / 3) = (total_passes + 1) / 3 for tp >= 1.
-    const decrements: u32 = (total_passes + 1) / 3;
-    if (decrements >= msb_bp) return 0;
-    const bp_min: u32 = @as(u32, msb_bp) - decrements;
-    return if (bp_min == 0) 0 else @intCast(bp_min - 1);
-}
-
 /// Convert one `ebcot.Coeff` into the i32 sign-magnitude layout that
 /// OpenJPEG's `t1_decode_cblk` writes to `t1->data`:
 ///
 ///   - not significant      → 0
-///   - significant, sign=0  → +(|magnitude| | (1 << half_bit_pos))
-///   - significant, sign=1  → -(|magnitude| | (1 << half_bit_pos))
+///   - significant, sign=0  → +(|magnitude| | (1 << coeff.half_bp))
+///   - significant, sign=1  → -(|magnitude| | (1 << coeff.half_bp))
 ///
-/// The bit-OR places the half-bit reconstruction marker that OpenJPEG
-/// adds via `oneplushalf` / `poshalf` adjustments during decode.
-pub fn coeffToOpenJpegI32(coeff: ebcot.Coeff, half_bit_pos: u5) i32 {
+/// The OR places the "+0.5 of last bin" reconstruction half-bit (T.800
+/// D.4; OpenJPEG's `oneplushalf` / `poshalf` adjustments). Its position
+/// is PER COEFFICIENT — one below the bit-plane at which that coefficient
+/// was last coded — because a code-block whose final pass is SP or MR
+/// leaves the coefficients not visited in that partial plane one plane
+/// higher than the visited ones. A uniform per-cblk position derived from
+/// the pass count (the retired halfBitPos) reproduced openjpeg only when
+/// decoding ended on a cleanup pass (p1_05: 2235 cblks, max_abs 18).
+pub fn coeffToOpenJpegI32(coeff: ebcot.Coeff) i32 {
     if (!coeff.significant) return 0;
-    const mag: u32 = coeff.magnitude | (@as(u32, 1) << half_bit_pos);
+    const mag: u32 = coeff.magnitude | (@as(u32, 1) << coeff.half_bp);
     const mag_i32: i32 = @intCast(mag);
     return if (coeff.sign == 0) mag_i32 else -mag_i32;
 }
 
-test "halfBitPos: total_passes=0 → 0 (degenerate)" {
-    try std.testing.expectEqual(@as(u5, 0), halfBitPos(7, 0));
+test "coeffToOpenJpegI32: not significant → 0 regardless of half_bp" {
+    const c: ebcot.Coeff = .{ .significant = false, .sign = 0, .magnitude = 0, .half_bp = 6 };
+    try std.testing.expectEqual(@as(i32, 0), coeffToOpenJpegI32(c));
 }
 
-test "halfBitPos: total_passes=1 → msb_bp-1 (only CL at msb_bp, bp_min=msb_bp)" {
-    try std.testing.expectEqual(@as(u5, 6), halfBitPos(7, 1));
-    try std.testing.expectEqual(@as(u5, 2), halfBitPos(3, 1));
+test "coeffToOpenJpegI32: sig only at bp=3 (no refines) → half at 2 → +oneplushalf_3 = 12" {
+    const c: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .half_bp = 2 };
+    try std.testing.expectEqual(@as(i32, 12), coeffToOpenJpegI32(c));
 }
 
-test "halfBitPos: total_passes=4 → msb_bp-2 (CL@k, SP+MR+CL@k-1)" {
-    // bp_min = msb_bp - 1, half = bp_min - 1 = msb_bp - 2.
-    try std.testing.expectEqual(@as(u5, 5), halfBitPos(7, 4));
-}
-
-test "halfBitPos: full depth (all bp processed) → 0" {
-    // msb_bp=7: total_passes = 1 + 3*7 = 22. bp_min=0. half_bit=0.
-    try std.testing.expectEqual(@as(u5, 0), halfBitPos(7, 22));
-    // msb_bp=3: total_passes = 1 + 3*3 = 10.
-    try std.testing.expectEqual(@as(u5, 0), halfBitPos(3, 10));
-}
-
-test "halfBitPos: decrements clamp at msb_bp (over-truncated input)" {
-    // Pathological: more passes than the bit-plane budget allows.
-    // Should still return 0 (we've gone past the LSB).
-    try std.testing.expectEqual(@as(u5, 0), halfBitPos(2, 100));
-}
-
-test "coeffToOpenJpegI32: not significant → 0" {
-    const c: ebcot.Coeff = .{ .significant = false, .sign = 0, .magnitude = 0, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 0), coeffToOpenJpegI32(c, 6));
-}
-
-test "coeffToOpenJpegI32: sig only at bp=3 (no refines), half_bit=2 → +oneplushalf_3 = 12" {
-    const c: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 12), coeffToOpenJpegI32(c, 2));
-}
-
-test "coeffToOpenJpegI32: sig+refs full depth (half_bit=0) matches hand-derived OJ values" {
-    // Hand-derived from t1.c: sig at bp=3 followed by MR at bp=2,1,0
-    // with arbitrary refinement bits.
-    //
+test "coeffToOpenJpegI32: sig+refs full depth (half at 0) matches hand-derived OJ values" {
+    // OJ trace format: value after each pass (sig / MR steps).
     //   bits decoded: sig@3=1, MR@2=0, MR@1=1, MR@0=0 → our mag = 1010 = 10
     //   OJ trace: 12 → 10 → 11 → 11.
-    const c1: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 10, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 11), coeffToOpenJpegI32(c1, 0));
-    // Same example with negative sign → -11.
-    const c1_neg: ebcot.Coeff = .{ .significant = true, .sign = 1, .magnitude = 10, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, -11), coeffToOpenJpegI32(c1_neg, 0));
-    //
+    const c1: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 10, .half_bp = 0 };
+    try std.testing.expectEqual(@as(i32, 11), coeffToOpenJpegI32(c1));
+    const c1_neg: ebcot.Coeff = .{ .significant = true, .sign = 1, .magnitude = 10, .half_bp = 0 };
+    try std.testing.expectEqual(@as(i32, -11), coeffToOpenJpegI32(c1_neg));
     //   bits decoded: sig@3=1, MR@2=1, MR@1=1, MR@0=1 → our mag = 1111 = 15
     //   OJ trace: 12 → 14 → 15 → 15.
-    const c2: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 15, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 15), coeffToOpenJpegI32(c2, 0));
-    //
+    const c2: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 15, .half_bp = 0 };
+    try std.testing.expectEqual(@as(i32, 15), coeffToOpenJpegI32(c2));
     //   bits decoded: sig@3=1, MR@2=0, MR@1=0, MR@0=0 → our mag = 1000 = 8
     //   OJ trace: 12 → 10 → 9 → 9.
-    const c3: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 9), coeffToOpenJpegI32(c3, 0));
+    const c3: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .half_bp = 0 };
+    try std.testing.expectEqual(@as(i32, 9), coeffToOpenJpegI32(c3));
 }
 
-test "coeffToOpenJpegI32: partial depth (bp_min=2, half_bit=1)" {
-    // sig at bp=3, MR at bp=2 with v=0 → our mag = 8.
-    // OJ trace: 12 → 10. half_bit=1 → 8 | 2 = 10.
-    const c1: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 10), coeffToOpenJpegI32(c1, 1));
-    // sig at bp=3, MR at bp=2 with v=1 → our mag = 12.
-    // OJ: 12 → 14. half_bit=1 → 12 | 2 = 14.
-    const c2: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 12, .visited = false, .refined = false };
-    try std.testing.expectEqual(@as(i32, 14), coeffToOpenJpegI32(c2, 1));
+test "coeffToOpenJpegI32: partial depth (last coded at bp=2 → half at 1)" {
+    // sig at bp=3, MR at bp=2 with v=0 → our mag = 8. OJ trace: 12 → 10.
+    const c1: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 8, .half_bp = 1 };
+    try std.testing.expectEqual(@as(i32, 10), coeffToOpenJpegI32(c1));
+    // sig at bp=3, MR at bp=2 with v=1 → our mag = 12. OJ: 12 → 14.
+    const c2: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 12, .half_bp = 1 };
+    try std.testing.expectEqual(@as(i32, 14), coeffToOpenJpegI32(c2));
+}
+
+test "coeffToOpenJpegI32: two coefficients of one cblk carry DIFFERENT half positions after a mid-plane stop" {
+    // Stop after SP@bp=2: a coefficient refined at bp=3 (half 2) and one
+    // that became significant in that SP (half 1) coexist — the case the
+    // old uniform position could not represent.
+    const refined: ebcot.Coeff = .{ .significant = true, .sign = 0, .magnitude = 16 | 8, .half_bp = 2 };
+    const fresh: ebcot.Coeff = .{ .significant = true, .sign = 1, .magnitude = 4, .half_bp = 1 };
+    try std.testing.expectEqual(@as(i32, 24 | 4), coeffToOpenJpegI32(refined));
+    try std.testing.expectEqual(@as(i32, -(4 | 2)), coeffToOpenJpegI32(fresh));
 }

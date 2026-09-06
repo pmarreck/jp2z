@@ -96,6 +96,13 @@ pub const Coeff = struct {
     /// first became significant — prevents subsequent passes from
     /// re-processing it.
     visited: bool = false,
+    /// Bit position of openjpeg's reconstruction "half" marker for THIS
+    /// coefficient: one below the bit-plane at which it was last coded
+    /// (became significant, or was refined). Per-coefficient because a
+    /// code-block whose last pass is SP or MR leaves the coefficients not
+    /// visited in that partial plane one plane higher — a uniform per-cblk
+    /// position (the old halfBitPos) mis-reconstructs exactly those.
+    half_bp: u5 = 0,
     /// True once magnitude refinement has been performed on this
     /// coefficient at least once. Drives MR context selection
     /// (CX 14/15 first time, CX 16 thereafter — T.800 D.3.3).
@@ -373,6 +380,7 @@ pub fn spPass(
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
                     cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
+                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                     const sc = scContext(cblk.*, x, y);
                     const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                     cblk.coeffs[idx].sign = raw_sign ^ sc.xor;
@@ -419,6 +427,7 @@ pub fn mrPass(
                 const cx = mrContext(cblk.*, x, y);
                 const bit = dec.decode(&ctxs[@intFromEnum(cx)]);
                 cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
+                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                 cblk.coeffs[idx].refined = true;
             }
         }
@@ -446,6 +455,7 @@ pub fn spPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
                     cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
+                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                     cblk.coeffs[idx].sign = dec.decode();
                 }
             }
@@ -470,6 +480,7 @@ pub fn mrPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
                 if (coeff.visited) continue;
                 const bit = dec.decode();
                 cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
+                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                 cblk.coeffs[idx].refined = true;
             }
         }
@@ -545,6 +556,7 @@ pub fn clPass(
                 const idx = y * cblk.width + x;
                 cblk.coeffs[idx].significant = true;
                 cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
+                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                 const sc = scContext(cblk.*, x, y);
                 const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                 cblk.coeffs[idx].sign = raw_sign ^ sc.xor;
@@ -562,6 +574,7 @@ pub fn clPass(
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
                     cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
+                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
                     const sc = scContext(cblk.*, x, y);
                     const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                     cblk.coeffs[idx].sign = raw_sign ^ sc.xor;

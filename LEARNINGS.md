@@ -321,3 +321,36 @@ What generalises:
   idwt(cas=1, L, H) == reverse(idwt(cas=0, reverse(L), reverse(H))) holds
   exactly in Q16 because every lifting step is a position-independent
   neighbour update. It pinned the cas==1 branch without a forward 9/7.
+
+## 2026-09-06 — p1_05's "diffuse small error" was tier-1, found by ruling stages out
+
+max_abs 18 across 198 of 225 tiles, all components, no spatial structure.
+Two hypotheses tested and rejected in minutes each: exact (single-rounding)
+dequantisation changed 198→196 tiles; the 9/7 line was already proven by
+the reflection test. What settled it was a stage-attribution tool, not more
+thinking: `zig build tile-hist` with JP2Z_DUMP_T1 compares every code-block's
+T1 output against the patched-openjpeg dump, so a divergence is either
+"tier-1 differs" or "tier-1 matches, look downstream". It differed: 2235
+code-blocks, each off only in the reconstruction half-bit, each with a pass
+count ≡ 2 (mod 3) — decoding stopped right after a significance pass.
+
+The bug: jp2z placed the "+0.5 of last bin" half-bit at ONE position per
+code-block, derived from the pass count. openjpeg keeps it per coefficient
+(set at significance, moved down by every refinement), which only agrees
+when the last pass is a cleanup pass. Stop after SP or MR and the
+coefficients that partial plane never visited keep their half one plane
+higher. Every earlier fixture happened to end on cleanup passes; p1_05's
+two layers and balloon's eight did not (balloon 9→0, e1's ±2 turned out to
+be the unrelated RGN case).
+
+What generalises:
+- When a divergence is diffuse and small, attribute it to a STAGE before
+  hypothesising a cause. The T1 differential took 10 minutes to build and
+  answered in one run what two experiments could not.
+- The mod-3 pattern in the pass counts was the fingerprint. Histogram the
+  metadata of the failing set (pass counts, cbsty, sizes) before reading
+  code; a shared residue class points straight at the schedule.
+- The oracle dump patch hardcodes tile 0 and records absolute band
+  coordinates; jp2z plans are tile-relative. Multi-tile matching needs the
+  B-15 band-origin translation (now `subbands.bandOrigin`), not a patch
+  fix — the vendored single-tile dumps stay valid.

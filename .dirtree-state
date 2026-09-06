@@ -20,5 +20,7 @@ annotate=[
 	tests/unit/fixtures/conformance/p1_06.j2k = ISO 15444-4 packed-packet-header (PPM/PPT) conformance fixture; mutation-matrix must-accept control
 	tests/unit/fixtures/oracles/a1_mono.t1.bin = OpenJPEG t1 oracle for a1_mono.j2c (pure-MQ, byte-perfect target) — JP2Z_DUMP_T1 dump, 34 cblk records
 	tests/unit/fixtures/oracles/d1_colr.t1.bin = OpenJPEG t1 oracle for d1_colr.j2c (pure-MQ, 3-comp MCT, multi-precinct, byte-perfect) — 174 cblk records
+	tests/unit/fixtures/oracles/p1_06.t1.bin = openjpeg T1 coefficient dump for p1_06 (16 tiles, passes ending mid-plane); pins the per-coefficient reconstruction half-bit
 	tools/sweep_one.zig = Conformance-sweep worker: decode+classify ONE fixture/process (decodeCleanroom); prefers committed planar .pix oracle (SWEEP_PIX) else in-process openjpeg wrapper; input via SWEEP_FIXTURE; one JSON record to stderr
+	tools/tile_hist.zig = Dev diagnostic (zig build tile-hist): per-tile max_abs vs openjpeg for one fixture; with JP2Z_DUMP_T1 also a per-cblk tier-1 coefficient diff (attributes divergence to T1 vs dequant/DWT)
 ]

@@ -784,3 +784,39 @@ test "precinctIndexAt: interior tile subtracts its first precinct col/row (e1_co
     // Origin-(0,0) tile keeps the plain mapping.
     try std.testing.expectEqual(@as(u32, 0), precinctIndexAt(0, 0, 64, 64, 5, 3, 5, 5, 0, 0));
 }
+
+/// Absolute band-coordinate origin of a tile-component's (resolution,
+/// band) — T.800 B-15, the same formula openjpeg's tcd uses for
+/// band->x0/y0. `band` is the openjpeg bandno (0 = LL at r=0; 1 HL,
+/// 2 LH, 3 HH at r>0). Adding this to a plan's subband-internal rect
+/// yields the absolute cblk coords the T1 oracle dump records.
+pub fn bandOrigin(tile_x0: u32, tile_y0: u32, num_decomp_levels: u8, r: u8, band: u8) struct { x0: i64, y0: i64 } {
+    const level: u6 = @intCast(num_decomp_levels - r);
+    const tcx0: i64 = tile_x0;
+    const tcy0: i64 = tile_y0;
+    if (r == 0) return .{ .x0 = ceilDivPow2I(tcx0, level), .y0 = ceilDivPow2I(tcy0, level) };
+    const off: i64 = @as(i64, 1) << level;
+    const x0b: i64 = @as(i64, band & 1);
+    const y0b: i64 = @as(i64, (band >> 1) & 1);
+    return .{ .x0 = ceilDivPow2I(tcx0 - off * x0b, level + 1), .y0 = ceilDivPow2I(tcy0 - off * y0b, level + 1) };
+}
+
+test "bandOrigin: origin tile is 0 for every band; odd origin follows B-15" {
+    // Tile at (0,0): every band starts at 0.
+    var r: u8 = 0;
+    while (r <= 5) : (r += 1) {
+        const b0 = bandOrigin(0, 0, 5, r, if (r == 0) 0 else 3);
+        try std.testing.expectEqual(@as(i64, 0), b0.x0);
+    }
+    // Tile-component origin (17, 12), 7 levels (p1_05): LL = ceil(17/128) = 1;
+    // r=3 (level 4): HL x0 = ceil((17 - 16) / 32) = 1, LH x0 = ceil(17/32) = 1,
+    // HL y0 = ceil(12/32) = 1, LH y0 = ceil((12 - 16)/32) = ceil(-0.125) = 0.
+    const ll = bandOrigin(17, 12, 7, 0, 0);
+    try std.testing.expectEqual(@as(i64, 1), ll.x0);
+    const hl = bandOrigin(17, 12, 7, 3, 1);
+    try std.testing.expectEqual(@as(i64, 1), hl.x0);
+    try std.testing.expectEqual(@as(i64, 1), hl.y0);
+    const lh = bandOrigin(17, 12, 7, 3, 2);
+    try std.testing.expectEqual(@as(i64, 1), lh.x0);
+    try std.testing.expectEqual(@as(i64, 0), lh.y0);
+}

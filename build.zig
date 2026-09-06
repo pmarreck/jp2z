@@ -124,6 +124,23 @@ pub fn build(b: *std.Build) void {
     const sweep_install = b.addInstallArtifact(sweep_one, .{});
     b.step("sweep-one", "Build the conformance-sweep worker (input: SWEEP_FIXTURE=<abs-path>)").dependOn(&sweep_install.step);
 
+    // ── Per-tile diff histogram (zig build tile-hist) ──────────────
+    // Same shape as sweep-one; prints per-tile max_abs vs the openjpeg
+    // oracle for one fixture. Decode-divergence diagnostic, dev-only.
+    const hist_mod = b.createModule(.{
+        .root_source_file = b.path("tools/tile_hist.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    hist_mod.addImport("jp2z", jp2z_mod);
+    hist_mod.addIncludePath(.{ .cwd_relative = openjpeg_include });
+    hist_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
+    hist_mod.linkSystemLibrary("openjp2", .{});
+    const tile_hist = b.addExecutable(.{ .name = "jp2z-tile-hist", .root_module = hist_mod });
+    const hist_install = b.addInstallArtifact(tile_hist, .{});
+    b.step("tile-hist", "Build the per-tile diff histogram tool (input: SWEEP_FIXTURE=<abs-path>)").dependOn(&hist_install.step);
+
     // ── Tests ──────────────────────────────────────────────────────
     const test_step = b.step("test", "Run unit + CLI tests");
 

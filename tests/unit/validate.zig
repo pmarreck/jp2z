@@ -1059,11 +1059,9 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for c
             if (plan.sb_y0 != rec.cblk_y0) continue;
             var cblk = try jp2z.internal.decodePlan(allocator, plan);
             defer cblk.deinit(allocator);
-            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
-            const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
             const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
             defer allocator.free(our_buf);
-            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c);
             try std.testing.expectEqual(rec.data.len, our_buf.len);
             if (!std.mem.eql(i32, our_buf, rec.data)) {
                 std.debug.print(
@@ -1106,11 +1104,9 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for a
             var cblk = try jp2z.internal.decodePlan(allocator, plan);
             defer cblk.deinit(allocator);
 
-            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
-            const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
             const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
             defer allocator.free(our_buf);
-            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c);
 
             try std.testing.expectEqual(rec.data.len, our_buf.len);
             if (!std.mem.eql(i32, our_buf, rec.data)) {
@@ -1159,11 +1155,9 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for d
 
             var cblk = try jp2z.internal.decodePlan(allocator, plan);
             defer cblk.deinit(allocator);
-            const msb_bp: u5 = if (plan.numbps == 0) 0 else @intCast(plan.numbps);
-            const half_bp = jp2z.internal.halfBitPos(msb_bp, plan.total_passes);
             const our_buf = try allocator.alloc(i32, cblk.coeffs.len);
             defer allocator.free(our_buf);
-            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c, half_bp);
+            for (cblk.coeffs, 0..) |c, i| our_buf[i] = jp2z.internal.coeffToOpenJpegI32(c);
 
             if (our_buf.len == rec.data.len and std.mem.eql(i32, our_buf, rec.data)) {
                 compared += 1;
@@ -2790,4 +2784,54 @@ test "cleanroom: p1_06 (16 tiles, PPT per tile-part, SOP+EPH) matches openjpeg" 
         std.debug.print("\n[p1_06] max_abs vs openjpeg = {d}\n", .{max_abs});
         return error.PixelMismatch;
     }
+}
+
+// ── Per-coefficient reconstruction half-bit (T1 vs openjpeg, mid-plane truncation) ──
+//
+// openjpeg carries the reconstruction "half" bit INSIDE each coefficient
+// (set at significance, moved down by every refinement). jp2z applied one
+// uniform half position per code-block (halfBitPos from the pass count).
+// The two agree only when decoding stops on a cleanup pass; when a
+// code-block's last pass is a significance or refinement pass, coefficients
+// not visited in that partial bit-plane keep their half one plane higher.
+// p1_05 (2 layers) has 2235 such code-blocks (max_abs 18); p1_06 has two.
+
+const p1_06_t1_oracle = @embedFile("fixtures/oracles/p1_06.t1.bin");
+
+test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for p1_06 (16 tiles, passes ending mid-plane)" {
+    // The dump hardcodes tile 0 and records ABSOLUTE band coords, so keys
+    // are (comp, r, band, absolute x0/y0) via bandOrigin per plan tile.
+    const allocator = std.testing.allocator;
+    const records = try parseOracleDump(allocator, p1_06_t1_oracle);
+    defer freeOracleRecords(allocator, records);
+    var list = try jp2z.internal.extractCblkPlans(allocator, p1_06_j2k);
+    defer list.deinit(allocator);
+    const p = (try jp2z.internal.inspect(allocator, p1_06_j2k)) orelse return error.NoCodingParams;
+    const xsiz = p.image_x0 + 12;
+    const ysiz = p.image_y0 + 12;
+
+    var compared: u32 = 0;
+    var mismatched: u32 = 0;
+    for (records) |rec| {
+        for (list.plans) |plan| {
+            if (plan.component != rec.component or plan.resolution != rec.resno or plan.band != rec.orient) continue;
+            const tr = p.tileRect(xsiz, ysiz, plan.tile);
+            const bo = jp2z.internal.bandOrigin(tr.x0, tr.y0, p.num_decomp_levels, plan.resolution, plan.band);
+            if (bo.x0 + plan.sb_x0 != rec.cblk_x0 or bo.y0 + plan.sb_y0 != rec.cblk_y0) continue;
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            try std.testing.expectEqual(rec.data.len, cblk.coeffs.len);
+            for (cblk.coeffs, 0..) |c, i| {
+                if (jp2z.internal.coeffToOpenJpegI32(c) != rec.data[i]) {
+                    mismatched += 1;
+                    std.debug.print("\n[p1_06 oracle] tile {d} c{d} r{d} b{d} sb({d},{d}) passes {d}: [{d}] ours={d} oj={d}\n", .{ plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.total_passes, i, jp2z.internal.coeffToOpenJpegI32(c), rec.data[i] });
+                    break;
+                }
+            }
+            compared += 1;
+            break;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 180), compared);
+    try std.testing.expectEqual(@as(u32, 0), mismatched);
 }

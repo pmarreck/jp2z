@@ -104,8 +104,6 @@ pub fn reconstructComponentTile(
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
 
-        const msb_bp: u5 = @intCast(plan.numbps);
-        const half_bp = cblk_dispatch.halfBitPos(msb_bp, plan.total_passes);
 
         // Subband quadrant base inside the tile buffer (Mallat layout). The
         // low-pass width/height (prev resolution) is the quadrant offset, and
@@ -124,7 +122,7 @@ pub fn reconstructComponentTile(
         while (j < ch) : (j += 1) {
             var i: u32 = 0;
             while (i < cw) : (i += 1) {
-                const coeff = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i], half_bp);
+                const coeff = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]);
                 // Reversible band→tile pre-scale: truncating /2 (NOT >>1).
                 buf[(base_y + j) * tile_w + (base_x + i)] = @divTrunc(coeff, 2);
             }
@@ -452,8 +450,6 @@ pub fn reconstructComponentTile97(
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
         defer cblk.deinit(allocator);
 
-        const msb_bp: u5 = @intCast(plan.numbps);
-        const half_bp = cblk_dispatch.halfBitPos(msb_bp, plan.total_passes);
         const scale_q = dequantScaleQ(prec, plan.qcd_expn, plan.qcd_mant);
 
         var base_x: u32 = @intCast(plan.sb_x0);
@@ -469,7 +465,7 @@ pub fn reconstructComponentTile97(
         while (j < ch) : (j += 1) {
             var i: u32 = 0;
             while (i < cw) : (i += 1) {
-                const t1 = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i], half_bp);
+                const t1 = cblk_dispatch.coeffToOpenJpegI32(cblk.coeffs[j * cw + i]);
                 buf[(base_y + j) * tile_w + (base_x + i)] = @as(i64, t1) * scale_q; // Q16
             }
         }

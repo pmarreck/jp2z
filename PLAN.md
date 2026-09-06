@@ -109,12 +109,24 @@ those fixtures, and OpenJPEG retirement is gated on it).
       no K scale, no halving — noted spec deviation), reflection
       metamorphic test pins cas1 == reverse(cas0(reverse)). p1_06 NEAR
       (max_abs 1), p1_05 255→18. Sweep PASS 26, NEAR 4, FAIL 6, ERROR 1.
-- [ ] **p1_05 residual max_abs 18** (15×15 tiles of 37 px, 8 resolutions,
-      cbsty BYPASS+TERMALL+PTERM, 2 layers, custom precincts). Candidates:
-      openjpeg one-sample odd-origin non-halving interacting with 8 levels;
-      BYPASS segment handling; precinct-partition placement at odd origins.
-      TDD: per-tile max_abs histogram first (which tiles/resolutions), then
-      one crafted RED.
+- [x] **Per-coefficient reconstruction half-bit** (2026-09-06 ~11:45am EDT).
+      p1_05's max_abs 18 was NOT the DWT: the new `zig build tile-hist`
+      diagnostic (per-tile max_abs + JP2Z_DUMP_T1 per-cblk T1 diff) showed
+      2235/7485 cblks differing only in the half-bit position, every one
+      with a pass count ending after SP (2,5,8,11,14,17). jp2z applied one
+      halfBitPos per cblk; openjpeg carries the half inside each
+      coefficient (set at significance, moved by each refinement), so a
+      mid-plane stop leaves unvisited coefficients one plane higher. Now
+      Coeff.half_bp is stamped at all 6 sig/ref sites; halfBitPos retired.
+      RED: vendored p1_06.t1.bin oracle (9.8 KB, 180 cblks, 2 mid-plane).
+      Sweep: p1_05 18→NEAR 1, p1_06 NEAR→PASS (byte-exact 9/7), balloon
+      9→0/12 tiles off. PASS 27, NEAR 4, FAIL 5, ERROR 1.
+- [ ] **e1_colr tile 7 ±2 = RGN (ROI up-shift), not a refinement bug.**
+      e1 carries 3 RGN tile-part markers (c145 today). The T1 diff on e1
+      shows mismatches only in ROI tiles with the openjpeg values shifted
+      relative to ours. Slice: parse Srgn/SPrgn (A.6.3), apply the ROI
+      descale (T.800 H.2: coefficients >= 2^s are shifted down by s) after
+      T1, and drop RGN from the c145 ignored set. Oracle: e1 t1 dump.
 - [ ] Then the rest of the sweep's FAILs: p1_02/d2/g1 (254-255), p0_01
       (149), file2/file8 (158/216), p0_13 ERROR NoCodingParams, balloon
       (max_abs 9), e1 tile-7 ±2, p1_04 >8-bit.
