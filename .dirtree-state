@@ -13,6 +13,7 @@ annotate=[
 	sweep = Conformance-sweep driver: runs sweep_one over all 57 ISO 15444-4 fixtures, writes conformance/{sweep.ndjson,SCORECARD.md}; deterministic regression net
 	tests/mutation_matrix.zig = OpenJPEG-free strict-validation classifier over valid controls and deterministic mutation scales
 	tests/unit/fixtures/conformance/balloon_eciRGB_icc.jp2 = Real-encoder must-accept control (12 tiles, 8 layers, RPCL, SEGSYM, 9/7, ICC) — guards the empty-packet extractor false-positive class
+	tests/unit/fixtures/conformance/d2_colr.j2c = ISO 15444-4 class D fixture with tile-part COD overrides (progression per tile); mutation-matrix must-accept control
 	tests/unit/fixtures/conformance/g3_colr.j2c = ISO 15444-4 packed-packet-header (PPM/PPT) conformance fixture; mutation-matrix must-accept control
 	tests/unit/fixtures/conformance/g4_colr.j2c = ISO 15444-4 packed-packet-header (PPM/PPT) conformance fixture; mutation-matrix must-accept control
 	tests/unit/fixtures/conformance/p0_04.j2k = 9/7 lossy 3-comp+ICT+TERMALL conformance fixture (640x480, PAE<=1)

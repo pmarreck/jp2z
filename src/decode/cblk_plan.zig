@@ -109,6 +109,9 @@ pub const CblkDecodePlan = struct {
 /// by the walker; consumed by the tier-1 dispatcher.
 pub const CblkDecodePlanList = struct {
     plans: []CblkDecodePlan,
+    /// A tile-part COD changed decomposition/wavelet/MCT for some tile —
+    /// see CblkExtractor.tile_override_unsupported.
+    tile_override_unsupported: bool = false,
 
     pub fn deinit(self: *CblkDecodePlanList, allocator: Allocator) void {
         for (self.plans) |*p| p.deinit(allocator);

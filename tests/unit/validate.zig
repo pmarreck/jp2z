@@ -3125,3 +3125,64 @@ test "oracle: e1_colr's seven zero-byte-contribution code-blocks decode to openj
     }
     try std.testing.expectEqual(@as(u32, cases.len), found);
 }
+
+// ── Tile-part COD overrides (T.800 A.6.1) ──────────────────────────
+//
+// A COD in a tile's first tile-part header replaces the main-header COD
+// for that tile: progression order, layer count, MCT, decomposition
+// levels, code-block size/style, wavelet, precincts. It was c145-ignored,
+// so the packet walk drove such tiles with the MAIN parameters: d2_colr
+// (tiles 1 and 3 switch progression to RPCL/CPRL) desynced into garbage
+// (max_abs 254), and f1_mono's tile 4 (7 layers vs 4) had three layers
+// of packets never walked — the validator saw a "clean" under-read.
+
+const d2_colr_j2c = @embedFile("fixtures/conformance/d2_colr.j2c");
+
+test "validate: tile-part COD raising the layer count is applied — both layers walk, no c145" {
+    const allocator = std.testing.allocator;
+    // Main COD: 1 layer. Tile-part COD: 2 layers (Scod 0, LRCP, layers=2, no
+    // MCT, decomp 0, cblk 64x64, cbsty 0, 5/3). Body: two empty packets.
+    const stream = try buildPackedMiniStream(allocator, .{
+        .tp_hdr_extra = &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 },
+        .body = &.{ 0x00, 0x00 },
+    });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep, .jp2_packets_under_read));
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+}
+
+test "deepValidate strict: f1_mono's tile-part COD (7 layers on tile 4) is applied — no c145, no under-read" {
+    const allocator = std.testing.allocator;
+    var rep = try jp2z.internal.deepValidate(allocator, f1_mono_j2c, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep, .jp2_packets_under_read));
+    try std.testing.expect(rep.overall != .fail);
+}
+
+test "cleanroom: d2_colr (tile-part COD switches progression on tiles 1 and 3) byte-exact vs openjpeg" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, d2_colr_j2c);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, d2_colr_j2c);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(oracle.width, img.width);
+    try std.testing.expectEqual(oracle.height, img.height);
+    const comps: usize = img.num_components;
+    try std.testing.expectEqual(@as(usize, oracle.channels), comps);
+    const n: usize = @as(usize, img.width) * @as(usize, img.height);
+    var c: usize = 0;
+    while (c < comps) : (c += 1) {
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (@as(i32, img.planes[c][i]) != @as(i32, oracle.pixels[i * comps + c])) {
+                std.debug.print("\n[d2] mismatch c{d} at ({d},{d}): ours={d} oj={d}\n", .{ c, i % img.width, i / img.width, img.planes[c][i], oracle.pixels[i * comps + c] });
+                return error.PixelMismatch;
+            }
+        }
+    }
+}

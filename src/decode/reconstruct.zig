@@ -170,6 +170,10 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
 
     var list = try codestream.extractCblkPlans(allocator, data);
     defer list.deinit(allocator);
+    // A tile-part COD that changes decomposition/wavelet/MCT is validated
+    // with the tile's params but would be reconstructed with the main
+    // header's below: refuse rather than mis-render.
+    if (list.tile_override_unsupported) return error.UnsupportedTileCodingOverride;
     // Bucket plans by (tile, component) once. The reconstruction sweep then
     // visits each plan O(1) times via a forward cursor (planRangeFor), instead
     // of re-scanning the whole flat list per tile×component — which was

@@ -11,7 +11,7 @@
 {"fixture":"c1_mono.j2c","status":"PASS","detail":"oracle:pix","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"c2_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"d1_colr.j2c","status":"PASS","detail":"oracle:pix","w":256,"h":149,"comps":3,"max_abs":0}
-{"fixture":"d2_colr.j2c","status":"FAIL","detail":"","w":256,"h":149,"comps":3,"max_abs":254}
+{"fixture":"d2_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"e1_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"e2_colr.j2c","status":"DECODED","detail":"skip:dim-mismatch","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"f1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}

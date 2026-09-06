@@ -1548,6 +1548,24 @@ fn walkTileParts(
                         // dequant stepsizes both change. p1_04 carries one
                         // on 63 of its 64 tiles.
                         var tile_params = params;
+                        var tile_ok = true;
+                        // A first-tile-part COD is the tile's coding style
+                        // (T.800 A.6.1) — progression, layers, MCT, decomposition,
+                        // cblk size/style, wavelet, precincts — and goes FIRST:
+                        // the QCD/QCC tables below are sized by its decomp count.
+                        // d2_colr switches progression on tiles 1 and 3; f1_mono's
+                        // tile 4 declares 7 layers against the main header's 4.
+                        if (tp_ov.cod) |span| {
+                            tile_ok = try parseCodInto(report, allocator, &tile_params, data[span.start..span.end], span.start);
+                            // Decode reconstructs with the MAIN header's
+                            // decomposition/wavelet/MCT; a tile that changes any
+                            // of those is validated here but refused by decode.
+                            if (extractor) |ex| {
+                                if (tile_params.num_decomp_levels != params.num_decomp_levels or tile_params.wavelet != params.wavelet or tile_params.mct != params.mct) {
+                                    ex.tile_override_unsupported = true;
+                                }
+                            }
+                        }
                         if (tp_ov.has_qcd) {
                             // A tile-part QCD outranks every main-header QCC
                             // (A.6.5): clear inherited overrides first.
@@ -1557,32 +1575,43 @@ fn walkTileParts(
                         for (tp_ov.qcc.items) |q| {
                             try parseQccBody(report, allocator, &tile_params, data[q.start..q.end], q.start);
                         }
-                        gop.value_ptr.* = TileWalk.init(allocator, tile_params, tcw, tch, tcx0, tcy0, isot) catch |e| {
-                            // Don't leave a half-built entry in the map.
+                        if (!tile_ok) {
+                            // Unwalkable tile geometry (findings already emitted):
+                            // no walk for this tile, and no later part may build
+                            // one over the main-header params by mistake.
                             _ = tiles.remove(isot16);
-                            return e;
-                        };
+                            if (tp_state.getPtr(isot16)) |s| s.broken = true;
+                        } else {
+                            gop.value_ptr.* = TileWalk.init(allocator, tile_params, tcw, tch, tcx0, tcy0, isot) catch |e| {
+                                // Don't leave a half-built entry in the map.
+                                _ = tiles.remove(isot16);
+                                return e;
+                            };
+                        }
                     } else {
-                        // QCD/QCC are only honored in a tile's FIRST tile-part
-                        // header (T.800 A.6.4/A.6.5 placement); a later one is
-                        // ignored — surface it rather than silently drop.
+                        // COD/QCD/QCC are only honored in a tile's FIRST tile-part
+                        // header (T.800 A.6.1/A.6.4/A.6.5 placement); a later one
+                        // is ignored — surface it rather than silently drop.
+                        if (tp_ov.cod) |span| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, span.start - 4, null);
                         if (tp_ov.has_qcd) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
                         for (tp_ov.qcc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
                     }
-                    // POC entries from THIS tile-part's header accumulate
-                    // onto the tile's sequencer before its body is walked
-                    // (e1_colr: tile 1's two parts each contribute one).
-                    try gop.value_ptr.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
-                    // A tile-part body is a whole number of packets; resume
-                    // this tile's iterator across its tile-parts (TNsot>1).
-                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null, if (packed_store) |*ps| ps else null);
-                    if (res != .incomplete) {
-                        gop.value_ptr.deinit(allocator);
-                        _ = tiles.remove(isot16);
-                        // Structural ledger: the tile is done; any further
-                        // tile-part claiming it is a violation (and must
-                        // not resurrect a fresh TileWalk over old state).
-                        if (tp_state.getPtr(isot16)) |s| s.complete = true;
+                    if (tiles.getPtr(isot16)) |tw| {
+                        // POC entries from THIS tile-part's header accumulate
+                        // onto the tile's sequencer before its body is walked
+                        // (e1_colr: tile 1's two parts each contribute one).
+                        try tw.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
+                        // A tile-part body is a whole number of packets; resume
+                        // this tile's iterator across its tile-parts (TNsot>1).
+                        const res = try walkTilePartBody(report, allocator, tw, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null, if (packed_store) |*ps| ps else null);
+                        if (res != .incomplete) {
+                            tw.deinit(allocator);
+                            _ = tiles.remove(isot16);
+                            // Structural ledger: the tile is done; any further
+                            // tile-part claiming it is a violation (and must
+                            // not resurrect a fresh TileWalk over old state).
+                            if (tp_state.getPtr(isot16)) |s| s.complete = true;
+                        }
                     }
                 }
                 // Missing SOD inside a tile-part is already caught
@@ -1680,6 +1709,11 @@ const TileOverrides = struct {
     /// spans of `data`. Applied to the tile's params after its QCD, in
     /// order (A.6.5 precedence: tile QCC > tile QCD > main QCC > main QCD).
     qcc: std.ArrayListUnmanaged(struct { start: usize, end: usize }) = .empty,
+    /// COD body (after Lcod) in this tile-part header (T.800 A.6.1: the
+    /// tile's coding style — progression, layers, MCT, decomposition,
+    /// code-block size/style, wavelet, precincts). Applied FIRST at tile
+    /// init, since QCD/QCC sizing depends on its decomposition count.
+    cod: ?struct { start: usize, end: usize } = null,
 
     fn deinit(self: *TileOverrides, allocator: Allocator) void {
         self.plt.deinit(allocator);
@@ -1719,12 +1753,14 @@ fn scanTilePartHeaderMarkers(
         const lseg = std.mem.readInt(u16, data[p + 2 ..][0..2], .big);
         if (lseg < 2 or p + 2 + lseg > hdr_end) return out; // malformed length — bail
         switch (marker) {
-            // COD in a tile-part header is a per-tile coding-style
-            // override jp2z does not yet apply — same flag as COC/QCC/RGN.
-            @intFromEnum(Marker.cod),
+            // COC/RGN are per-component overrides jp2z does not yet apply.
             @intFromEnum(Marker.coc),
             @intFromEnum(Marker.rgn),
             => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, p, null),
+            // Tile-part COD is APPLIED (the tile's coding style, A.6.1):
+            // record its body span; the caller parses it into the owning
+            // tile's params before QCD/QCC (last one wins, like QCD).
+            @intFromEnum(Marker.cod) => out.cod = .{ .start = p + 4, .end = p + 2 + @as(usize, lseg) },
             // Tile-part QCC is APPLIED (per-component quantization for this
             // tile): record its body span; the caller parses it into the
             // owning tile's params after the tile QCD.
@@ -1879,15 +1915,16 @@ fn parsePocBody(
 ///   SPcod  ≥5 bytes (decomp, cblkw, cblkh, cblksty, qmfbid, ...)
 ///
 /// Minimum body length (excluding Lcod): 10 bytes.
-fn parseCodBody(
+fn parseCodInto(
     report: *ValidationReport,
     allocator: Allocator,
+    cp_opt: ?*CodingParams,
     body: []const u8,
     offset: usize,
-) Allocator.Error!void {
+) Allocator.Error!bool {
     if (body.len < 10) {
         try emit(report, allocator, .fail, .bad_marker_length, offset, null);
-        return;
+        return true;
     }
     // SGcod
     const prog_order_raw = body[1];
@@ -1959,7 +1996,7 @@ fn parseCodBody(
 
     // Update CodingParams (which parseSizBody seeded with num_components).
     var invalid_precinct = false;
-    if (report.coding_params) |*cp| {
+    if (cp_opt) |cp| {
         if (prog_order_raw <= 4) cp.progression_order = @enumFromInt(prog_order_raw);
         cp.num_layers = num_layers;
         cp.num_decomp_levels = decomp_levels;
@@ -1987,13 +2024,23 @@ fn parseCodBody(
     if (invalid_precinct) {
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + precinct_byte_offset, null);
     }
-    if (invalid_precinct or geometry_unsafe) {
-        // Reject: a non-conformant precinct partition / out-of-range
-        // geometry cannot be safely walked. Un-publish coding_params so
-        // the packet walk + decodeCleanroom stop cleanly
-        // (error.NoCodingParams) instead of crashing on it.
-        report.coding_params = null;
-    }
+    // A non-conformant precinct partition / out-of-range geometry cannot
+    // be safely walked: the caller un-publishes (main header) or skips the
+    // tile (tile-part COD) so the packet walk + decodeCleanroom stop
+    // cleanly instead of crashing on it.
+    return !(invalid_precinct or geometry_unsafe);
+}
+
+/// Main-header COD: parse into the report's params; un-publish them when
+/// the geometry is unwalkable (error.NoCodingParams downstream).
+fn parseCodBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    const ok = try parseCodInto(report, allocator, if (report.coding_params) |*cp| cp else null, body, offset);
+    if (!ok) report.coding_params = null;
 }
 
 /// Parse a QCD (Quantization Default) marker body. T.800 A.6.4:

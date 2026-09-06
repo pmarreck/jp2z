@@ -402,3 +402,21 @@ stripped. Two files were mangled that way today (`|*b|` captures). Use a
 delimiter that cannot occur in Zig (`s#...#...#` is not safe either — Zig
 has none that is universally absent), or use the exact-match Edit tool for
 anything containing `|`.
+
+## 2026-09-06 — "unsupported" reached zero across the ISO controls, and what that cost
+
+Applying tile-part COD (A.6.1) closed the last c145 on the vendored ISO
+set: p0_04 (QCC), f1_mono (tile COD), and every packed-header file now
+walk with the parameters the stream actually declares. f1 is the
+instructive one — its tile 4 declares 7 layers against the main header's
+4, so three layers of packets were never walked, and the validator
+reported a clean file with a WARN-level under-read. An ignored override
+does not only mis-decode; it silently shrinks the surface the validator
+checks. The rule for the remaining ones (COC, RGN): a marker in the
+c145 set is a hole in coverage, not a footnote.
+
+Mechanics worth keeping: parse-into-any-params (parseCodInto/parseQcdInto/
+parseQccBody) with the tile's copy as the target, applied in dependency
+order (COD first, then QCD, then QCC), and a per-tile "broken" ledger so an
+unwalkable tile COD cannot let a later tile-part build a walk over the main
+header's geometry.

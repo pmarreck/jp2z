@@ -36,6 +36,11 @@ pub const CblkExtractor = struct {
     allocator: Allocator,
     /// Per-cblk byte buffer + metadata captured on first sight.
     map: std.AutoHashMap(CblkKey, Entry),
+    /// Set by the walker when a tile-part COD changes decomposition,
+    /// wavelet, or MCT for a tile: the plans are still correct (validation
+    /// walks with the tile's params) but decodeCleanroom reconstructs with
+    /// the main header's, so it must refuse rather than mis-render.
+    tile_override_unsupported: bool = false,
 
     pub const Entry = struct {
         buffer: std.ArrayList(u8) = .empty,
@@ -174,7 +179,7 @@ pub const CblkExtractor = struct {
             entry.segments = &.{}; // ownership moved to the plan
             idx += 1;
         }
-        return .{ .plans = plans };
+        return .{ .plans = plans, .tile_override_unsupported = self.tile_override_unsupported };
     }
 };
 

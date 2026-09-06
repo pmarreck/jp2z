@@ -34,14 +34,20 @@ override, still c145) is the one remaining unsupported-but-accepted
 codestream control. Zero-byte code-block contributions now carry their
 coding passes into the plan (e1_colr: seven tiny code-blocks).
 
+2026-09-06 (evening): tile-part COD overrides are applied (A.6.1), so
+f1_mono no longer counts as unsupported and `d2_colr.j2c` (tiles 1 and 3
+switch progression) joins as control 17. No ISO control carries an
+ignored marker any more; the C smoke test's c145 invariant now uses a
+crafted RGN-bearing stream.
+
 | Family | Valid controls | False-positive rejects | Unsupported controls accepted | Known-invalid sniper misses | Known-invalid bolter misses | Known-invalid shotgun misses |
 |---|---:|---:|---:|---:|---:|---:|
-| Raw J2K/J2C codestream | 16 | 0 | 1 | 0/16 | 0/16 | 0/16 |
+| Raw J2K/J2C codestream | 17 | 0 | 0 | 0/17 | 0/17 | 0/17 |
 | JP2 container | 3 | 0 | 0 | 0/3 | 0/3 | 0/3 |
 
 Known-invalid mutations damage the mandatory SOC marker at three scales:
 one bit (sniper), one byte (bolter/boltgun), and up to 1 KiB (shotgun).
-All 57 are rejected. All controls and mutations completed classification;
+All 60 are rejected. All controls and mutations completed classification;
 the indeterminate count is zero.
 
 The same scales are also applied inside each first tile-part entropy body.
@@ -52,9 +58,9 @@ independent semantic or specification-grounded label.
 
 | Family | Entropy sniper detected | Entropy bolter detected | Entropy shotgun detected |
 |---|---:|---:|---:|
-| Raw J2K/J2C codestream | 12/16 | 12/16 | 16/16 |
+| Raw J2K/J2C codestream | 13/17 | 13/17 | 17/17 |
 | JP2 container | 3/3 | 3/3 | 3/3 |
-| Total | 15/19 | 15/19 | 19/19 |
+| Total | 16/20 | 16/20 | 20/20 |
 
 The test locks these values as minimum sensitivity floors. Higher detection
 counts pass. The independent OpenJPEG oracle remains available only to the

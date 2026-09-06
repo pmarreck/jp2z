@@ -131,6 +131,19 @@ those fixtures, and OpenJPEG retirement is gated on it).
       AND the coding-pass budget was under-counted. CodeBlockState now
       records last_contribution_passes; the extractor keys on it. RED:
       crafted 1-pass/0-byte packet + the 7 e1 cblks vs oracle values.
+- [x] **Tile-part COD overrides** (2026-09-06 ~12:30pm EDT). A.6.1: a
+      first-tile-part COD is the tile's coding style (progression, layers,
+      MCT, decomp, cblk, wavelet, precincts). parseCodBody → parseCodInto
+      (any params target); TileOverrides.cod span applied FIRST at tile
+      init (QCD/QCC sizing depends on its decomp). An unwalkable tile COD
+      skips that tile's walk (ledger broken); a later-part COD → c145. A
+      tile changing decomp/wavelet/MCT is validated but decode refuses
+      (error.UnsupportedTileCodingOverride) rather than mis-render. RED:
+      crafted 1→2 layers, f1_mono (tile 4: 7 layers, previously 3 layers
+      unwalked = silent under-validation), d2 byte-exact vs openjpeg. d2 is
+      Sweep: d2 254→PASS; PASS 31, NEAR 4, FAIL 1 (file2 cdef), ERROR 1.
+      matrix control 17; NO ISO control carries an ignored marker any more
+      (unsupported 0/17); smoke.c c145 invariant uses a crafted RGN stream.
 - [x] **QCC per-component quantization** (2026-09-06 ~12:15pm EDT). QCC
       (main + tile-part) applied with A.6.5 precedence; CodingParams grew
       `quant: QuantTable` + `comp_quant[16]`; mbForSubband/quantFor take
@@ -153,10 +166,6 @@ those fixtures, and OpenJPEG retirement is gated on it).
       (else c145 unsupported, never invalid). decodeCleanroom refuses >16
       with error.TooManyComponents instead of indexing past its arrays.
 - [ ] Remaining sweep FAILs, attributed by tile-hist / T1 diff:
-      - **d2_colr (254)**: tile-part COD overrides progression (tiles 1, 3
-        carry COD prog 3/4 vs main prog 1) — c145-ignored today, so the
-        packet walk desyncs. Slice: apply tile-part COD (all SGcod/SPcod
-        fields) to the tile's params like tile QCD already is.
       - **file2 (158)**: T1 matches 100%; the JP2 cdef box maps channels
         BGR (cn0→asoc3, cn2→asoc1) and the openjpeg oracle applies it;
         the cleanroom emits codestream order. Decode-only: parse cdef in

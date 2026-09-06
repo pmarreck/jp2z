@@ -215,32 +215,45 @@ int main(void) {
     jp2z_findings_sink_free(e1s);
 
     /* ── Unsupported-valid invariant (release lock, Einstein step 3) ──
-     * c145 (jp2_unsupported_marker_ignored: COC/RGN/tile-COD seen but not
-     * applied) marks a CONFORMING stream using a feature jp2z doesn't apply
-     * yet — "unsupported-valid", never "invalid". It must stay WARN and must
-     * never independently escalate a strict verdict to FAIL. f1_mono (ISO
-     * class F) carries one such marker and is a must-accept control of the
-     * mutation matrix: the finding exists, is WARN, and the file ACCEPTs. */
-    static const unsigned char f1[] = {
-#embed "../unit/fixtures/conformance/f1_mono.j2c"
+     * c145 (jp2_unsupported_marker_ignored: COC/RGN seen but not applied)
+     * marks a CONFORMING stream using a feature jp2z doesn't apply yet —
+     * "unsupported-valid", never "invalid". It must stay WARN and must never
+     * independently escalate a strict verdict to FAIL. Every ISO fixture
+     * that used to carry an ignored marker (p0_04 QCC, f1_mono tile COD) is
+     * applied now, so the carrier is a crafted 4x4 stream: the mini-stream
+     * shell plus a main-header RGN (ROI shift 8) — one empty packet, EOC. */
+    static const unsigned char rgn_mini[] = {
+        0xFF, 0x4F,
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,
+        0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08, /* RGN: Crgn=0, Srgn=0, SPrgn=8 */
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01,
+        0xFF, 0x93, 0x00,
+        0xFF, 0xD9,
     };
-    jp2z_findings_sink_t *f1s = jp2z_findings_sink_create();
-    int f1sev = jp2z_deep_validate(f1, sizeof f1, 1, f1s);
-    ASSERT(f1sev >= 0 && f1sev < JP2Z_SEVERITY_FAIL, "f1_mono (valid, unsupported-marker carrier): strict ACCEPTs");
+    jp2z_findings_sink_t *rgs = jp2z_findings_sink_create();
+    int rgsev = jp2z_deep_validate(rgn_mini, sizeof rgn_mini, 1, rgs);
+    ASSERT(rgsev >= 0 && rgsev < JP2Z_SEVERITY_FAIL, "RGN-bearing mini stream (valid, unsupported feature): strict ACCEPTs");
     {
         size_t n145 = 0;
-        for (size_t i = 0; i < jp2z_findings_sink_count(f1s); i++) {
+        for (size_t i = 0; i < jp2z_findings_sink_count(rgs); i++) {
             jp2z_sink_finding_t fd = {0};
-            if (jp2z_findings_sink_get(f1s, i, &fd) != JP2Z_OK) continue;
+            if (jp2z_findings_sink_get(rgs, i, &fd) != JP2Z_OK) continue;
             if (fd.code == JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED) {
                 n145++;
                 ASSERT(fd.severity == JP2Z_SEVERITY_WARN,
                        "c145 unsupported-valid stays WARN, never FAIL, in strict mode");
             }
         }
-        ASSERT(n145 >= 1, "f1_mono exercises c145 so the invariant is non-vacuous");
+        ASSERT(n145 >= 1, "the RGN mini stream exercises c145 so the invariant is non-vacuous");
     }
-    jp2z_findings_sink_free(f1s);
+    jp2z_findings_sink_free(rgs);
 
     /* ── Per-tile QCD overrides must be APPLIED, not ignored ──
      * p1_04.j2k (ISO conformance, T.803 pass-case): 64 tiles, 9/7,
