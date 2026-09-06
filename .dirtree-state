@@ -9,6 +9,7 @@ annotate=[
 	conformance/sweep.ndjson = Generated per-fixture sweep records (self-describing NDJSON, _meta header); committed as the deterministic regression baseline
 	docs/INTERFACE_CONTRACT.md = Frozen v1 public interface (Zig surface + C ABI + finding registry) consumers pin against; Einstein-gated
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
+	src/decode/image.zig = Planar cleanroom output → public interleaved Image: canvas at finest sub-sampling, palette (pclr/cmap) application, clamp, u8/u16, colr colour space; the wrapper-free decode route
 	src/decode/reconstruct.zig = Cleanroom reconstruct (5/3 + 9/7 + RCT/ICT + level shift) AND deepValidate strict-findings entry point (M7)
 	sweep = Conformance-sweep driver: runs sweep_one over all 57 ISO 15444-4 fixtures, writes conformance/{sweep.ndjson,SCORECARD.md}; deterministic regression net
 	tests/mutation_matrix.zig = OpenJPEG-free strict-validation classifier over valid controls and deterministic mutation scales

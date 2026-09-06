@@ -4254,3 +4254,132 @@ test "JP2 palette: cdef channel count is the cmap entry count — a channel beyo
     defer rep.deinit(allocator);
     try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "cdef"));
 }
+
+// ── Per-component wavelets in decode (COC: 9/7 and 5/3 side by side) ──
+
+
+test "cleanroom: p0_06 (COC mixes 9/7 and 5/3 across components) decodes and matches openjpeg within 1" {
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, p0_06_j2k);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, p0_06_j2k);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(oracle.width, img.width);
+    try std.testing.expectEqual(oracle.height, img.height);
+    try std.testing.expectEqual(@as(usize, oracle.channels), img.num_components);
+    // Components 1..3 are sub-sampled (2,1) (1,2) (2,2); the oracle replicates
+    // them to the full canvas by nearest neighbour, so map each canvas pixel
+    // back to the component's own sample.
+    const cp = (try jp2z.internal.inspect(allocator, p0_06_j2k)) orelse return error.NoCodingParams;
+    var max_abs: [4]i64 = @splat(0);
+    var c: usize = 0;
+    while (c < img.num_components) : (c += 1) {
+        const dx = cp.comp_dx[c];
+        const dy = cp.comp_dy[c];
+        const cw = (img.width + dx - 1) / dx;
+        var y: u32 = 0;
+        while (y < img.height) : (y += 1) {
+            var x: u32 = 0;
+            while (x < img.width) : (x += 1) {
+                const ours = img.planes[c][(y / dy) * cw + (x / dx)];
+                const oi = (@as(usize, y) * img.width + x) * oracle.channels + c;
+                const oj: i64 = if (oracle.bits_per_sample > 8) oracle.pixelsU16()[oi] else oracle.pixels[oi];
+                const d: i64 = @as(i64, ours) - @as(i64, oj);
+                max_abs[c] = @max(max_abs[c], if (d < 0) -d else d);
+            }
+        }
+    }
+    // 9/7 components: within 1 (fixed-point rounding); the 5/3 component
+    // (3, via COC) is lossless and must be exact.
+    for (max_abs[0..3]) |m| try std.testing.expect(m <= 1);
+    try std.testing.expectEqual(@as(i64, 0), max_abs[3]);
+}
+
+// ── PLM: packet lengths in the main header (T.800 A.7.2) ──────────
+//
+// TLM and PLT are already cross-checked against the walk; PLM (Zplm, then
+// per tile-part Nplm + Iplm 7-bit-continued lengths, a tile-part's Iplm
+// may continue in the next PLM segment) was recognised but never read, so
+// a corrupted PLM passed silently.
+
+test "PLM: lengths that match the walked packets are accepted, also when a tile-part's entry spans two PLM segments" {
+    const allocator = std.testing.allocator;
+    // One tile-part, one packet of 1 byte: Zplm 0, Nplm 1, Iplm 0x01.
+    const one = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x57, 0x00, 0x05, 0x00, 0x01, 0x01 } });
+    defer allocator.free(one);
+    var r1 = try jp2z.validate(allocator, one);
+    defer r1.deinit(allocator);
+    for (r1.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    // Same, split: segment Zplm 0 carries Nplm, segment Zplm 1 carries Iplm.
+    const split = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x57, 0x00, 0x04, 0x00, 0x01, 0xFF, 0x57, 0x00, 0x04, 0x01, 0x01 } });
+    defer allocator.free(split);
+    var r2 = try jp2z.validate(allocator, split);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+}
+
+test "PLM: a length that disagrees with the walked packet, or more tile-part entries than the codestream has, → FAIL naming PLM" {
+    const allocator = std.testing.allocator;
+    const wrong = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x57, 0x00, 0x05, 0x00, 0x01, 0x02 } });
+    defer allocator.free(wrong);
+    var r1 = try jp2z.validate(allocator, wrong);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "PLM"));
+    // Two tile-part entries (Nplm 1 / Iplm 1 twice) for a single tile-part.
+    const surplus = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x57, 0x00, 0x07, 0x00, 0x01, 0x01, 0x01, 0x01 } });
+    defer allocator.free(surplus);
+    var r2 = try jp2z.validate(allocator, surplus);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "PLM"));
+}
+
+// ── Report carries what the cleanroom decode needs from jp2h ──────
+//
+// Retiring the openjpeg wrapper from `decode` means the cleanroom route
+// must reproduce its Image contract: colour space from colr (I.5.3.3) and
+// palette application from pclr + cmap. Those values live on the report.
+
+test "report: colr (meth 1) enumerated colour space is surfaced" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    // colr: METH 1, PREC 0, APPROX 0, EnumCS 17 (greyscale).
+    const colr = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 };
+    const jp2 = try wrapInJp2Ex(allocator, payload, 1, &colr);
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(@as(?u32, 17), rep.colr_enumcs);
+    const none = try wrapInJp2Ex(allocator, payload, 1, &.{});
+    defer allocator.free(none);
+    var rep0 = try jp2z.validate(allocator, none);
+    defer rep0.deinit(allocator);
+    try std.testing.expectEqual(@as(?u32, null), rep0.colr_enumcs);
+}
+
+test "report: palette entries (pclr) and component mapping (cmap) are surfaced with their values" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    // pclr: NE 2, NPC 1, depth 8, entries 0x10 0x20.
+    const pclr = [_]u8{ 0x00, 0x00, 0x00, 0x0E, 0x70, 0x63, 0x6C, 0x72, 0x00, 0x02, 0x01, 0x07, 0x10, 0x20 };
+    const cmap = try cmapBox(allocator, &.{.{ 0, 1, 0 }});
+    defer allocator.free(cmap);
+    const extra = try std.mem.concat(allocator, u8, &.{ &pclr, cmap });
+    defer allocator.free(extra);
+    const jp2 = try wrapInJp2Ex(allocator, payload, 1, extra);
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    const pal = rep.palette orelse return error.MissingPalette;
+    try std.testing.expectEqual(@as(u16, 2), pal.ne);
+    try std.testing.expectEqual(@as(u8, 1), pal.npc);
+    try std.testing.expectEqualSlices(u8, &.{8}, pal.depths);
+    try std.testing.expectEqualSlices(u32, &.{ 0x10, 0x20 }, pal.entries);
+    try std.testing.expectEqual(@as(usize, 1), rep.cmap.len);
+    try std.testing.expectEqual(@as(u16, 0), rep.cmap[0].cmp);
+    try std.testing.expectEqual(@as(u8, 1), rep.cmap[0].mtyp);
+    try std.testing.expectEqual(@as(u8, 0), rep.cmap[0].pcol);
+}

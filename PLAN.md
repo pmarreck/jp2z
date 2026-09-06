@@ -242,12 +242,43 @@ those fixtures, and OpenJPEG retirement is gated on it).
       decode → c145 WARN, so file9 (ISO palette fixture) is the matrix's
       one unsupported control. issue412 (Kakadu 7.3.3 palette) accepted;
       mem-b2ace68c-1381 (pclr NE=1/NPC=4 without entries) FAILs.
-- [ ] **Per-component wavelets in decode.** COC lets components use
-      different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
-      Validation walks them; decodeCleanroom now REFUSES explicitly
-      (error.UnsupportedMixedWavelets) where the sweep used to grade a
-      silently wrong decode as skip:dim-mismatch. Slice: choose the 5/3 or
-      9/7 reconstruction per component (tile buffers already per component).
+- [x] **Per-component wavelets in decode** (2026-09-06 ~3:15pm EDT). An
+      all-5/3 image keeps the exact integer path; any other mix goes
+      through the Q16 path where each component picks its own transform
+      (5/3 output widened to Q16, RCT-on-Q16 when component 0 is 5/3 and
+      MCT is on, per openjpeg's tccps[0].qmfbid rule). RED: p0_06 (three
+      9/7 components + one 5/3 via COC, 12-bit, sub-sampled) vs the oracle:
+      9/7 within 1, the 5/3 component exact. On the way: the oracle
+      wrapper packs >8-bit samples as u16 in its byte buffer; tile-hist and
+      the new test read them through pixelsU16, which erased the "p1_04
+      >8-bit gap" (0/64 tiles off) — it was never a decode defect.
+- [x] **PLM cross-check** (2026-09-06 ~3:20pm EDT). PLM (A.7.2) was
+      recognised but never read. Now: Zplm-keyed segments concatenated in
+      order (gap / duplicate → FAIL), split into per-tile-part Nplm runs of
+      7-bit lengths (Nplm overrun, straddling code → FAIL), walked like
+      PLT (a PLT present is walked and PLM must agree with it), with
+      fewer/more tile-part entries than the codestream → FAIL. RED:
+      matching PLM (also split across two segments) accepted; a wrong
+      length and a surplus entry FAIL naming PLM.
+- [x] **OpenJPEG retired from decode** (2026-09-06 ~3:35pm EDT).
+      `decode`/`decodeWithOptions` → decode/image.zig: validate once,
+      reconstruct (decodeFromReport), shape into the public Image (canvas
+      at the finest sub-sampling with nearest-neighbour replication,
+      pclr/cmap palette applied, unsigned clamp, u8/u16, colr enumcs →
+      colour space, layout by channel count). The report now carries
+      colr_enumcs, palette values and cmap entries. MFIC differential
+      (tests/unit/decode.zig): the cleanroom route equals the wrapper
+      byte-for-byte on c1_mono, file1, file9 (palette) and within 1 on
+      d1_colr, a5_mono, e1_colr, p1_04 (12-bit), p0_06 (mixed + sub-
+      sampled), balloon; dims/channels/prec/layout/colour space equal. The
+      CLI, the archive and the C smoke link no openjpeg (ldd clean); the
+      wrapper lives on only behind internal.openjpegDecode for the tools
+      and tests. Unsupported-but-valid streams (>16 comps, HT, tile COD
+      override) decode as NotImplemented (C: -1).
+- [x] **Nonregression census, final for this round** (2026-09-06 ~3:15pm
+      EDT): 151 files, 0 panics, 0 files openjpeg rejects that jp2z
+      accepts, 17 files jp2z FAILs that openjpeg decodes — JasPer rejects
+      every one except the asan fuzz file, and each FAIL names its cause.
 - [ ] **Phase-1 openjpeg wrapper panics on valid inputs** (oracle-only
       code, scheduled for retirement): 257 components → 16-bit output cast
       overflow (openjpeg_wrapper.zig:208); 2-component image → colour-space
@@ -316,7 +347,7 @@ those fixtures, and OpenJPEG retirement is gated on it).
       the mutation classifier), `./build`, the OpenJPEG-free import probe,
       and the 57-file differential sweep. Results: all build/test gates pass;
       sweep PASS 22, NEAR 2, FAIL 12, skip 20, ERROR 1, CRASH/TIMEOUT 0.
-- [ ] Remove OpenJPEG from the standalone decode package and C decode path.
+- [x] Remove OpenJPEG from the C decode path (2026-09-06 ~3:35pm EDT): `decode` runs decode/image.zig over the cleanroom reconstruction; the CLI and libjp2z.a link no openjpeg (ldd clean, 0 `opj_` symbols). The flake package still builds the oracle tools (sweep-one, tile-hist) against openjpeg; a runtime-only package output is a follow-up.
       The production strict-validation Zig module is clean, but the Phase-1
       decoder and bundled CLI still use OpenJPEG. Consumers must not select
       those artifacts when validating until the pure-Zig decoder cutover.
@@ -762,8 +793,8 @@ oracle tests.
       unimplemented features (subsampling / TNsot>1 / SOP+EPH / RGN / 9/7 /
       SEGSYM+VSC), so multi-tile is a multi-fixture sequence — land supporting
       features one at a time. p0_10 (subsampling + TNsot>1) is now fully landed.
-- [ ] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use.
-- [ ] Final cleanup: remove openjpeg from runtime dependency graph (jpegz cutover).
+- [x] Move `openjpeg_wrapper` -> `internal.openjpegDecode` for oracle-only use. (2026-09-06)
+- [x] Final cleanup: openjpeg is out of the runtime artifacts (CLI, archive, C smoke link) — 2026-09-06. Remaining: flake `packages.default` builds the oracle tools too.
 
 ### M7 — strict validation findings (THE `validate` differentiator)
 Goal: report MORE error types and tolerate LESS than libopenjpeg/grok.

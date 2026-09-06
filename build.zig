@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         "Optimization mode (default: ReleaseFast)",
     ) orelse .ReleaseFast;
 
-    // External library paths (Phase 1: openjpeg as the backend).
+    // External library paths (openjpeg: build-time oracle only).
     const openjpeg_include = b.option(
         []const u8,
         "openjpeg-include",
@@ -21,14 +21,11 @@ pub fn build(b: *std.Build) void {
     ) orelse "/usr/lib";
 
     // ── PUBLIC Zig module — what `@import("jp2z")` gets ────────────
-    // Deliberately carries ZERO C attachments: a validate-only consumer
-    // (the jpegz facade's U1 path) compiles and links with no openjpeg
-    // headers or libs. Zig's lazy analysis keeps the Phase-1 decode path
-    // (openjpeg_wrapper's @cImport) out of such builds; the import-probe
-    // gate below keeps it that way. A consumer that wants decode through
-    // this module must supply its own openjpeg include/lib (or wait for
-    // Phase 3, when the cleanroom replaces the wrapper and this split
-    // collapses).
+    // Carries ZERO C attachments: validate AND decode are pure Zig since
+    // Phase 3 (decode/image.zig routes the cleanroom reconstruction), so a
+    // consumer links no openjpeg. Zig's lazy analysis keeps the oracle
+    // (openjpeg_wrapper's @cImport behind internal.openjpegDecode) out of
+    // such builds; the import-probe gate below keeps it that way.
     const jp2z_pub = b.addModule("jp2z", .{
         .root_source_file = b.path("src/jp2z.zig"),
         .target = target,
@@ -36,9 +33,10 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // ── Internal Phase-1 flavor: same root + the openjpeg backend ──
-    // Every in-repo artifact that exercises decode (CLI, sweep, tests)
-    // uses this instance. Dissolves into jp2z_pub at Phase 3.
+    // ── Internal oracle flavor: same root + openjpeg for the oracle ──
+    // The unit tests and the sweep / tile-hist tools diff the cleanroom
+    // decode against internal.openjpegDecode, so they use this instance.
+    // The CLI and the archive no longer need it.
     const jp2z_mod = b.createModule(.{
         .root_source_file = b.path("src/jp2z.zig"),
         .target = target,
@@ -62,7 +60,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    lib_mod.addIncludePath(.{ .cwd_relative = openjpeg_include });
     const lib = b.addLibrary(.{
         .name = "jp2z",
         .linkage = .static,
@@ -85,10 +82,9 @@ pub fn build(b: *std.Build) void {
     });
     cli_mod.addIncludePath(b.path("include"));
     cli_mod.linkLibrary(lib);
-    // Static lib doesn't propagate system-library dependencies in Zig 0.16,
-    // so the executable's own module must also resolve libopenjp2.
-    cli_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
-    cli_mod.linkSystemLibrary("openjp2", .{});
+    // Phase 3: decode is the pure-Zig cleanroom route, so the CLI links no
+    // openjpeg. If anything in the archive reached the wrapper again, this
+    // link would fail — that is the retirement gate.
     const cli = b.addExecutable(.{
         .name = "jp2z",
         .root_module = cli_mod,
@@ -251,9 +247,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c23", "-Wall", "-Wextra" },
     });
     cli_test_mod.addIncludePath(b.path("include"));
-    cli_test_mod.linkLibrary(lib);
-    cli_test_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
-    cli_test_mod.linkSystemLibrary("openjp2", .{});
+    cli_test_mod.linkLibrary(lib); // no openjpeg: the archive must stand alone
     const cli_test = b.addExecutable(.{
         .name = "ffi_smoke",
         .root_module = cli_test_mod,

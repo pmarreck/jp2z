@@ -508,3 +508,17 @@ openjpeg alone contradicts is undecided until step 3.
 
 Encoder identity lives in the COM marker (`strings -n 6 file | head`):
 kodak is "DCP-Werkstatt", test_lossless is "ClearCanvas DICOM OpenJPEG".
+
+## The oracle packs >8-bit samples as u16 in `pixels` (2026-09-06)
+
+`internal.openjpegDecode` returns `core.types.Image` whose `pixels: []u8`
+holds u8 samples for ≤8-bit images and **u16 samples (2 bytes each)** for
+deeper ones; read them via `pixelsU16()` when `bits_per_sample > 8`.
+Indexing `pixels[i * channels + c]` on a 12-bit image reads the low and
+high bytes of alternate samples and produces a "whole image off by ~3900"
+signal that looks exactly like a decode bug. It fooled tile-hist (the
+"p1_04 >8-bit gap" carried in PLAN for weeks) and a fresh test the same
+afternoon. sweep-one was never fooled because it prefers the planar `.pix`
+oracle. Also: the oracle upsamples sub-sampled components to the canvas
+by nearest neighbour, so per-component planes must be mapped with
+`(x / dx, y / dy)` against `ceil(width / dx)` strides.

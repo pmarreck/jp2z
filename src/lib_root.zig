@@ -1,11 +1,12 @@
 //! Root of the STATIC LIBRARY artifact (libjp2z.a) — and ONLY that
 //! artifact. Re-exports the public API and force-links the C ABI so its
 //! `export fn`s land in the archive. This lives OUTSIDE src/jp2z.zig on
-//! purpose: the C ABI's decode path reaches openjpeg_wrapper's @cImport,
-//! and force-linking it from the importable module root made every plain
-//! Zig consumer (e.g. the jpegz facade's validate-only U1 path) inherit a
-//! hard openjpeg dependency. tests/import_probe.zig is the mechanical
-//! gate that keeps the force-link from migrating back.
+//! purpose: force-linking the C ABI from the importable module root made
+//! every plain Zig consumer (e.g. the jpegz facade's validate-only U1
+//! path) carry the archive's exports. Since Phase 3 the C ABI's decode is
+//! the pure-Zig cleanroom route, so the archive references no openjpeg
+//! symbol: the CLI and the C smoke test link it without -lopenjp2, and
+//! tests/import_probe.zig keeps the public module free of C attachments.
 //!
 //! Fleet note (Peter, 2026-07-31): jp2z's C-FFI dogfooding obligation is
 //! carried by jpegz (the whole-family facade + its C CLI); jp2z's own C

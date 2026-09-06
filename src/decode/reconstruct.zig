@@ -177,6 +177,12 @@ test "roiDescale: background below 2^shift unchanged; ROI magnitudes shifted dow
 pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     var report = try codestream.validate(allocator, data);
     defer report.deinit(allocator);
+    return decodeFromReport(allocator, data, &report);
+}
+
+/// decodeCleanroom over a report the caller already holds (the public
+/// decode route validates once and keeps the report for colr / palette).
+pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const codestream.ValidationReport) !Image {
     const params = report.coding_params orelse return error.NoCodingParams;
     const image_w = report.width orelse return error.NoDimensions;
     const image_h = report.height orelse return error.NoDimensions;
@@ -197,13 +203,16 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     // header's below: refuse rather than mis-render.
     if (list.tile_override_unsupported) return error.UnsupportedTileCodingOverride;
     if (list.ht_unsupported) return error.UnsupportedHtCodeBlocks;
-    // COC may give components different wavelets (p0_06: 9/7 and 5/3 side
-    // by side). The two reconstruction paths below are image-wide; refuse
-    // rather than run one component through the wrong transform.
+    // COC may give components different wavelets (p0_06: 9/7 on three
+    // components, 5/3 on the fourth). The integer path below is exact for
+    // an all-5/3 image; anything else goes through the Q16 path, where each
+    // component picks its own transform and 5/3 output is widened to Q16.
+    var all_reversible = true;
     {
-        const w0 = params.codingFor(0).wavelet;
-        var k: u16 = 1;
-        while (k < ncomp) : (k += 1) if (params.codingFor(k).wavelet != w0) return error.UnsupportedMixedWavelets;
+        var k: u16 = 0;
+        while (k < ncomp) : (k += 1) if (params.codingFor(k).wavelet != .reversible_5x3) {
+            all_reversible = false;
+        };
     }
     // Bucket plans by (tile, component) once. The reconstruction sweep then
     // visits each plan O(1) times via a forward cursor (planRangeFor), instead
@@ -236,7 +245,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
         }
     }
 
-    if (params.codingFor(0).wavelet == .reversible_5x3) {
+    if (all_reversible) {
         // ── Lossless 5/3 path (integer), multi-tile + sub-sampling aware ──
         // Reconstruct each tile at COMPONENT resolution (sub-sampled grid,
         // T.800 B.2/B.3), apply inverse MCT + DC level shift PER TILE (tiles
@@ -389,11 +398,27 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
                     .oy = tcy0 - ceilDiv(params.image_y0, dy),
                 };
                 const tc_plans = planRangeFor(list.plans, &plan_cursor, t, c);
-                tqbufs[c] = try reconstructComponentTile97(allocator, tc_plans, tcx0, tcy0, tcw, tch, params.codingFor(c).num_decomp_levels, precs[c]);
+                const cc = params.codingFor(c);
+                if (cc.wavelet == .reversible_5x3) {
+                    // A 5/3 component inside a mixed image: exact integer
+                    // reconstruction, then widened to Q16 so the shared
+                    // round + DC + clamp stage below reproduces it exactly.
+                    const ibuf = try reconstructComponentTile(allocator, tc_plans, tcx0, tcy0, tcw, tch, cc.num_decomp_levels);
+                    defer allocator.free(ibuf);
+                    const q = try allocator.alloc(i64, ibuf.len);
+                    for (ibuf, q) |v, *o| o.* = @as(i64, v) << 16;
+                    tqbufs[c] = q;
+                } else {
+                    tqbufs[c] = try reconstructComponentTile97(allocator, tc_plans, tcx0, tcy0, tcw, tch, cc.num_decomp_levels, precs[c]);
+                }
                 tb_done += 1;
             }
 
-            if (params.mct and ncomp >= 3) inverseIct(tqbufs[0], tqbufs[1], tqbufs[2]);
+            // G.2: the RCT pairs with 5/3, the ICT with 9/7; a mixed image
+            // follows component 0 (openjpeg: tccps[0].qmfbid).
+            if (params.mct and ncomp >= 3) {
+                if (params.codingFor(0).wavelet == .reversible_5x3) inverseRctQ16(tqbufs[0], tqbufs[1], tqbufs[2]) else inverseIct(tqbufs[0], tqbufs[1], tqbufs[2]);
+            }
 
             // round (ties-to-even) + DC level shift + clamp, per tile,
             // compositing straight into the component planes.
@@ -553,6 +578,27 @@ const ICT_CB_B: i64 = 116130; // round(1.77200 * 65536)
 
 /// Inverse irreversible colour transform (ICT, T.800 G.3), Q16 in place:
 /// (Y,Cb,Cr) → (R,G,B). R=Y+1.402·Cr; G=Y−0.34413·Cb−0.71414·Cr; B=Y+1.772·Cb.
+/// Inverse RCT (T.800 G.2.2) over Q16 buffers: the integer lifting is
+/// applied to the sample values (Q16 >> 16, floor for negatives) and the
+/// result is re-widened, so a 5/3-coded image on the Q16 path reproduces
+/// the integer path bit-for-bit. Only reached when component 0 is 5/3 in
+/// an image whose other components are 9/7 (or vice versa, via COC).
+fn inverseRctQ16(c0: []i64, c1: []i64, c2: []i64) void {
+    const n = c0.len;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const y = c0[i] >> 16;
+        const u = c1[i] >> 16;
+        const v = c2[i] >> 16;
+        const g = y - ((u + v) >> 2);
+        const r = v + g;
+        const b = u + g;
+        c0[i] = r << 16;
+        c1[i] = g << 16;
+        c2[i] = b << 16;
+    }
+}
+
 fn inverseIct(c0: []i64, c1: []i64, c2: []i64) void {
     const n = c0.len;
     var i: usize = 0;

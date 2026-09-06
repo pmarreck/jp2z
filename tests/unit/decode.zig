@@ -112,3 +112,54 @@ test "corpus: decode p0_04.j2k from pinned openjpeg-data flake input" {
     try std.testing.expectEqual(@as(u8, 8), img.bits_per_sample);
     try std.testing.expectEqual(jp2z.PixelLayout.rgb, img.layout);
 }
+
+// ── Cleanroom decode route vs the openjpeg wrapper (MFIC differential) ──
+//
+// `decodeToImage` is the wrapper-free route that `decode` switches to when
+// openjpeg leaves the runtime build. The wrapper is the causally
+// independent oracle for the whole Image contract: dims, channels,
+// precision, layout, colour space and every sample (exact for 5/3,
+// within 1 for 9/7's fixed-point reconstruction).
+
+const a5_mono_j2c = @embedFile("fixtures/conformance/a5_mono.j2c");
+const e1_colr_j2c = @embedFile("fixtures/conformance/e1_colr.j2c");
+const p1_04_j2k = @embedFile("fixtures/conformance/p1_04.j2k");
+const p0_06_j2k = @embedFile("fixtures/conformance/p0_06.j2k");
+const balloon_jp2 = @embedFile("fixtures/conformance/balloon_eciRGB_icc.jp2");
+
+fn expectMatchesWrapper(data: []const u8, tolerance: i64) !void {
+    const allocator = std.testing.allocator;
+    var ours = try jp2z.internal.decodeToImage(allocator, data);
+    defer ours.deinit(allocator);
+    var oj = try jp2z.internal.openjpegDecode(allocator, data);
+    defer oj.deinit(allocator);
+    try std.testing.expectEqual(oj.width, ours.width);
+    try std.testing.expectEqual(oj.height, ours.height);
+    try std.testing.expectEqual(oj.channels, ours.channels);
+    try std.testing.expectEqual(oj.bits_per_sample, ours.bits_per_sample);
+    try std.testing.expectEqual(oj.layout, ours.layout);
+    try std.testing.expectEqual(oj.source_color_space, ours.source_color_space);
+    try std.testing.expectEqual(oj.pixels.len, ours.pixels.len);
+    var max_abs: i64 = 0;
+    if (oj.bits_per_sample > 8) {
+        for (oj.pixelsU16(), ours.pixelsU16()) |a, b| max_abs = @max(max_abs, @as(i64, @intCast(@abs(@as(i64, a) - @as(i64, b)))));
+    } else {
+        for (oj.pixels, ours.pixels) |a, b| max_abs = @max(max_abs, @as(i64, @intCast(@abs(@as(i64, a) - @as(i64, b)))));
+    }
+    try std.testing.expect(max_abs <= tolerance);
+}
+
+test "decodeToImage == openjpeg wrapper: 5/3 fixtures byte-exact (c1_mono, file1, file9 palette)" {
+    try expectMatchesWrapper(c1_mono_j2c, 0);
+    try expectMatchesWrapper(file1_jp2, 0);
+    try expectMatchesWrapper(file9_jp2, 0);
+}
+
+test "decodeToImage == openjpeg wrapper: 9/7 fixtures within 1 (d1_colr, a5_mono, e1_colr, p1_04 12-bit, p0_06 mixed+sub-sampled, balloon)" {
+    try expectMatchesWrapper(d1_colr_j2c, 1);
+    try expectMatchesWrapper(a5_mono_j2c, 1);
+    try expectMatchesWrapper(e1_colr_j2c, 1);
+    try expectMatchesWrapper(p1_04_j2k, 1);
+    try expectMatchesWrapper(p0_06_j2k, 1);
+    try expectMatchesWrapper(balloon_jp2, 1);
+}

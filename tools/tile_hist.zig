@@ -81,7 +81,7 @@ pub fn main() !void {
         var fy: u32 = 0;
         var fc: usize = 0;
         var ours: i32 = 0;
-        var oj: i32 = 0;
+        var oj: i64 = 0;
         var y = tr.y0;
         while (y < tr.y1) : (y += 1) {
             var x = tr.x0;
@@ -89,7 +89,8 @@ pub fn main() !void {
                 var c: usize = 0;
                 while (c < comps) : (c += 1) {
                     const i: usize = @as(usize, y - p.image_y0) * w + (x - p.image_x0);
-                    const d: i64 = @as(i64, img.planes[c][i]) - @as(i64, oracle.pixels[i * comps + c]);
+                    const oj_v: i64 = if (oracle.bits_per_sample > 8) oracle.pixelsU16()[i * comps + c] else oracle.pixels[i * comps + c];
+                    const d: i64 = @as(i64, img.planes[c][i]) - oj_v;
                     const ad = if (d < 0) -d else d;
                     if (ad > m) {
                         m = ad;
@@ -97,7 +98,7 @@ pub fn main() !void {
                         fy = y - tr.y0;
                         fc = c;
                         ours = img.planes[c][i];
-                        oj = oracle.pixels[i * comps + c];
+                        oj = if (oracle.bits_per_sample > 8) @as(i64, oracle.pixelsU16()[i * comps + c]) else @as(i64, oracle.pixels[i * comps + c]);
                     }
                 }
             }

@@ -1167,6 +1167,12 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
         if (tbox == BoxType.cdef) {
             cdef_span = .{ .body = body[pos + body_off .. pos + box_total], .off = base + pos + body_off };
         }
+        if (tbox == BoxType.colr and report.colr_enumcs == null) {
+            // I.5.3.3: METH(1) PREC(1) APPROX(1) then EnumCS(4) for METH 1.
+            // The first colr box is the one a reader uses.
+            const cb = body[pos + body_off .. pos + box_total];
+            if (cb.len >= 7 and cb[0] == 1) report.colr_enumcs = std.mem.readInt(u32, cb[3..7], .big);
+        }
         if (tbox == BoxType.pclr) {
             pclr = try parsePclrBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off);
         }
@@ -1225,6 +1231,32 @@ fn parsePclrBox(report: *ValidationReport, allocator: Allocator, body: []const u
     const expected: usize = 3 + @as(usize, npc) + @as(usize, ne) * entry_bytes;
     if (body.len != expected) {
         try emit(report, allocator, .fail, .bad_marker_length, offset, "pclr box length does not match NE × NPC palette entries (T.800 I.5.3.4)");
+        return .{ .ne = ne, .npc = npc };
+    }
+    // Well-formed: surface the values for the cleanroom decode (palette
+    // application) and any consumer. Entries are big-endian, ceil(depth/8)
+    // bytes; a signed column (B_i bit 7) keeps its raw two's-complement bits.
+    if (report.palette == null and ne > 0 and npc > 0) {
+        const depths = try allocator.alloc(u8, npc);
+        errdefer allocator.free(depths);
+        const entries = try allocator.alloc(u32, @as(usize, ne) * npc);
+        errdefer allocator.free(entries);
+        var p: usize = 3 + @as(usize, npc);
+        var e: usize = 0;
+        while (e < ne) : (e += 1) {
+            var col: usize = 0;
+            while (col < npc) : (col += 1) {
+                const depth: usize = @as(usize, body[3 + col] & 0x7F) + 1;
+                depths[col] = @intCast(depth);
+                const nb = (depth + 7) / 8;
+                var v: u32 = 0;
+                var k: usize = 0;
+                while (k < nb) : (k += 1) v = (v << 8) | body[p + k];
+                p += nb;
+                entries[e * npc + col] = v;
+            }
+        }
+        report.palette = .{ .ne = ne, .npc = npc, .depths = depths, .entries = entries };
     }
     return .{ .ne = ne, .npc = npc };
 }
@@ -1239,6 +1271,14 @@ fn parseCmapBox(report: *ValidationReport, allocator: Allocator, body: []const u
         try emit(report, allocator, .fail, .bad_marker_length, offset, "cmap box is not a whole number of 4-byte entries (T.800 I.5.3.5)");
     }
     const n: usize = body.len / 4;
+    if (report.cmap.len == 0 and n > 0) {
+        const entries = try allocator.alloc(jp2z.ValidationReport.CmapEntry, n);
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            entries[k] = .{ .cmp = std.mem.readInt(u16, body[k * 4 ..][0..2], .big), .mtyp = body[k * 4 + 2], .pcol = body[k * 4 + 3] };
+        }
+        report.cmap = entries;
+    }
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const at = i * 4;
@@ -1352,6 +1392,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // PPM segments (A.7.4) keyed by Zppm; merged into per-tile-part
     // chunks once the main header ends (a chunk may span segments).
     var ppm = PpmCollector{};
+    var plm = PlmCollector{};
     // A.4 Table A.1: COD and QCD are required in the main header. Without
     // them coding_params holds only SIZ-seeded defaults and every walk
     // would be fiction (1888.pdf.asan / issue408: openjpeg "required COD
@@ -1398,7 +1439,12 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 // every tile-part via Psot and confirms EOC at end.
                 var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
                 defer if (ppm_chunks) |*c| c.deinit(allocator);
-                try walkTileParts(report, allocator, data, pos, extractor, if (saw_tlm) tlm_entries.items else null, if (ppm_chunks) |*c| c else null);
+                const plm_lists: ?[][]u32 = if (plm.seen) try plm.parse(report, allocator) else null;
+                defer if (plm_lists) |lists| {
+                    for (lists) |l| allocator.free(l);
+                    allocator.free(lists);
+                };
+                try walkTileParts(report, allocator, data, pos, extractor, if (saw_tlm) tlm_entries.items else null, if (ppm_chunks) |*c| c else null, plm_lists, plm.origin);
                 return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
@@ -1486,6 +1532,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 try parseTlmBody(report, allocator, body, pos + 2, &tlm_entries);
             },
             @intFromEnum(Marker.ppm) => try ppm.add(report, allocator, body, pos - 2),
+            @intFromEnum(Marker.plm) => try plm.add(report, allocator, body, pos - 2),
             else => {},
         }
 
@@ -1674,6 +1721,93 @@ fn parseTlmBody(
 ///   Psot = byte distance from this SOT to the byte after the last
 ///          byte of this tile-part (i.e. to the next SOT or EOC).
 ///          Psot = 0 means "tile-part extends to EOC".
+/// PLM (T.800 A.7.2): main-header packet lengths. After Zplm, one run per
+/// tile-part in codestream order: Nplm (byte count) then Iplm, the same
+/// 7-bit-continued lengths PLT uses. A tile-part's run may continue into
+/// the next PLM segment, so segments are keyed by Zplm and concatenated in
+/// index order before parsing (the PPM shape). Until this slice PLM was
+/// recognised but never read, so a corrupted PLM passed silently.
+const PlmCollector = struct {
+    segs: [256]?[]const u8 = @splat(null),
+    seen: bool = false,
+    origin: u64 = 0,
+
+    fn add(self: *PlmCollector, report: *ValidationReport, allocator: Allocator, body: []const u8, marker_off: u64) Allocator.Error!void {
+        if (!self.seen) {
+            self.seen = true;
+            self.origin = marker_off;
+        }
+        if (body.len < 1) {
+            try emit(report, allocator, .fail, .bad_marker_length, marker_off + 2, "PLM segment has no Zplm");
+            return;
+        }
+        const z = body[0];
+        if (self.segs[z] != null) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, marker_off + 4, "duplicate Zplm index");
+            return;
+        }
+        self.segs[z] = body[1..];
+    }
+
+    /// Concatenate in Zplm order and split into per-tile-part length lists.
+    /// Caller frees every list and the outer slice.
+    fn parse(self: *const PlmCollector, report: *ValidationReport, allocator: Allocator) Allocator.Error![][]u32 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+        var gap = false;
+        var i: usize = 0;
+        while (i < 256) : (i += 1) {
+            if (self.segs[i]) |s| {
+                if (gap) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, self.origin, "PLM Zplm sequence has a gap (T.800 A.7.2)");
+                    break;
+                }
+                try buf.appendSlice(allocator, s);
+            } else gap = true;
+        }
+        var lists: std.ArrayListUnmanaged([]u32) = .empty;
+        errdefer {
+            for (lists.items) |l| allocator.free(l);
+            lists.deinit(allocator);
+        }
+        var pos: usize = 0;
+        while (pos < buf.items.len) {
+            const nplm: usize = buf.items[pos];
+            pos += 1;
+            const end = pos + nplm;
+            if (end > buf.items.len) {
+                try emit(report, allocator, .fail, .bad_marker_length, self.origin, "PLM Nplm runs past the PLM data (T.800 A.7.2)");
+                break;
+            }
+            var list: std.ArrayListUnmanaged(u32) = .empty;
+            errdefer list.deinit(allocator);
+            var acc: u32 = 0;
+            var mid = false;
+            while (pos < end) : (pos += 1) {
+                const b = buf.items[pos];
+                if (acc > (std.math.maxInt(u32) >> 7)) {
+                    try emit(report, allocator, .fail, .bad_marker_length, self.origin, "PLM packet length code overflows (T.800 A.7.2)");
+                    acc = 0;
+                    mid = false;
+                    pos = end;
+                    break;
+                }
+                acc = (acc << 7) | (b & 0x7F);
+                if (b & 0x80 != 0) {
+                    mid = true;
+                    continue;
+                }
+                try list.append(allocator, acc);
+                acc = 0;
+                mid = false;
+            }
+            if (mid) try emit(report, allocator, .fail, .bad_marker_length, self.origin, "PLM packet length code straddles an Nplm boundary (T.800 A.7.2)");
+            try lists.append(allocator, try list.toOwnedSlice(allocator));
+        }
+        return lists.toOwnedSlice(allocator);
+    }
+};
+
 fn walkTileParts(
     report: *ValidationReport,
     allocator: Allocator,
@@ -1682,8 +1816,11 @@ fn walkTileParts(
     extractor: ?*cblk_extract.CblkExtractor,
     tlm: ?[]const TlmEntry,
     ppm: ?*const PpmChunks,
+    plm: ?[]const []const u32,
+    plm_origin: u64,
 ) Allocator.Error!void {
     var pos: usize = start;
+    var plm_short = false;
     // TLM cross-check cursor: entry N describes the Nth tile-part in
     // file order. `tlm == null` means no TLM marker was present (an
     // EMPTY list is a present-but-lying TLM and still checks). First
@@ -1965,7 +2102,23 @@ fn walkTileParts(
                         try tw.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
                         // A tile-part body is a whole number of packets; resume
                         // this tile's iterator across its tile-parts (TNsot>1).
-                        const res = try walkTilePartBody(report, allocator, tw, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null, if (packed_store) |*ps| ps else null);
+                        // PLM cross-check (A.7.2): entry N lists the Nth tile-part's
+                        // packet lengths. PLT, when present, is walked and PLM is
+                        // required to agree with it; otherwise PLM is walked itself.
+                        var plm_lengths: ?[]const u32 = null;
+                        if (plm) |lists| {
+                            if (this_tp < lists.len) {
+                                plm_lengths = lists[this_tp];
+                            } else if (!plm_short) {
+                                plm_short = true;
+                                try emit(report, allocator, .fail, .jp2_invalid_codestream, plm_origin, "PLM lists fewer tile-parts than the codestream contains (T.800 A.7.2)");
+                            }
+                        }
+                        if (tp_ov.has_plt and plm_lengths != null and !std.mem.eql(u32, tp_ov.plt.items, plm_lengths.?)) {
+                            try emit(report, allocator, .fail, .jp2_invalid_codestream, plm_origin, "PLM and PLT disagree on this tile-part's packet lengths (T.800 A.7.2/A.7.3)");
+                        }
+                        const lengths: ?[]const u32 = if (tp_ov.has_plt) tp_ov.plt.items else plm_lengths;
+                        const res = try walkTilePartBody(report, allocator, tw, tp_body, sod_pos + 2, extractor, lengths, !tp_ov.has_plt and plm_lengths != null, if (packed_store) |*ps| ps else null);
                         if (res != .incomplete) {
                             tw.deinit(allocator);
                             _ = tiles.remove(isot16);
@@ -1998,6 +2151,11 @@ fn walkTileParts(
             if (ppm) |chunks| {
                 if (chunks.chunks.len > tp_index) {
                     try emit(report, allocator, .fail, .packed_headers_mismatch, chunks.origin, "PPM holds chunks for more tile-parts than the codestream contains");
+                }
+            }
+            if (plm) |lists| {
+                if (lists.len > tp_index) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, plm_origin, "PLM holds entries for more tile-parts than the codestream contains (T.800 A.7.2)");
                 }
             }
             // I1: a valid EOC doesn't excuse a tile that delivered fewer whole
@@ -2957,6 +3115,7 @@ fn walkTilePartBody(
     body_offset_in_data: usize,
     extractor: ?*cblk_extract.CblkExtractor,
     plt: ?[]const u32,
+    plt_from_plm: bool,
     phdr: ?*PackedHeaders,
 ) Allocator.Error!TilePartResult {
     const params = tw.params;
@@ -3152,7 +3311,8 @@ fn walkTilePartBody(
             const lengths = plt.?;
             const walked: u32 = @intCast(body_pos - packet_start);
             if (plt_index >= lengths.len or lengths[plt_index] != walked) {
-                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + packet_start, null);
+                const detail: []const u8 = if (plt_from_plm) "PLM packet length disagrees with the walked packet (T.800 A.7.2)" else "PLT packet length disagrees with the walked packet (T.800 A.7.3)";
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + packet_start, detail);
                 plt_broken = true;
             }
             plt_index += 1;

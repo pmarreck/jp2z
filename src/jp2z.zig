@@ -5,17 +5,13 @@
 //! treat the two libraries uniformly and so jpegz's planned
 //! re-export shim at jp2z M6 is a 5-line file.
 //!
-//! Phase 1 (now): `decode` / `decodeWithOptions` delegate to the
-//! openjpeg wrapper at `ffi/openjpeg_wrapper.zig`. The wrapper
-//! handles both JP2 (file format) and J2K (raw codestream).
-//!
-//! Phase 2 (multi-month): each milestone adds a cleanroom path
-//! (codestream walker → tier-2 → tier-1 EBCOT → 5/3 wavelet →
-//! 9/7 wavelet → MCT) and shrinks the wrapper's runtime role.
-//!
-//! Phase 3 (cleanroom complete, M6): wrapper moves to
-//! `internal.openjpegDecode` for build-time oracle use only;
-//! runtime decode is pure Zig.
+//! Phase 3 (now): `decode` / `decodeWithOptions` run the pure-Zig
+//! cleanroom route (`decode/image.zig`: validate → reconstruct →
+//! public Image) for both JP2 (file format) and J2K (raw codestream).
+//! The openjpeg wrapper at `ffi/openjpeg_wrapper.zig` is reachable only
+//! through `internal.openjpegDecode`, as the build-time oracle the
+//! differential tests diff against; a validate-or-decode consumer of the
+//! public module links no openjpeg.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -89,11 +85,32 @@ pub const ValidationReport = struct {
     /// openjpeg applies it inside the library, so a conforming decode
     /// (and the oracle diff) is in COLOUR order, not codestream order.
     cdef: ?ChannelMap = null,
+    /// JP2 `colr` (I.5.3.3) enumerated colour space when METH is 1
+    /// (16 sRGB, 17 greyscale, 18 sYCC, ...); null for ICC-only or J2K.
+    colr_enumcs: ?u32 = null,
+    /// JP2 `pclr` palette (I.5.3.4) values, owned by the report: `entries`
+    /// is NE × NPC row-major, `depths[i]` the bit depth of column i.
+    palette: ?Palette = null,
+    /// JP2 `cmap` (I.5.3.5) entries, owned by the report; empty when absent.
+    cmap: []CmapEntry = &.{},
 
     pub const ChannelMap = struct {
         order: [16]u8,
         /// Channels covered by `order` (the ihdr component count, capped at 16).
         n: u8,
+    };
+
+    pub const Palette = struct {
+        ne: u16,
+        npc: u8,
+        depths: []u8,
+        entries: []u32,
+    };
+
+    pub const CmapEntry = struct {
+        cmp: u16,
+        mtyp: u8,
+        pcol: u8,
     };
 
     pub fn isOk(self: ValidationReport) bool {
@@ -105,6 +122,11 @@ pub const ValidationReport = struct {
             if (f.detail) |d| allocator.free(d);
         }
         self.findings.deinit(allocator);
+        if (self.palette) |p| {
+            allocator.free(p.depths);
+            allocator.free(p.entries);
+        }
+        if (self.cmap.len > 0) allocator.free(self.cmap);
         self.* = undefined;
     }
 };
@@ -145,13 +167,13 @@ pub fn decodeWithOptions(
     data: []const u8,
     options: DecodeOptions,
 ) DecodeError!Image {
-    _ = options; // Phase 1: wrapper ignores all options
-    // Phase 1: delegate to openjpeg wrapper. Phase 2 will route
-    // each cleanroom path (codestream walker / tier-1 / etc.)
-    // ahead of the wrapper, surrounded by the same `try X(...)
-    // catch error.NotImplemented => {}` pattern jpegz uses.
+    _ = options; // no option changes the cleanroom decode yet
+    // Cleanroom route (Phase 3): validate once, reconstruct in pure Zig,
+    // shape into the public Image (decode/image.zig). The openjpeg wrapper
+    // is no longer on this path; it stays an oracle behind
+    // `internal.openjpegDecode` for the differential tests.
     last_error.clear();
-    return @import("ffi/openjpeg_wrapper.zig").decode(allocator, data) catch |err| {
+    return @import("decode/image.zig").decode(allocator, data) catch |err| {
         last_error.set("jp2z.decode failed: {s}", .{@errorName(err)});
         return err;
     };
@@ -252,6 +274,13 @@ pub const internal = struct {
     }
 
     pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
+
+    /// The wrapper-free decode route: cleanroom reconstruction shaped into
+    /// the public `Image` (canvas, palette, clamp, colour space). Exposed
+    /// here so tests can diff it against `openjpegDecode` directly.
+    pub fn decodeToImage(allocator: Allocator, data: []const u8) DecodeError!Image {
+        return @import("decode/image.zig").decode(allocator, data);
+    }
     /// Full cleanroom decode (5/3 reversible): codestream -> sample planes.
     pub fn decodeCleanroom(allocator: std.mem.Allocator, data: []const u8) !CleanroomImage {
         return @import("decode/reconstruct.zig").decodeCleanroom(allocator, data);
