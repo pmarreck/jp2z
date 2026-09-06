@@ -27,6 +27,13 @@ const fixtures = [_]Fixture{
     .{ .name = "p0_09.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_09.j2k") },
     .{ .name = "p0_10.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_10.j2k") },
     .{ .name = "p1_04.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_04.j2k") },
+    // Packed packet headers (T.800 A.7.4/A.7.5): g3 = PPM in 214 segments
+    // (Nppm chunks span segments), g4 = PPT in 214 segments over 2 tile-parts,
+    // p1_06 = PPT per tile-part across 16 tiles; g3/g4/p1_06 all carry SOP+EPH
+    // (EPH inside the packed store). Must-accept guards for the packed walk.
+    .{ .name = "g3_colr.j2c", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/g3_colr.j2c") },
+    .{ .name = "g4_colr.j2c", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/g4_colr.j2c") },
+    .{ .name = "p1_06.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_06.j2k") },
     .{ .name = "file1.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file1.jp2") },
     .{ .name = "file9.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file9.jp2") },
     // Real-encoder multi-tile lossy JP2 (12 tiles, 8 layers, RPCL, custom
@@ -138,7 +145,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual(@as(usize, 0), stats.false_positive_rejects);
     try std.testing.expectEqual([_]usize{ fixtures.len, fixtures.len, fixtures.len }, stats.known_corrupt_by_class);
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
-    try std.testing.expectEqual([_]usize{ 12, 3 }, stats.controls_by_family);
+    try std.testing.expectEqual([_]usize{ 15, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
     try std.testing.expectEqual([_]usize{ 2, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
@@ -146,8 +153,23 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
     // are probes rather than known-invalid files, so improvement may raise the
     // counts without invalidating the gate.
-    const sensitivity_floor = [_]usize{ 8, 9, 12, 3, 3, 3 };
+    const sensitivity_floor = [_]usize{ 11, 11, 15, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }
+}
+
+test "mutation matrix: dump measured stats when MUTATION_MATRIX_DUMP is set (scorecard source)" {
+    // Not a gate: prints the measured counts that conformance/
+    // MUTATION_SCORECARD.md transcribes, so the scorecard is regenerated
+    // from the classifier rather than retyped. Silent unless asked.
+    if (std.c.getenv("MUTATION_MATRIX_DUMP") == null) return;
+    const s = try runMatrix(std.testing.allocator);
+    std.debug.print(
+        \\
+        \\mutation-matrix: controls_by_family={any} false_positive_rejects_by_family={any} unsupported_by_family={any}
+        \\mutation-matrix: known_corrupt_misses_by_family_and_class={any}
+        \\mutation-matrix: entropy_detected_by_family_and_class={any} (order: codestream sniper,bolter,shotgun; jp2 sniper,bolter,shotgun)
+        \\
+    , .{ s.controls_by_family, s.false_positive_rejects_by_family, s.unsupported_controls_by_family, s.known_corrupt_misses_by_family_and_class, s.entropy_detected_by_family_and_class });
 }

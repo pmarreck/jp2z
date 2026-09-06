@@ -1023,6 +1023,9 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     var tlm_entries: std.ArrayListUnmanaged(TlmEntry) = .empty;
     defer tlm_entries.deinit(allocator);
     var saw_tlm = false;
+    // PPM segments (A.7.4) keyed by Zppm; merged into per-tile-part
+    // chunks once the main header ends (a chunk may span segments).
+    var ppm = PpmCollector{};
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1040,7 +1043,9 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             @intFromEnum(Marker.sot) => {
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
-                try walkTileParts(report, allocator, data, pos, extractor, if (saw_tlm) tlm_entries.items else null);
+                var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
+                defer if (ppm_chunks) |*c| c.deinit(allocator);
+                try walkTileParts(report, allocator, data, pos, extractor, if (saw_tlm) tlm_entries.items else null, if (ppm_chunks) |*c| c else null);
                 return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
@@ -1095,12 +1100,122 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 saw_tlm = true;
                 try parseTlmBody(report, allocator, body, pos + 2, &tlm_entries);
             },
+            @intFromEnum(Marker.ppm) => try ppm.add(report, allocator, body, pos - 2),
             else => {},
         }
 
         pos += lxxx;
     }
 }
+
+/// Packed packet headers for ONE tile-part (PPM: T.800 A.7.4, PPT: A.7.5).
+/// The packet walk reads headers (and EPH, when signalled) from
+/// `buf[pos..]` while packet bodies (and SOP) stay in the tile-part body.
+/// `origin` is the codestream offset of the first PPM/PPT marker that fed
+/// the store: merged bytes have no single file position, so store-level
+/// findings anchor there.
+const PackedHeaders = struct {
+    buf: []const u8,
+    pos: usize = 0,
+    origin: u64,
+};
+
+/// PPM data after Nppm chunking: `chunks[k]` holds every packet header of
+/// the k-th tile-part in codestream order. `buf` owns the merged bytes the
+/// chunks slice into.
+const PpmChunks = struct {
+    buf: []u8,
+    chunks: [][]const u8,
+    origin: u64,
+
+    fn deinit(self: *PpmChunks, allocator: Allocator) void {
+        allocator.free(self.chunks);
+        allocator.free(self.buf);
+    }
+};
+
+/// Collects PPM marker segments by Zppm during the main-header walk and
+/// merges them (A.7.4): concatenate in Zppm order, then split into
+/// Nppm-prefixed chunks, one per tile-part. Nppm chunks may straddle
+/// segment boundaries (g3_colr spreads 3 KB over 214 segments), so the
+/// split runs over the concatenation, not per segment.
+const PpmCollector = struct {
+    /// Zppm → segment bytes after Zppm (slices into the codestream).
+    segs: [256]?[]const u8 = @splat(null),
+    seen: bool = false,
+    origin: u64 = 0,
+
+    /// `body` is the segment after Lppm (Zppm first); `marker_off` is the
+    /// FF60 offset for findings. Table A.38: Lppm >= 7 in practice, but a
+    /// continuation-only segment needs just Zppm + 1 byte (openjpeg agrees).
+    fn add(self: *PpmCollector, report: *ValidationReport, allocator: Allocator, body: []const u8, marker_off: u64) Allocator.Error!void {
+        if (!self.seen) {
+            self.seen = true;
+            self.origin = marker_off;
+        }
+        if (body.len < 2) {
+            try emit(report, allocator, .fail, .bad_marker_length, marker_off + 2, null);
+            return;
+        }
+        const z = body[0];
+        if (self.segs[z] != null) {
+            // Two segments claim the same Zppm: the concatenation order is
+            // undefined, so the whole store is untrustworthy.
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, marker_off + 4, "duplicate Zppm index");
+            return;
+        }
+        self.segs[z] = body[1..];
+    }
+
+    fn merge(self: *PpmCollector, report: *ValidationReport, allocator: Allocator) Allocator.Error!PpmChunks {
+        var total: usize = 0;
+        var gap = false;
+        var last_present: ?usize = null;
+        for (self.segs, 0..) |s, z| {
+            if (s) |bytes| {
+                if (last_present) |lp| {
+                    if (z != lp + 1) gap = true;
+                } else if (z != 0) gap = true;
+                last_present = z;
+                total += bytes.len;
+            }
+        }
+        // Zppm is sequential from 0 (A.7.4); a gap means a segment went
+        // missing or an index byte was corrupted. Order is still defined,
+        // so the walk continues — surfaced, not fatal.
+        if (gap) try emit(report, allocator, .warn, .jp2_invalid_codestream, self.origin + 4, "PPM Zppm indices are not contiguous from 0");
+        const buf = try allocator.alloc(u8, total);
+        errdefer allocator.free(buf);
+        var w: usize = 0;
+        for (self.segs) |s| {
+            if (s) |bytes| {
+                @memcpy(buf[w .. w + bytes.len], bytes);
+                w += bytes.len;
+            }
+        }
+        // Split into Nppm chunks. A truncated Nppm or a chunk running past
+        // the merged data is a length lie: bad_marker_length, and the
+        // chunks parsed so far are kept (later tile-parts then report a
+        // missing chunk).
+        var chunks: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer chunks.deinit(allocator);
+        var p: usize = 0;
+        while (p < buf.len) {
+            if (p + 4 > buf.len) {
+                try emit(report, allocator, .fail, .bad_marker_length, self.origin, "PPM data ends inside an Nppm field");
+                break;
+            }
+            const n: usize = std.mem.readInt(u32, buf[p..][0..4], .big);
+            if (p + 4 + n > buf.len) {
+                try emit(report, allocator, .fail, .bad_marker_length, self.origin, "Nppm runs past the end of the PPM data");
+                break;
+            }
+            try chunks.append(allocator, buf[p + 4 .. p + 4 + n]);
+            p += 4 + n;
+        }
+        return .{ .buf = buf, .chunks = try chunks.toOwnedSlice(allocator), .origin = self.origin };
+    }
+};
 
 /// One TLM tile-part-length record. `ttlm == null` means ST=0: entries
 /// describe tile-parts in file order with no explicit tile index.
@@ -1171,6 +1286,7 @@ fn walkTileParts(
     start: usize,
     extractor: ?*cblk_extract.CblkExtractor,
     tlm: ?[]const TlmEntry,
+    ppm: ?*const PpmChunks,
 ) Allocator.Error!void {
     var pos: usize = start;
     // TLM cross-check cursor: entry N describes the Nth tile-part in
@@ -1307,6 +1423,7 @@ fn walkTileParts(
                 }
             }
         }
+        const this_tp = tp_index;
         tp_index += 1;
 
         // Locate SOD once (reused for the marker scan and the packet walk).
@@ -1318,9 +1435,25 @@ fn walkTileParts(
         // tile's params). Independent of CodingParams; runs even when the
         // packet walk below is skipped. The SOT segment is 12 bytes.
         var tp_ov: TileOverrides = .{};
-        defer tp_ov.plt.deinit(allocator);
+        defer tp_ov.deinit(allocator);
         if (sod) |sod_pos| {
-            tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos);
+            tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos, ppm != null);
+        }
+        // Packed packet headers for THIS tile-part: PPM chunk `this_tp`
+        // (A.7.4: one Nppm chunk per tile-part in codestream order) or the
+        // merged PPT store from its own header (A.7.5). A tile-part with no
+        // PPM chunk means the main header's chunk list is short — a lie
+        // about the layout.
+        var packed_store: ?PackedHeaders = null;
+        if (ppm) |chunks| {
+            if (this_tp < chunks.chunks.len) {
+                packed_store = .{ .buf = chunks.chunks[this_tp], .origin = chunks.origin };
+            } else {
+                try emit(report, allocator, .fail, .packed_headers_mismatch, pos, "tile-part has no PPM chunk");
+                part_ok = false;
+            }
+        } else if (tp_ov.has_ppt) {
+            packed_store = .{ .buf = tp_ov.ppt.items, .origin = tp_ov.ppt_origin };
         }
         // Walk this tile-part's packet headers, if the part is structurally
         // sound and we have enough CodingParams to drive the iterator.
@@ -1373,7 +1506,7 @@ fn walkTileParts(
                     try gop.value_ptr.iter.appendVolumes(allocator, tp_ov.entries[0..tp_ov.n]);
                     // A tile-part body is a whole number of packets; resume
                     // this tile's iterator across its tile-parts (TNsot>1).
-                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null);
+                    const res = try walkTilePartBody(report, allocator, gop.value_ptr, tp_body, sod_pos + 2, extractor, if (tp_ov.has_plt) tp_ov.plt.items else null, if (packed_store) |*ps| ps else null);
                     if (res != .incomplete) {
                         gop.value_ptr.deinit(allocator);
                         _ = tiles.remove(isot16);
@@ -1399,6 +1532,13 @@ fn walkTileParts(
             // EOC. Tail check: there should be nothing AFTER it.
             if (next_pos + 2 != data.len) {
                 try emit(report, allocator, .warn, .truncated_stream, next_pos + 2, null);
+            }
+            // PPM chunks left unclaimed: the main header describes more
+            // tile-parts than the codestream delivers.
+            if (ppm) |chunks| {
+                if (chunks.chunks.len > tp_index) {
+                    try emit(report, allocator, .fail, .packed_headers_mismatch, chunks.origin, "PPM holds chunks for more tile-parts than the codestream contains");
+                }
             }
             // I1: a valid EOC doesn't excuse a tile that delivered fewer whole
             // packets than its COD geometry requires — flag those before exit.
@@ -1462,6 +1602,16 @@ const TileOverrides = struct {
     /// encounter order. Owned by the caller — deinit after the walk.
     plt: std.ArrayListUnmanaged(u32) = .empty,
     has_plt: bool = false,
+    /// PPT (A.7.5): this tile-part's packed packet headers, merged in
+    /// Zppt order. Owned by the caller — deinit after the walk.
+    ppt: std.ArrayListUnmanaged(u8) = .empty,
+    has_ppt: bool = false,
+    ppt_origin: u64 = 0,
+
+    fn deinit(self: *TileOverrides, allocator: Allocator) void {
+        self.plt.deinit(allocator);
+        self.ppt.deinit(allocator);
+    }
 };
 
 /// Scan a tile-part header — the marker segments between the SOT segment
@@ -1480,8 +1630,13 @@ fn scanTilePartHeaderMarkers(
     data: []const u8,
     hdr_start: usize,
     hdr_end: usize,
+    ppm_present: bool,
 ) Allocator.Error!TileOverrides {
     var out: TileOverrides = .{};
+    errdefer out.deinit(allocator);
+    // PPT segments arrive in any Zppt order; collect, then merge in index
+    // order. 256 slots × slice is 4 KB of stack per tile-part header.
+    var ppt_segs: [256]?[]const u8 = @splat(null);
     var p = hdr_start;
     while (p + 4 <= hdr_end) {
         if (data[p] != 0xFF) return out; // not a marker boundary — stop
@@ -1540,9 +1695,45 @@ fn scanTilePartHeaderMarkers(
                 }
                 if (mid) try emit(report, allocator, .fail, .bad_marker_length, p, null);
             },
+            // PPT (A.7.5): packed packet headers for this tile-part. Table
+            // A.41: Lppt >= 4 (Zppt + at least one Ippt byte). PPM and PPT
+            // are mutually exclusive in a codestream (A.7.4).
+            @intFromEnum(Marker.ppt) => {
+                if (!out.has_ppt) {
+                    out.has_ppt = true;
+                    out.ppt_origin = p;
+                }
+                if (ppm_present) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, p, "PPT present alongside PPM");
+                } else if (lseg < 4) {
+                    try emit(report, allocator, .fail, .bad_marker_length, p + 2, null);
+                } else {
+                    const body = data[p + 4 .. p + 2 + lseg]; // [Zppt, Ippt...]
+                    const z = body[0];
+                    if (ppt_segs[z] != null) {
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, p + 4, "duplicate Zppt index");
+                    } else {
+                        ppt_segs[z] = body[1..];
+                    }
+                }
+            },
             else => {},
         }
         p += 2 + @as(usize, lseg);
+    }
+    if (out.has_ppt) {
+        var gap = false;
+        var last_present: ?usize = null;
+        for (ppt_segs, 0..) |s, z| {
+            if (s) |bytes| {
+                if (last_present) |lp| {
+                    if (z != lp + 1) gap = true;
+                } else if (z != 0) gap = true;
+                last_present = z;
+                try out.ppt.appendSlice(allocator, bytes);
+            }
+        }
+        if (gap) try emit(report, allocator, .warn, .jp2_invalid_codestream, out.ppt_origin + 4, "PPT Zppt indices are not contiguous from 0");
     }
     return out;
 }
@@ -2038,6 +2229,7 @@ fn walkTilePartBody(
     body_offset_in_data: usize,
     extractor: ?*cblk_extract.CblkExtractor,
     plt: ?[]const u32,
+    phdr: ?*PackedHeaders,
 ) Allocator.Error!TilePartResult {
     const params = tw.params;
     const image_w = tw.image_w;
@@ -2057,7 +2249,9 @@ fn walkTilePartBody(
     var plt_broken = false;
     // Pull packets from the PERSISTENT iterator until this tile-part's
     // body is consumed; the iterator's cursor carries to the next part.
-    while (body_pos < tp_body.len) {
+    // With packed headers (PPM/PPT) an empty packet leaves no body bytes
+    // at all, so the store's remaining headers ALSO keep the loop alive.
+    while (body_pos < tp_body.len or (phdr != null and phdr.?.pos < phdr.?.buf.len)) {
         const packet_start = body_pos;
         const pi = tw.iter.next() orelse break;
         tw.packets_seen += 1;
@@ -2093,10 +2287,18 @@ fn walkTilePartBody(
         }
         const view = view_buf[0..sb_count];
 
-        var reader = BitReader.init(tp_body[body_pos..], .{ .ff_stuffing = true });
+        // Header source: the packed store (PPM/PPT) or the body inline.
+        const hdr_bytes: []const u8 = if (phdr) |pk| pk.buf[pk.pos..] else tp_body[body_pos..];
+        var reader = BitReader.init(hdr_bytes, .{ .ff_stuffing = true });
         const seg_alloc: ?Allocator = if (extractor != null) allocator else null;
         const contribution_len = (try packet_header.readPacketHeader(&reader, view, pi.layer, params.cblksty, seg_alloc)) orelse {
-            try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
+            if (phdr) |pk| {
+                // The store ran dry mid-header: PPM/PPT holds fewer header
+                // bytes than this tile-part's packets need.
+                try emit(report, allocator, .fail, .packed_headers_mismatch, pk.origin, "packed packet-header store exhausted before the tile-part's packets");
+            } else {
+                try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos, null);
+            }
             return .broken;
         };
 
@@ -2109,16 +2311,22 @@ fn walkTilePartBody(
 
         const header_bytes = reader.bytesConsumed();
 
-        // EPH marker (Scod bit 2): follows the byte-aligned packet header when enabled.
+        // EPH marker (Scod bit 2): follows the byte-aligned packet header when
+        // enabled — INSIDE the packed store when PPM/PPT are used (A.7.4/A.7.5).
         var eph_bytes: usize = 0;
         if (params.scod & 0x04 != 0) {
-            const eph_at = body_pos + header_bytes;
-            if (eph_at + 2 > tp_body.len or tp_body[eph_at] != 0xFF or tp_body[eph_at + 1] != 0x92) {
-                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + eph_at, null);
+            const eph_at = header_bytes;
+            if (eph_at + 2 > hdr_bytes.len or hdr_bytes[eph_at] != 0xFF or hdr_bytes[eph_at + 1] != 0x92) {
+                const at: u64 = if (phdr) |pk| pk.origin else body_offset_in_data + body_pos + eph_at;
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, at, if (phdr != null) "EPH missing from the packed packet-header store" else null);
                 return .broken;
             }
             eph_bytes = 2;
         }
+        // Bytes the header (+EPH) occupy in the tile-part BODY: zero when
+        // packed, in which case the store's cursor advances instead.
+        const hdr_span_in_body: usize = if (phdr != null) 0 else header_bytes + eph_bytes;
+        if (phdr) |pk| pk.pos += header_bytes + eph_bytes;
 
         // M3 brick 9d: per-cblk byte extraction. When an extractor is
         // wired in, we slice each cblk's contribution bytes out of the
@@ -2133,7 +2341,7 @@ fn walkTilePartBody(
             const prc_grid = subbands.numPrecincts(tile_x0, tile_y0, image_w, image_h, params.num_decomp_levels, pi.resolution, ppx, ppy);
             const prc_x_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct % prc_grid.width;
             const prc_y_in_grid: u32 = if (prc_grid.width == 0) 0 else pi.precinct / prc_grid.width;
-            const data_base = body_pos + header_bytes + eph_bytes;
+            const data_base = body_pos + hdr_span_in_body;
             var bytes_so_far: u32 = 0;
             var ex_sb: u8 = 0;
             while (ex_sb < sb_count) : (ex_sb += 1) {
@@ -2189,7 +2397,7 @@ fn walkTilePartBody(
             }
         }
 
-        const advance = header_bytes + eph_bytes + @as(usize, contribution_len);
+        const advance = hdr_span_in_body + @as(usize, contribution_len);
         if (body_pos + advance > tp_body.len) {
             try emit(report, allocator, .fail, .truncated_stream, body_offset_in_data + body_pos + advance, null);
             return .broken;
@@ -2211,6 +2419,17 @@ fn walkTilePartBody(
         }
     }
 
+    // A packed store (PPM chunk / PPT) describes exactly this tile-part's
+    // packets: bytes left over once its packets are exhausted mean the
+    // header lies about the layout (or a packet body went missing).
+    var store_drained = true;
+    if (phdr) |pk| {
+        if (pk.pos != pk.buf.len) {
+            store_drained = false;
+            try emit(report, allocator, .fail, .packed_headers_mismatch, pk.origin, "packed packet-header store has bytes left over after the tile-part's packets");
+        }
+    }
+
     // Disposition. The iterator yields exactly `tw.total` packets across the tile's
     // tile-parts; once we've seen them all the tile is complete. This is
     // order-independent (LRCP/PCRL/RPCL set iter.done on different calls).
@@ -2218,7 +2437,7 @@ fn walkTilePartBody(
         // Surface walker-vs-tile match status. Only meaningful when COD
         // was fully parsed (num_layers > 0).
         if (params.num_layers > 0) {
-            if (body_pos == tp_body.len) {
+            if (body_pos == tp_body.len and store_drained) {
                 try emit(report, allocator, .info, .jp2_packets_walked_to_end, body_offset_in_data, null);
             } else {
                 try emit(report, allocator, .warn, .jp2_packets_under_read, body_offset_in_data + body_pos, null);

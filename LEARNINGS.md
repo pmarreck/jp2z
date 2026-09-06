@@ -257,3 +257,38 @@ Corollaries proven by this bug:
 - Synthetic small-dimension valid corpora cannot represent "empty packet"
   layouts: single-layer fixtures never emit one. One real-encoder multi-layer
   file was worth 14 synthetics on the must-accept side.
+
+## 2026-09-06 — PPM/PPT: the "decode bug cluster" was a validation hole
+
+The sweep's 127/128 max_abs cluster (g2/g3/g4, p1_05/p1_06) read like one
+sign or DC-shift bug on a specific path. It was nothing of the kind: every
+fixture in it (plus g1 and p1_02 at 254/255) carries packed packet headers
+(PPM in the main header, PPT in tile-part headers, T.800 A.7.4/A.7.5), and
+the walker had never implemented either. PPM sat in the "known main-header
+marker" set, so its body was skipped WITHOUT a c145 unsupported finding;
+the packet walk then parsed packet BODIES as headers, desynced, and the
+decode came out as flat mid-grey (exactly half-range: DC shift of nothing).
+
+What generalises:
+- Diagnose a decode-divergence cluster by fixture FEATURE first, pixel
+  symptom second. One 40-line marker census (which fixtures carry which
+  markers) reclassified a "decode correctness" item into a "validation
+  coverage" item and merged two PLAN slices into one.
+- A silently-skipped marker is worse than an unsupported-marker finding: the
+  finding would have named the gap on day one. Every marker the walker
+  recognises but does not apply must emit c145 (COC/QCC/RGN do; PPM did not).
+- Read the oracle's merge semantics before designing the store: openjpeg
+  concatenates PPM segments in Zppm order and then splits Nppm chunks over
+  the concatenation (a chunk may straddle segments; g3 spreads 3 KB over 214
+  segments). It then consumes headers sequentially with no per-tile-part
+  boundary check. The spec's Nppm-per-tile-part rule is a catchable
+  invariant openjpeg ignores, so jp2z checks it (c256 packed_headers_mismatch:
+  leftover bytes at tile-part end, or a store that runs dry with bodies
+  remaining). Strictness lives where the spec is stricter than the reference.
+- The one ambiguity is honest: a store short by whole packets with an empty
+  body is indistinguishable mid-walk from "more tile-parts follow", so that
+  verdict lands at EOC via the existing incomplete-tile finding. The test
+  says so rather than pretending c256 covers it.
+- `packed` is a Zig keyword. A parameter named `packed` fails to parse with
+  "expected a struct, enum or union, found ':'" — an error message that
+  points nowhere near the cause.

@@ -209,6 +209,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/mutation_matrix.zig"),
         .target = target,
         .optimize = optimize,
+        // libc only for std.c.getenv (the MUTATION_MATRIX_DUMP scorecard dump);
+        // the validator under test stays the pure-Zig public module.
+        .link_libc = true,
     });
     mutation_mod.addImport("jp2z", jp2z_pub);
     const mutation_tests = b.addTest(.{

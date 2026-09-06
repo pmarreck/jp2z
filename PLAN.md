@@ -87,17 +87,28 @@ cluster (a wrong decode can neither confirm nor refute entropy findings on
 those fixtures, and OpenJPEG retirement is gated on it).
 
 - [x] PLAN.md stale-checkbox sweep (2026-09-06 ~11:00am EDT).
-- [ ] **PPM / PPT packed packet headers** — deep-validate streams whose
-      packet headers live in the main header (PPM, A.7.4) or tile-part
-      header (PPT, A.7.5) instead of inline. Today PPM sits in the
-      c145 ignored set (codestream.zig ~2264), so such streams get WARN
-      "unsupported" and NO tier-2/entropy walk. TDD: crafted PPT stream
-      RED first (header bytes relocated; walker must consume them from the
-      PPT store, packet bodies from SOD), then PPM (Zppm concatenation
-      across multiple PPM segments, Nppm per tile-part).
-- [ ] **Decode 127/128 cluster** — g2/g3/g4 (127), p1_05/p1_06 (128):
-      exactly half-range suggests one DC-shift / signed-sample bug on a
-      specific path. TDD vs the openjpeg oracle, one fixture as RED.
+- [x] **PPM / PPT packed packet headers** (2026-09-06 ~11:30am EDT). Main-
+      header PPM collector (Zppm-ordered merge, Nppm chunks split over the
+      concatenation, one chunk per tile-part) + tile-part PPT store; the
+      packet walk reads headers (and EPH) from the store, bodies (and SOP)
+      from the tile-part. New finding c256 packed_headers_mismatch (store
+      leftover / store dry with bodies remaining / missing or surplus PPM
+      chunks); duplicate Zppm/Zppt, PPM+PPT together, Nppm overrun, Lppt<4
+      all FAIL. 17 crafted RED tests + g3/g4/p1_06 vendored as must-accept
+      controls (matrix 12→15 codestream, 0 false positives). Sweep PASS
+      22→26, NEAR 2→3, FAIL 12→7.
+- [x] **Decode 127/128 cluster** — was NOT a DC-shift bug: every fixture in
+      it is a PPM/PPT user (marker census, see LEARNINGS 2026-09-06). Closed
+      by the slice above: g1–g4 byte-exact, p1_02 NEAR. (2026-09-06)
+- [ ] **9/7 multi-tile decode — p1_05/p1_06** (now max_abs 255, and a
+      ReleaseSafe integer-overflow panic in dwt.zig idwt97Line beta step on
+      p1_06). Parked RED: scratchpad p1_06 cleanroom-vs-openjpeg test
+      (re-add to validate.zig as the slice opens). The 9/7 tile path takes
+      tile_x0/y0 but the overflow says coefficients or scale explode on a
+      non-origin tile; suspect dequant/expn per tile or subband placement.
+      ALSO a hardening item: a VALID file must never panic — the overflow
+      needs a bounded path (saturate or reject with a finding), then the
+      real geometry fix.
 - [ ] Then the rest of the sweep's FAILs: p1_02/d2/g1 (254-255), p0_01
       (149), file2/file8 (158/216), p0_13 ERROR NoCodingParams, balloon
       (max_abs 9), e1 tile-7 ±2, p1_04 >8-bit.

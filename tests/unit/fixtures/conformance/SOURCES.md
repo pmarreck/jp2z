@@ -36,6 +36,9 @@ oracle suite stays accessible without bloating the repo.
 | `p1_04.j2k` | 101,844 | Profile-1: 12-bit mono, 9/7 lossy, 8×8 multi-tile (>8-bit + 9/7-multi-tile path) |
 | `file1.jp2` | 650,678 | JP2 file format, first reference image — exercises box parser |
 | `file9.jp2` | 300,208 | JP2 file format, exercises additional metadata box types |
+| `g3_colr.j2c` | 67,333 | Class G color (T.803 packed-header class) — PPM in 214 main-header segments (Nppm chunks span segments), 2 tiles, SOP+EPH (EPH inside the packed store), 3 layers, 5/3. Must-accept guard for the PPM walk (added 2026-09-06). |
+| `g4_colr.j2c` | 67,325 | Class G color — PPT in 214 tile-part-header segments over 2 tile-parts, otherwise as g3. Must-accept guard for the PPT walk. |
+| `p1_06.j2k` | 3,356 | Profile-1: 16 tiles, one PPT per tile-part, SOP+EPH, 9/7, SEGSYM+VSC. Smallest real packed-header file; also the 9/7 multi-tile decode RED. |
 | `balloon_eciRGB_icc.jp2` | 1,864,443 | Real-encoder JP2: 12 tiles, 8 layers, RPCL, custom precincts, SOP+EPH, SEGSYM, 9/7, eciRGB ICC. NOT from openjpeg-data — copied from validate's labeled known-GOOD corpus (`ground_truth_examples/jpeg2k/`, offered 2026-08-13) after its empty-packet layout exposed the `entropy_under_read` extractor false positive. Must-accept regression guard. |
 
 Phase 1 (openjpeg wrapper) decode tests target these via

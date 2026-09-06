@@ -206,6 +206,12 @@ typedef enum {
      * CODING_PASS_OVERFLOW (there the pass count is too high FOR a nonzero
      * bit-plane budget; here the budget itself is zero). */
     JP2Z_FINDING_ZERO_BITPLANE_OVERFLOW      = 255,
+    /* PPM/PPT packed packet-header store (T.800 A.7.4 / A.7.5) disagrees
+     * with the packets walked: header bytes left over when a tile-part's
+     * packets are exhausted, or a packet header that needs bytes past the
+     * store's end. Either way the main/tile-part header lies about the
+     * packet layout. */
+    JP2Z_FINDING_PACKED_HEADERS_MISMATCH     = 256,
 } jp2z_finding_code_t;
 
 typedef struct {

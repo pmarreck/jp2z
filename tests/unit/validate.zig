@@ -2334,6 +2334,26 @@ test "validate: absence findings (missing ftyp/jp2h/jp2c) carry an offset — no
 /// (e.g. a TLM marker) + SOT + `tp_hdr_extra` (e.g. a PLT marker) +
 /// SOD + 1-byte empty packet + EOC. Psot is computed, not hardcoded.
 fn buildMiniStream(allocator: std.mem.Allocator, main_extra: []const u8, tp_hdr_extra: []const u8) ![]u8 {
+    return buildPackedMiniStream(allocator, .{ .main_extra = main_extra, .tp_hdr_extra = tp_hdr_extra, .body = &.{0x00} });
+}
+
+const MiniStreamOpts = struct {
+    main_extra: []const u8 = &.{},
+    tp_hdr_extra: []const u8 = &.{},
+    /// Bytes after SOD (packet headers+bodies inline, or bodies only when
+    /// the headers are packed into PPM/PPT).
+    body: []const u8 = &.{0x00},
+    /// COD SGcod layer count: N layers on a decomp=0 single-cblk tile is N
+    /// packets, so this is the knob for "how many packet headers".
+    layers: u16 = 1,
+    /// COD Scod: bit 1 SOP, bit 2 EPH (custom precincts are not used here).
+    scod: u8 = 0,
+};
+
+/// Generalised mini-stream: same 4x4 mono 5/3 shell as buildMiniStream but
+/// with the SOD body, layer count and Scod under test control so packed
+/// packet headers (PPM/PPT) can be crafted byte-for-byte.
+fn buildPackedMiniStream(allocator: std.mem.Allocator, o: MiniStreamOpts) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
@@ -2346,20 +2366,25 @@ fn buildMiniStream(allocator: std.mem.Allocator, main_extra: []const u8, tp_hdr_
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x01, 0x07, 0x01, 0x01,
     });
-    // COD — Scod=0, LRCP, 1 layer, no MCT, decomp=0, cblk 64x64, 5/3
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    // COD — Scod, LRCP, `layers`, no MCT, decomp=0, cblk 64x64, 5/3
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, o.scod, 0x00 });
+    var layer_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &layer_bytes, o.layers, .big);
+    try buf.appendSlice(allocator, &layer_bytes);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
     // QCD — style 0 (no quant), 2 guard bits, 1 subband (decomp=0)
     try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
-    try buf.appendSlice(allocator, main_extra);
-    // SOT — Psot = 12 + tp_hdr_extra + SOD(2) + packet(1)
-    const psot: u32 = @intCast(12 + tp_hdr_extra.len + 2 + 1);
+    try buf.appendSlice(allocator, o.main_extra);
+    // SOT — Psot = 12 + tp_hdr_extra + SOD(2) + body
+    const psot: u32 = @intCast(12 + o.tp_hdr_extra.len + 2 + o.body.len);
     try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00 });
     var psot_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &psot_bytes, psot, .big);
     try buf.appendSlice(allocator, &psot_bytes);
     try buf.appendSlice(allocator, &.{ 0x00, 0x01 });
-    try buf.appendSlice(allocator, tp_hdr_extra);
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x93, 0x00 }); // SOD + empty packet
+    try buf.appendSlice(allocator, o.tp_hdr_extra);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x93 }); // SOD
+    try buf.appendSlice(allocator, o.body);
     try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 }); // EOC
     return buf.toOwnedSlice(allocator);
 }
@@ -2498,4 +2523,241 @@ test "deepValidate: zero-bitplane overflow → dedicated finding, not coding_pas
     // Re-attribution: this cblk has exactly 1 pass; blaming the pass
     // count is the misdirection we are removing.
     try std.testing.expect(!hasFinding(rep, .coding_pass_overflow));
+}
+
+// ── PPM / PPT packed packet headers (T.800 A.7.4 / A.7.5) ─────────
+//
+// A codestream may lift every packet header out of the tile-part bodies
+// into PPM (main header, one Nppm-prefixed chunk per tile-part, chunks
+// may span PPM segments) or PPT (tile-part header) marker segments. The
+// bodies stay in place after SOD. Until this slice the walker ignored
+// both markers and read packet BODIES as headers — a silent desync that
+// left every PPM/PPT stream un-validated (and un-decodable: the sweep's
+// 127/128 cluster is exactly these fixtures).
+
+const g3_colr_j2c = @embedFile("fixtures/conformance/g3_colr.j2c");
+const g4_colr_j2c = @embedFile("fixtures/conformance/g4_colr.j2c");
+const p1_06_j2k = @embedFile("fixtures/conformance/p1_06.j2k");
+
+fn expectCleanPackedWalk(rep: jp2z.ValidationReport) !void {
+    try std.testing.expect(rep.isOk());
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep, .unknown_marker));
+    try std.testing.expect(!hasFinding(rep, .packed_headers_mismatch));
+}
+
+test "validate: PPT carries the packet header, SOD body empty → clean walk to end" {
+    const allocator = std.testing.allocator;
+    // PPT: Lppt=4, Zppt=0, Ippt = one empty-packet header byte.
+    const stream = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try expectCleanPackedWalk(rep);
+}
+
+test "validate: PPM carries the packet header, SOD body empty → clean walk to end" {
+    const allocator = std.testing.allocator;
+    // PPM: Lppm=8, Zppm=0, Nppm=1, Ippm = one empty-packet header byte.
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try expectCleanPackedWalk(rep);
+}
+
+test "validate: PPM chunk for two packets (2 layers) → clean" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00 }, .body = &.{}, .layers = 2 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try expectCleanPackedWalk(rep);
+}
+
+test "validate: PPM Nppm chunk spanning two PPM segments (g3 layout) → clean" {
+    const allocator = std.testing.allocator;
+    // Segment Zppm=0 holds Nppm=2 and the first header byte; segment
+    // Zppm=1 holds the second header byte (no Nppm of its own).
+    const stream = try buildPackedMiniStream(allocator, .{
+        .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0xFF, 0x60, 0x00, 0x04, 0x01, 0x00 },
+        .body = &.{},
+        .layers = 2,
+    });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try expectCleanPackedWalk(rep);
+}
+
+test "validate: PPM chunk with header bytes left over after the tile-part's packets → packed_headers_mismatch FAIL" {
+    const allocator = std.testing.allocator;
+    // Nppm=2 but the tile has ONE packet: one byte of the chunk is never claimed.
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .packed_headers_mismatch));
+}
+
+test "validate: PPT store with header bytes left over → packed_headers_mismatch FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x05, 0x00, 0x00, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .packed_headers_mismatch));
+}
+
+test "validate: PPM chunk exhausted while packet bodies remain → packed_headers_mismatch FAIL" {
+    const allocator = std.testing.allocator;
+    // 2 layers = 2 packets, Nppm=1 supplies ONE header byte, and the body
+    // still holds a byte for the second packet: the walker reaches for a
+    // header the store no longer has.
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 }, .body = &.{0x00}, .layers = 2 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .packed_headers_mismatch));
+}
+
+test "validate: PPT store exhausted while packet bodies remain → packed_headers_mismatch FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 }, .body = &.{0x00}, .layers = 2 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .packed_headers_mismatch));
+}
+
+test "validate: packed store short of a whole packet, no body left → the tile is flagged incomplete at EOC" {
+    const allocator = std.testing.allocator;
+    // 2 packets required, one header in the store, nothing in the body:
+    // indistinguishable mid-walk from "the rest comes in a later tile-part",
+    // so the verdict lands at EOC (truncated_stream via flagIncompleteTiles).
+    const stream = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 }, .body = &.{}, .layers = 2 });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .truncated_stream));
+}
+
+test "validate: EPH signalled → the EPH marker lives in the packed store (present: clean; absent: FAIL)" {
+    const allocator = std.testing.allocator;
+    // Scod=0x04 (EPH). A.7.4/A.7.5: with packed headers EPH follows each
+    // packet header INSIDE the PPM/PPT data, not in the tile-part body.
+    const ok = try buildPackedMiniStream(allocator, .{ .scod = 0x04, .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x06, 0x00, 0x00, 0xFF, 0x92 }, .body = &.{} });
+    defer allocator.free(ok);
+    var rep_ok = try jp2z.validate(allocator, ok);
+    defer rep_ok.deinit(allocator);
+    try expectCleanPackedWalk(rep_ok);
+
+    // Same store without the EPH: the header byte is followed by nothing.
+    const bad = try buildPackedMiniStream(allocator, .{ .scod = 0x04, .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 }, .body = &.{} });
+    defer allocator.free(bad);
+    var rep_bad = try jp2z.validate(allocator, bad);
+    defer rep_bad.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_bad.overall);
+}
+
+test "validate: SOP signalled with PPT → SOP stays in the tile-part body before each packet body" {
+    const allocator = std.testing.allocator;
+    // Scod=0x02 (SOP). The packed store holds the header; the body holds
+    // SOP(6 bytes: FF91 0004 Nsop=0) and nothing else for an empty packet.
+    const stream = try buildPackedMiniStream(allocator, .{ .scod = 0x02, .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 }, .body = &.{ 0xFF, 0x91, 0x00, 0x04, 0x00, 0x00 } });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try expectCleanPackedWalk(rep);
+}
+
+test "validate: PPM and PPT in the same codestream → FAIL (A.7.4: shall not both be used)" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{
+        .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 },
+        .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 },
+        .body = &.{},
+    });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: duplicate Zppm index → FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{
+        .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 },
+        .body = &.{},
+    });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: duplicate Zppt index → FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{
+        .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00, 0xFF, 0x61, 0x00, 0x04, 0x00, 0x00 },
+        .body = &.{},
+    });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "validate: Nppm larger than all PPM data → bad_marker_length FAIL" {
+    const allocator = std.testing.allocator;
+    // Nppm=5 with one Ippm byte across all segments.
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
+
+test "validate: PPM data ending inside an Nppm field → bad_marker_length FAIL" {
+    const allocator = std.testing.allocator;
+    // Zppm=0 then only two bytes where a 4-byte Nppm must be.
+    const stream = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x60, 0x00, 0x05, 0x00, 0x00, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
+
+test "validate: PPT segment with no Ippt bytes (Lppt=3, below Table A.41's minimum) → bad_marker_length FAIL" {
+    const allocator = std.testing.allocator;
+    const stream = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x61, 0x00, 0x03, 0x00 }, .body = &.{} });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+}
+
+test "deepValidate strict: real PPM (g3, 214 segments, SOP+EPH) and PPT (g4, p1_06) fixtures are clean" {
+    const allocator = std.testing.allocator;
+    const fixtures = [_][]const u8{ g3_colr_j2c, g4_colr_j2c, p1_06_j2k };
+    for (fixtures) |data| {
+        var rep = try jp2z.internal.deepValidate(allocator, data, true);
+        defer rep.deinit(allocator);
+        try std.testing.expect(rep.overall != .fail);
+        try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+        try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+        try std.testing.expect(!hasFinding(rep, .packed_headers_mismatch));
+    }
 }
