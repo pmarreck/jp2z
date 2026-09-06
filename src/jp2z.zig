@@ -84,6 +84,17 @@ pub const ValidationReport = struct {
     /// walking (M2+) keys off this; consumers can also use it for
     /// codec-feature introspection (wavelet filter, MCT, etc.).
     coding_params: ?CodingParams = null,
+    /// JP2 `cdef` channel definition (T.800 I.5.3.6), when the file has
+    /// one: `order[i]` is the codestream channel that carries colour i.
+    /// openjpeg applies it inside the library, so a conforming decode
+    /// (and the oracle diff) is in COLOUR order, not codestream order.
+    cdef: ?ChannelMap = null,
+
+    pub const ChannelMap = struct {
+        order: [16]u8,
+        /// Channels covered by `order` (the ihdr component count, capped at 16).
+        n: u8,
+    };
 
     pub fn isOk(self: ValidationReport) bool {
         return self.overall == .pass or self.overall == .info or self.overall == .warn;

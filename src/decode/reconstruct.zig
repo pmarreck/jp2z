@@ -420,6 +420,35 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
         out_h = comp_h[0];
     }
 
+    // JP2 cdef (I.5.3.6): deliver planes in COLOUR order. Only a genuine
+    // permutation of the components is applied — a partial or repeated map
+    // was already reported by the walker.
+    if (report.cdef) |cm| {
+        if (cm.n == ncomp and ncomp <= 16) {
+            var seen: [16]bool = @splat(false);
+            var bijective = true;
+            var k: u16 = 0;
+            while (k < ncomp) : (k += 1) {
+                const src = cm.order[k];
+                if (src >= ncomp or seen[src]) bijective = false else seen[src] = true;
+            }
+            if (bijective) {
+                var new_planes: [16][]i32 = undefined;
+                var new_precs: [16]u8 = undefined;
+                k = 0;
+                while (k < ncomp) : (k += 1) {
+                    new_planes[k] = planes[cm.order[k]];
+                    new_precs[k] = precs[cm.order[k]];
+                }
+                k = 0;
+                while (k < ncomp) : (k += 1) {
+                    planes[k] = new_planes[k];
+                    precs[k] = new_precs[k];
+                }
+            }
+        }
+    }
+
     return .{
         .width = out_w,
         .height = out_h,

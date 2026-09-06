@@ -3545,3 +3545,91 @@ test "audit: TLM Stlm reserved bits (0-3, 7) set → WARN" {
     try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
     try std.testing.expect(rep.overall != .fail);
 }
+
+// ── JP2 cdef channel definition (T.800 I.5.3.6) ─────────────────────
+//
+// cdef maps codestream channels to colour indices (Asoc 1..N) or marks
+// alpha/whole-image channels. openjpeg applies it in the library, so the
+// oracle's file2 output is BGR-reordered while the cleanroom emitted
+// codestream order (max_abs 158, tier-1 identical). A component with a
+// different bit depth has a different DC level, which makes the
+// permutation observable on an otherwise all-zero crafted image.
+
+/// wrapInJp2 with a configurable ihdr component count and extra jp2h
+/// sub-boxes appended after ihdr.
+fn wrapInJp2Ex(allocator: std.mem.Allocator, payload: []const u8, nc: u16, extra_jp2h: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
+    var jp2h_len: [4]u8 = undefined;
+    std.mem.writeInt(u32, &jp2h_len, @intCast(8 + 22 + extra_jp2h.len), .big);
+    try buf.appendSlice(allocator, &jp2h_len);
+    try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x68 });
+    var nc_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &nc_bytes, nc, .big);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04 });
+    try buf.appendSlice(allocator, &nc_bytes);
+    try buf.appendSlice(allocator, &.{ 0x07, 0x07, 0x00, 0x00 });
+    try buf.appendSlice(allocator, extra_jp2h);
+    var lbox_bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox_bytes, @intCast(8 + payload.len), .big);
+    try buf.appendSlice(allocator, &lbox_bytes);
+    try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x63 });
+    try buf.appendSlice(allocator, payload);
+    return buf.toOwnedSlice(allocator);
+}
+
+// cdef: lbox=28 'cdef' N=3, (Cn=0,Typ=0,Asoc=3) (1,0,2) (2,0,1) — BGR order.
+const cdef_bgr = [_]u8{
+    0x00, 0x00, 0x00, 0x1C, 0x63, 0x64, 0x65, 0x66, 0x00, 0x03,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
+};
+
+test "cleanroom: JP2 cdef reorders decoded channels to colour order (BGR file2 layout)" {
+    const allocator = std.testing.allocator;
+    // Three components; the LAST is 12-bit, so its DC level (2048) tells it
+    // apart from the 8-bit ones (128) after the permutation.
+    const payload = try buildPackedMiniStream(allocator, .{ .components = 3, .last_comp_prec = 12, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(payload);
+    const jp2 = try wrapInJp2Ex(allocator, payload, 3, &cdef_bgr);
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    try std.testing.expect(rep.isOk());
+    var img = try jp2z.internal.decodeCleanroom(allocator, jp2);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 3), img.num_components);
+    // Colour 0 (R) ← codestream channel 2 (the 12-bit one); colour 2 (B) ← channel 0.
+    try std.testing.expectEqual(@as(i32, 2048), img.planes[0][0]);
+    try std.testing.expectEqual(@as(i32, 128), img.planes[1][0]);
+    try std.testing.expectEqual(@as(i32, 128), img.planes[2][0]);
+    try std.testing.expectEqual(@as(u8, 12), img.precs[0]);
+    try std.testing.expectEqual(@as(u8, 8), img.precs[2]);
+}
+
+test "validate: cdef naming a channel beyond NC, or two channels for one colour → FAIL" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{ .components = 3, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(payload);
+    // Cn=7 with NC=3.
+    var beyond = cdef_bgr;
+    beyond[11] = 0x07;
+    const j1 = try wrapInJp2Ex(allocator, payload, 3, &beyond);
+    defer allocator.free(j1);
+    var r1 = try jp2z.validate(allocator, j1);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(hasFinding(r1, .jp2_invalid_codestream));
+    // Two channels both claim colour 3.
+    var dup = cdef_bgr;
+    dup[21] = 0x03;
+    const j2 = try wrapInJp2Ex(allocator, payload, 3, &dup);
+    defer allocator.free(j2);
+    var r2 = try jp2z.validate(allocator, j2);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(hasFinding(r2, .jp2_invalid_codestream));
+}

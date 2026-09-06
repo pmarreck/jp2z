@@ -17,7 +17,7 @@
 {"fixture":"f1_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"f2_mono.j2c","status":"PASS","detail":"","w":303,"h":179,"comps":1,"max_abs":0}
 {"fixture":"file1.jp2","status":"PASS","detail":"","w":768,"h":512,"comps":3,"max_abs":0}
-{"fixture":"file2.jp2","status":"FAIL","detail":"","w":480,"h":640,"comps":3,"max_abs":158}
+{"fixture":"file2.jp2","status":"PASS","detail":"","w":480,"h":640,"comps":3,"max_abs":0}
 {"fixture":"file3.jp2","status":"DECODED","detail":"skip:dim-mismatch","w":480,"h":640,"comps":3,"max_abs":0}
 {"fixture":"file4.jp2","status":"PASS","detail":"","w":768,"h":512,"comps":1,"max_abs":0}
 {"fixture":"file5.jp2","status":"PASS","detail":"","w":768,"h":512,"comps":3,"max_abs":0}

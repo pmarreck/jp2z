@@ -880,6 +880,7 @@ const BoxType = struct {
     const ihdr: u32 = 0x69686472; // 'ihdr' — Image Header box (in jp2h)
     const colr: u32 = 0x636F6C72; // 'colr' — Colour Specification box
     const jp2c: u32 = 0x6A703263; // 'jp2c' — Contiguous Codestream box
+    const cdef: u32 = 0x63646566; // 'cdef' — Channel Definition box (in jp2h)
 };
 
 /// Validate any JP2 file or J2K raw codestream and return a
@@ -1080,7 +1081,7 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
 
 /// ihdr's declared dims + the host-file offset of the ihdr body, so
 /// walkJp2 can cross-check them against SIZ (T.800 I.5.3.1).
-const IhdrDims = struct { w: u32, h: u32, off: u64 };
+const IhdrDims = struct { w: u32, h: u32, off: u64, nc: u16 = 0 };
 
 /// Walk the sub-boxes inside a `jp2h` container, looking for `ihdr`
 /// (Image Header — T.800 Annex I.5.3) to pull width/height. Other
@@ -1132,12 +1133,58 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
             const width = std.mem.readInt(u32, ihdr_body[4..8], .big);
             report.height = height;
             report.width = width;
-            dims = .{ .w = width, .h = height, .off = base + pos + body_off };
+            dims = .{ .w = width, .h = height, .off = base + pos + body_off, .nc = std.mem.readInt(u16, ihdr_body[8..10], .big) };
+        }
+        if (tbox == BoxType.cdef) {
+            try parseCdefBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off, if (dims) |d| d.nc else 16);
         }
 
         pos += box_total;
     }
     return dims;
+}
+
+/// cdef (T.800 I.5.3.6): N entries of (Cn channel, Typ, Asoc). Typ 0 =
+/// colour with Asoc = 1-based colour index (0 = whole image); Typ 1/2 =
+/// opacity. Builds `report.cdef`: colour i ← channel order[i], identity
+/// for colours no entry names. A channel index at or past the ihdr
+/// component count, or two channels claiming one colour, is a structural
+/// lie (FAIL) — the file cannot be rendered as declared.
+fn parseCdefBox(report: *ValidationReport, allocator: Allocator, body: []const u8, offset: u64, nc: u16) Allocator.Error!void {
+    if (body.len < 2) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "cdef box too short for N");
+        return;
+    }
+    const n = std.mem.readInt(u16, body[0..2], .big);
+    if (body.len < 2 + 6 * @as(usize, n)) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "cdef box shorter than its N entries");
+        return;
+    }
+    var map: jp2z.ValidationReport.ChannelMap = .{ .order = undefined, .n = @intCast(@min(nc, 16)) };
+    var i: u8 = 0;
+    while (i < 16) : (i += 1) map.order[i] = i;
+    var claimed: [16]bool = @splat(false);
+    var e: usize = 0;
+    while (e < n) : (e += 1) {
+        const at = 2 + 6 * e;
+        const cn = std.mem.readInt(u16, body[at..][0..2], .big);
+        const typ = std.mem.readInt(u16, body[at + 2 ..][0..2], .big);
+        const asoc = std.mem.readInt(u16, body[at + 4 ..][0..2], .big);
+        if (cn >= nc) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at, "cdef names a channel beyond the ihdr component count");
+            return;
+        }
+        if (typ != 0 or asoc == 0 or asoc == 65535) continue; // opacity / whole-image: not a colour slot
+        const colour: usize = asoc - 1;
+        if (colour >= map.order.len or cn >= map.order.len) continue; // beyond the 16 stored slots: identity
+        if (claimed[colour]) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at + 4, "cdef assigns two channels to one colour");
+            return;
+        }
+        claimed[colour] = true;
+        map.order[colour] = @intCast(cn);
+    }
+    report.cdef = map;
 }
 
 /// Walk a J2K raw codestream. M1 scope: walks the main header from

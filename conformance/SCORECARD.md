@@ -14,9 +14,9 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 31 | byte-exact vs oracle |
+| PASS | 32 | byte-exact vs oracle |
 | NEAR | 4 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 1 | decoded but diverges (max_abs > 1) |
+| FAIL | 0 | decoded but diverges (max_abs > 1) |
 | skip:* | 17 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 4 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -30,7 +30,6 @@ diverge from the oracle. Largest divergence first.
 
 | fixture | w×h×comps | max_abs |
 |---------|-----------|--------:|
-| file2.jp2 | 480×640×3 | 158 |
 
 ## Unsupported profiles (ERROR / CRASH / TIMEOUT)
 
@@ -66,7 +65,6 @@ diverge from the oracle. Largest divergence first.
 | p0_06.j2k | ERROR | UnsupportedMixedWavelets |  |  |  | 0 |
 | p0_13.j2k | ERROR | TooManyComponents |  |  |  | 0 |
 | p1_03.j2k | ERROR | UnsupportedMixedWavelets |  |  |  | 0 |
-| file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
 | p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
 | p1_02.j2k | NEAR |  | 640 | 480 | 3 | 1 |
 | p1_04.j2k | NEAR |  | 1024 | 1024 | 1 | 1 |
@@ -85,6 +83,7 @@ diverge from the oracle. Largest divergence first.
 | f1_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | f2_mono.j2c | PASS |  | 303 | 179 | 1 | 0 |
 | file1.jp2 | PASS |  | 768 | 512 | 3 | 0 |
+| file2.jp2 | PASS |  | 480 | 640 | 3 | 0 |
 | file4.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file5.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file6.jp2 | PASS |  | 768 | 512 | 1 | 0 |

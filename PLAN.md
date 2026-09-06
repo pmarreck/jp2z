@@ -131,6 +131,15 @@ those fixtures, and OpenJPEG retirement is gated on it).
       AND the coding-pass budget was under-counted. CodeBlockState now
       records last_contribution_passes; the extractor keys on it. RED:
       crafted 1-pass/0-byte packet + the 7 e1 cblks vs oracle values.
+- [x] **JP2 cdef channel order** (2026-09-06 ~1:40pm EDT). parseJp2HeaderBox
+      parses cdef (I.5.3.6) into report.cdef (colour i ← channel order[i]);
+      decodeCleanroom delivers planes in colour order when the map is a
+      permutation. Cn beyond ihdr NC or two channels for one colour → FAIL.
+      RED: crafted 3-component mini-JP2 with a 12-bit last component (DC
+      2048 vs 128 makes the BGR permutation observable) + the two FAIL
+      cases. file2 (BGR cdef) was the last sweep FAIL. Sweep: PASS 32, NEAR
+      4, FAIL 0, ERROR 4 (all explicit UnsupportedMixedWavelets /
+      TooManyComponents), skip 17.
 - [x] **COC + RGN per-component overrides, per-component sub-sampled
       geometry** (2026-09-06 ~1:20pm EDT). Ten ISO fixtures use COC/RGN and
       EVERY one failed strict validation for it. Now: CompCoding (decomp,
@@ -194,11 +203,6 @@ those fixtures, and OpenJPEG retirement is gated on it).
       (else c145 unsupported, never invalid). decodeCleanroom refuses >16
       with error.TooManyComponents instead of indexing past its arrays.
 - [ ] Remaining sweep FAILs, attributed by tile-hist / T1 diff:
-      - **file2 (158)**: T1 matches 100%; the JP2 cdef box maps channels
-        BGR (cn0→asoc3, cn2→asoc1) and the openjpeg oracle applies it;
-        the cleanroom emits codestream order. Decode-only: parse cdef in
-        the jp2h walk and permute planes; a crafted mini-JP2 with distinct
-        component precisions makes the permutation observable.
 - [x] **Residual catchable-corruption audit** (2026-09-06 ~1:30pm EDT).
       Severity policy made explicit and applied: an UNDECODABLE value is
       FAIL (progression order > 4, MCT > 1, wavelet id > 1, quantization
