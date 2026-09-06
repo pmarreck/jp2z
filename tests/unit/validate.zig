@@ -155,6 +155,8 @@ test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wa
         0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
+        // SOD + two empty packets (decomp 1 → r0 + r1; A.4.4: SOD is mandatory in every tile-part)
+        0xFF, 0x93, 0x00, 0x00,
         // EOC
         0xFF, 0xD9,
     };
@@ -1617,6 +1619,7 @@ test "validate: main-header COC/QCC/RGN each emit jp2_unsupported_marker_ignored
     };
     const suffix = [_]u8{
         0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0xFF, 0x93, 0x00, 0x00, // SOD + two empty packets (decomp 1 → r0 + r1) (A.4.4)
         0xFF, 0xD9,
     };
     // COC / RGN are APPLIED (2026-09-06, per-component overrides): a
@@ -2181,6 +2184,8 @@ const synth_97_stream = [_]u8{
     0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
     0x00, 0x01,
+    // SOD + two empty packets (decomp 1 → r0 + r1; A.4.4: SOD is mandatory in every tile-part)
+    0xFF, 0x93, 0x00, 0x00,
     // EOC
     0xFF, 0xD9,
 };
@@ -4080,4 +4085,172 @@ test "COD / COC / RGN marker segments must have their exact T.800 length: one su
     defer r5.deinit(allocator);
     try std.testing.expect(hasFinding(r5, .bad_marker_length));
     try std.testing.expectEqual(jp2z.Severity.fail, r5.overall);
+}
+
+test "tile-part header: a segment whose length runs past SOD, or bytes that are no marker, → FAIL (edf_c2_1103421)" {
+    const allocator = std.testing.allocator;
+    // COC with Lcoc 0x0209 = 521 in a tile-part header of a few bytes: the
+    // segment claims to extend past SOD (edf_c2_1103421's fuzzed COC).
+    const overrun = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x53, 0x02, 0x09, 0x00, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 } });
+    defer allocator.free(overrun);
+    var r1 = try jp2z.validate(allocator, overrun);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "SOD"));
+    // Two bytes that are not a marker between SOT and SOD.
+    const garbage = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0x00, 0x00 } });
+    defer allocator.free(garbage);
+    var r2 = try jp2z.validate(allocator, garbage);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "SOD"));
+}
+
+// ── JP2 palette: pclr + cmap (T.800 I.5.3.4 / I.5.3.5) ────────────
+//
+// issue412.jp2 (Kakadu 7.3.3): one codestream component, a 256-entry
+// 3-column palette, cmap mapping it to 3 channels and a cdef naming
+// channels 0..2. jp2z read cdef's Cn against the ihdr component count (1)
+// and FAILed a file openjpeg and JasPer decode. mem-b2ace68c-1381.jp2:
+// pclr declares NE=1, NPC=4 and carries no entries; openjpeg refuses the
+// header, jp2z said nothing.
+
+/// pclr box: NE entries × NPC columns, every column `depth` bits unsigned,
+/// entries all zero. `truncate_entries` drops the entry bytes (mem-b2ace68c).
+fn pclrBox(allocator: std.mem.Allocator, ne: u16, npc: u8, depth: u8, truncate_entries: bool) ![]u8 {
+    const bytes_per: usize = if (depth <= 8) 1 else 2;
+    const entries: usize = if (truncate_entries) 0 else @as(usize, ne) * npc * bytes_per;
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    var lbox: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox, @intCast(8 + 3 + @as(usize, npc) + entries), .big);
+    try buf.appendSlice(allocator, &lbox);
+    try buf.appendSlice(allocator, "pclr");
+    var ne_b: [2]u8 = undefined;
+    std.mem.writeInt(u16, &ne_b, ne, .big);
+    try buf.appendSlice(allocator, &ne_b);
+    try buf.append(allocator, npc);
+    var i: usize = 0;
+    while (i < npc) : (i += 1) try buf.append(allocator, depth - 1);
+    try buf.appendNTimes(allocator, 0, entries);
+    return buf.toOwnedSlice(allocator);
+}
+
+/// cmap box from (CMP, MTYP, PCOL) triples.
+fn cmapBox(allocator: std.mem.Allocator, entries: []const [3]u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    var lbox: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox, @intCast(8 + 4 * entries.len), .big);
+    try buf.appendSlice(allocator, &lbox);
+    try buf.appendSlice(allocator, "cmap");
+    for (entries) |e| try buf.appendSlice(allocator, &.{ 0x00, e[0], e[1], e[2] });
+    return buf.toOwnedSlice(allocator);
+}
+
+const cmap_3ch = [_][3]u8{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 0, 1, 2 } };
+// cdef N=3 naming channels 0,1,2 as colours 1,2,3 (issue412's shape).
+const cdef_3ch = [_]u8{
+    0x00, 0x00, 0x00, 0x1C, 0x63, 0x64, 0x65, 0x66, 0x00, 0x03,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
+};
+
+fn paletteJp2(allocator: std.mem.Allocator, boxes: []const []const u8) ![]u8 {
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const extra = try std.mem.concat(allocator, u8, boxes);
+    defer allocator.free(extra);
+    return wrapInJp2Ex(allocator, payload, 1, extra);
+}
+
+test "JP2 palette: pclr + cmap + cdef over cmap channels is valid; palette not applied by decode → c145 WARN (issue412)" {
+    const allocator = std.testing.allocator;
+    const pclr = try pclrBox(allocator, 2, 3, 8, false);
+    defer allocator.free(pclr);
+    const cmap = try cmapBox(allocator, &cmap_3ch);
+    defer allocator.free(cmap);
+    const jp2 = try paletteJp2(allocator, &.{ pclr, cmap, &cdef_3ch });
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    for (rep.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    var saw = false;
+    for (rep.findings.items) |f| if (f.code == .jp2_unsupported_marker_ignored and std.mem.indexOf(u8, f.detail orelse "", "palette") != null) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+    // Decode still delivers the single unmapped codestream component.
+    var img = try jp2z.internal.decodeCleanroom(allocator, jp2);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), img.num_components);
+}
+
+test "JP2 palette: pclr shorter than NE×NPC entries → FAIL (mem-b2ace68c-1381); NE or NPC of 0 → FAIL" {
+    const allocator = std.testing.allocator;
+    const cmap = try cmapBox(allocator, &.{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 0, 1, 2 }, .{ 0, 1, 3 } });
+    defer allocator.free(cmap);
+    const short = try pclrBox(allocator, 1, 4, 8, true);
+    defer allocator.free(short);
+    const jp2 = try paletteJp2(allocator, &.{ short, cmap });
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .bad_marker_length, "pclr"));
+    const zero_ne = try pclrBox(allocator, 0, 4, 8, false);
+    defer allocator.free(zero_ne);
+    const jp2b = try paletteJp2(allocator, &.{ zero_ne, cmap });
+    defer allocator.free(jp2b);
+    var repb = try jp2z.validate(allocator, jp2b);
+    defer repb.deinit(allocator);
+    try std.testing.expect(failDetailContains(repb, .jp2_invalid_codestream, "pclr"));
+}
+
+test "JP2 palette: cmap component beyond ihdr NC, palette column beyond NPC, MTYP > 1, or a lone pclr/cmap → FAIL" {
+    const allocator = std.testing.allocator;
+    const pclr = try pclrBox(allocator, 2, 3, 8, false);
+    defer allocator.free(pclr);
+    const cases = [_]struct { entries: []const [3]u8, needle: []const u8 }{
+        .{ .entries = &.{ .{ 1, 1, 0 }, .{ 0, 1, 1 }, .{ 0, 1, 2 } }, .needle = "component" },
+        .{ .entries = &.{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 0, 1, 3 } }, .needle = "column" },
+        .{ .entries = &.{ .{ 0, 2, 0 }, .{ 0, 1, 1 }, .{ 0, 1, 2 } }, .needle = "MTYP" },
+    };
+    for (cases) |c| {
+        const cmap = try cmapBox(allocator, c.entries);
+        defer allocator.free(cmap);
+        const jp2 = try paletteJp2(allocator, &.{ pclr, cmap });
+        defer allocator.free(jp2);
+        var rep = try jp2z.validate(allocator, jp2);
+        defer rep.deinit(allocator);
+        try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, c.needle));
+    }
+    const lone_pclr = try paletteJp2(allocator, &.{pclr});
+    defer allocator.free(lone_pclr);
+    var r1 = try jp2z.validate(allocator, lone_pclr);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "cmap"));
+    const cmap = try cmapBox(allocator, &cmap_3ch);
+    defer allocator.free(cmap);
+    const lone_cmap = try paletteJp2(allocator, &.{cmap});
+    defer allocator.free(lone_cmap);
+    var r2 = try jp2z.validate(allocator, lone_cmap);
+    defer r2.deinit(allocator);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "pclr"));
+}
+
+test "JP2 palette: cdef channel count is the cmap entry count — a channel beyond it still FAILs" {
+    const allocator = std.testing.allocator;
+    const pclr = try pclrBox(allocator, 2, 3, 8, false);
+    defer allocator.free(pclr);
+    const cmap = try cmapBox(allocator, &cmap_3ch);
+    defer allocator.free(cmap);
+    // cdef N=1 naming channel 3 (cmap yields channels 0..2).
+    const cdef_ch3 = [_]u8{ 0x00, 0x00, 0x00, 0x10, 0x63, 0x64, 0x65, 0x66, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01 };
+    const jp2 = try paletteJp2(allocator, &.{ pclr, cmap, &cdef_ch3 });
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "cdef"));
 }

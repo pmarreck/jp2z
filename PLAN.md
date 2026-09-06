@@ -225,11 +225,23 @@ those fixtures, and OpenJPEG retirement is gated on it).
       the fuzz files; opj-fail/jp2z-accept 5→2 pending (edf_c2_1103421:
       tile-part header COC with Lcoc 521 runs past SOD and is accepted;
       mem-b2ace68c-1381: pclr with NE=1/NPC=4 but no entries).
-- [ ] **Tile-part header segment overrunning SOD → FAIL** (edf_c2_1103421).
-- [ ] **JP2 palette (pclr/cmap) validation + cdef channel count**
-      (issue412 false positive: cdef names cmap output channels, not
-      codestream components; mem-b2ace68c false negative: malformed pclr).
-      Palette not applied by decode → c145 WARN.
+- [x] **Tile-part without a reachable SOD → FAIL** (2026-09-06 ~2:55pm
+      EDT). findSod returned null for a header segment running past the
+      tile-part end (edf_c2_1103421's COC with Lcoc 521) or non-marker
+      bytes after SOT, and the caller skipped the tile silently. Now FAIL
+      jp2_invalid_codestream naming both causes (A.4.2/A.4.4). Six crafted
+      streams in the suite that ended a tile-part at SOT→EOC gained SOD
+      plus their due empty packets.
+- [x] **JP2 palette (pclr/cmap) validation + cdef channel count**
+      (2026-09-06 ~3:05pm EDT). pclr: NE 1..1024, NPC ≥ 1, box length =
+      3 + NPC + NE × Σ ceil(depth_i/8) (I.5.3.4); cmap: 4-byte entries,
+      CMP < ihdr NC, MTYP ∈ {0,1}, MTYP 1 needs PCOL < NPC, MTYP 0 needs
+      PCOL 0 (I.5.3.5); pclr and cmap must come together. jp2h is now
+      collected then validated (any sub-box order), and cdef's Cn indexes
+      cmap's output channels when a palette exists. Palette not applied by
+      decode → c145 WARN, so file9 (ISO palette fixture) is the matrix's
+      one unsupported control. issue412 (Kakadu 7.3.3 palette) accepted;
+      mem-b2ace68c-1381 (pclr NE=1/NPC=4 without entries) FAILs.
 - [ ] **Per-component wavelets in decode.** COC lets components use
       different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
       Validation walks them; decodeCleanroom now REFUSES explicitly

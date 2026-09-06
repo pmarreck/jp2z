@@ -77,3 +77,12 @@ independent semantic or specification-grounded label.
 The test locks these values as minimum sensitivity floors. Higher detection
 counts pass. The independent OpenJPEG oracle remains available only to the
 development conformance sweep; it is absent from this public validation gate.
+
+2026-09-06 (afternoon, day 2): JP2 palette boxes are validated (pclr
+I.5.3.4, cmap I.5.3.5, cdef over cmap's output channels) and a palette
+is reported as valid-but-unsupported (c145: decode delivers the
+codestream component unmapped). `file9.jp2`, the ISO palette fixture, is
+therefore the one unsupported JP2 control (`unsupported {0, 1}`); it is
+still fully validated and never rejected. Surplus coding passes (beyond
+3·numbps−2) are decoded by the openjpeg/JasPer convention and reported
+as a WARN, so no control is affected; the entropy floors are unchanged.

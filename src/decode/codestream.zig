@@ -887,6 +887,8 @@ const BoxType = struct {
     const colr: u32 = 0x636F6C72; // 'colr' — Colour Specification box
     const jp2c: u32 = 0x6A703263; // 'jp2c' — Contiguous Codestream box
     const cdef: u32 = 0x63646566; // 'cdef' — Channel Definition box (in jp2h)
+    const pclr: u32 = 0x70636C72; // 'pclr' — Palette box (in jp2h, I.5.3.4)
+    const cmap: u32 = 0x636D6170; // 'cmap' — Component Mapping box (in jp2h, I.5.3.5)
 };
 
 /// Validate any JP2 file or J2K raw codestream and return a
@@ -1112,6 +1114,13 @@ const IhdrDims = struct { w: u32, h: u32, off: u64, nc: u16 = 0 };
 /// instead of silently abandoning the walk.
 fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []const u8, base: u64) Allocator.Error!?IhdrDims {
     var dims: ?IhdrDims = null;
+    // pclr / cmap / cdef may appear in any order after ihdr (I.5.3), and
+    // cmap is checked against pclr while cdef's channel space is cmap's
+    // output (issue412: 1 component, 3 palette channels). Collect, then
+    // validate once the whole jp2h has been walked.
+    var pclr: ?PclrInfo = null;
+    var cmap_span: ?struct { body: []const u8, off: u64 } = null;
+    var cdef_span: ?struct { body: []const u8, off: u64 } = null;
     var pos: usize = 0;
     while (pos + 8 <= body.len) {
         const lbox = std.mem.readInt(u32, body[pos..][0..4], .big);
@@ -1156,12 +1165,100 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
             dims = .{ .w = width, .h = height, .off = base + pos + body_off, .nc = std.mem.readInt(u16, ihdr_body[8..10], .big) };
         }
         if (tbox == BoxType.cdef) {
-            try parseCdefBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off, if (dims) |d| d.nc else 16);
+            cdef_span = .{ .body = body[pos + body_off .. pos + box_total], .off = base + pos + body_off };
+        }
+        if (tbox == BoxType.pclr) {
+            pclr = try parsePclrBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off);
+        }
+        if (tbox == BoxType.cmap) {
+            cmap_span = .{ .body = body[pos + body_off .. pos + box_total], .off = base + pos + body_off };
         }
 
         pos += box_total;
     }
+    // I.5.3.5: cmap is present exactly when pclr is.
+    if (pclr != null and cmap_span == null) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, base, "pclr palette present without a cmap component-mapping box (T.800 I.5.3.5)");
+    }
+    if (cmap_span != null and pclr == null) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, cmap_span.?.off, "cmap present without a pclr palette box (T.800 I.5.3.5)");
+    }
+    const nc: u16 = if (dims) |d| d.nc else 0xFFFF;
+    var channels: u16 = nc;
+    if (cmap_span) |cm| channels = try parseCmapBox(report, allocator, cm.body, cm.off, nc, pclr);
+    if (pclr != null) {
+        // Valid Part-1 feature jp2z's decode does not apply (c145): the
+        // codestream components come out unmapped.
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, base, "palette (pclr/cmap) is not applied by jp2z decode; codestream components are delivered unmapped");
+    }
+    if (cdef_span) |cd| try parseCdefBox(report, allocator, cd.body, cd.off, channels);
     return dims;
+}
+
+const PclrInfo = struct { ne: u16, npc: u8 };
+
+/// pclr (T.800 I.5.3.4): NE (1..1024) palette entries × NPC (≥1) columns,
+/// one B_i depth byte per column (bit 7 signed, bits 0-6 depth−1), then
+/// NE×NPC entries of ceil(depth/8) bytes each. Returns NE/NPC whenever the
+/// header is readable so cmap can still be checked against NPC; every
+/// deviation is a FAIL (mem-b2ace68c-1381: NE=1, NPC=4, no entries).
+fn parsePclrBox(report: *ValidationReport, allocator: Allocator, body: []const u8, offset: u64) Allocator.Error!?PclrInfo {
+    if (body.len < 3) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "pclr box shorter than its NE/NPC header (T.800 I.5.3.4)");
+        return null;
+    }
+    const ne = std.mem.readInt(u16, body[0..2], .big);
+    const npc = body[2];
+    if (ne == 0 or ne > 1024 or npc == 0) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "pclr NE must be 1..1024 and NPC at least 1 (T.800 I.5.3.4)");
+    }
+    if (body.len < 3 + @as(usize, npc)) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "pclr box shorter than its NPC column-depth fields (T.800 I.5.3.4)");
+        return .{ .ne = ne, .npc = npc };
+    }
+    var entry_bytes: usize = 0;
+    var i: usize = 0;
+    while (i < npc) : (i += 1) {
+        const depth: usize = @as(usize, body[3 + i] & 0x7F) + 1;
+        entry_bytes += (depth + 7) / 8;
+    }
+    const expected: usize = 3 + @as(usize, npc) + @as(usize, ne) * entry_bytes;
+    if (body.len != expected) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "pclr box length does not match NE × NPC palette entries (T.800 I.5.3.4)");
+    }
+    return .{ .ne = ne, .npc = npc };
+}
+
+/// cmap (T.800 I.5.3.5): 4-byte entries (CMP u16, MTYP u8, PCOL u8), one
+/// per output channel. CMP names a codestream component (< ihdr NC); MTYP 1
+/// maps it through palette column PCOL (< pclr NPC), MTYP 0 uses it
+/// directly (PCOL 0). Returns the channel count, which is the space cdef's
+/// Cn indexes when a palette is present.
+fn parseCmapBox(report: *ValidationReport, allocator: Allocator, body: []const u8, offset: u64, nc: u16, pclr: ?PclrInfo) Allocator.Error!u16 {
+    if (body.len == 0 or body.len % 4 != 0) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "cmap box is not a whole number of 4-byte entries (T.800 I.5.3.5)");
+    }
+    const n: usize = body.len / 4;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const at = i * 4;
+        const cmp = std.mem.readInt(u16, body[at..][0..2], .big);
+        const mtyp = body[at + 2];
+        const pcol = body[at + 3];
+        if (cmp >= nc) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at, "cmap entry names a component beyond the ihdr component count (T.800 I.5.3.5)");
+        }
+        if (mtyp > 1) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at + 2, "cmap MTYP must be 0 (direct) or 1 (palette) (T.800 I.5.3.5)");
+        } else if (mtyp == 1) {
+            if (pclr == null or pcol >= pclr.?.npc) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at + 3, "cmap entry names a palette column beyond pclr NPC (T.800 I.5.3.5)");
+            }
+        } else if (pcol != 0) {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + at + 3, "cmap direct-use entry (MTYP 0) must carry PCOL 0 (T.800 I.5.3.5)");
+        }
+    }
+    return @intCast(@min(n, 0xFFFF));
 }
 
 /// cdef (T.800 I.5.3.6): N entries of (Cn channel, Typ, Asoc). Typ 0 =
@@ -1741,6 +1838,12 @@ fn walkTileParts(
         defer tp_ov.deinit(allocator);
         if (sod) |sod_pos| {
             tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos, ppm != null);
+        } else {
+            // A.4.4: every tile-part carries SOD. Unreachable means a header
+            // segment's length runs past the tile-part end (edf_c2_1103421:
+            // a COC with Lcoc 521 that openjpeg refuses) or non-marker bytes
+            // sit between SOT and SOD. The packet walk is skipped below.
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 12, "tile-part has no reachable SOD: a header segment runs past the tile-part end or bytes between SOT and SOD are not marker segments (T.800 A.4.2/A.4.4)");
         }
         // Packed packet headers for THIS tile-part: PPM chunk `this_tp`
         // (A.7.4: one Nppm chunk per tile-part in codestream order) or the
@@ -2022,6 +2125,9 @@ fn scanTilePartHeaderMarkers(
     var ppt_segs: [256]?[]const u8 = @splat(null);
     var p = hdr_start;
     while (p + 4 <= hdr_end) {
+        // findSod already walked this span with the same rules, so these
+        // two bails are unreachable on a located SOD; the caller reports an
+        // unreachable SOD as a FAIL (edf_c2_1103421).
         if (data[p] != 0xFF) return out; // not a marker boundary — stop
         const marker: u16 = (@as(u16, 0xFF) << 8) | @as(u16, data[p + 1]);
         if (marker == @intFromEnum(Marker.sod)) return out;
