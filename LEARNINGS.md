@@ -459,3 +459,22 @@ Process notes, again: two files were mangled by perl `s|...|...|` on text
 containing `|` capture syntax — the exact failure LEARNINGS already
 recorded this morning. The rule is now absolute: any edit whose text
 contains `|` goes through the exact-match Edit tool, never a regex.
+
+## 2026-09-06 — a severity policy, written down
+
+The audit of "fields the walker reads but never judges" needed one rule to
+stop each case being argued separately:
+- A value that makes the stream UNDECODABLE is FAIL: an undefined
+  progression order, MCT, wavelet id or quantization style; a precision
+  past 38 bits; more than 65535 tiles; a CRG whose length is not 4·Csiz.
+  Nothing downstream can proceed correctly, and a flipped byte producing
+  such a value is exactly the corruption the validator exists to catch.
+- A RESERVED value the decoder can ignore is WARN: Rsiz outside the
+  defined profiles, COM Rcom > 1, TLM Stlm reserved bits. Surfaced, never
+  blocking — a future amendment may define them.
+- A DEFINED feature jp2z does not implement is c145 (unsupported-valid):
+  Rsiz Part-2 / HTJ2K capability bits join COC-past-slot-16 and the
+  non-uniform Csiz tail there.
+And one deliberate omission, recorded so it is not "found" again: POC
+REpoc/CEpoc may legally exceed the real resolution/component counts
+(B.12.1.3 clamps them), so no bounds check is added for them.

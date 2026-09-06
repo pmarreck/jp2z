@@ -199,13 +199,19 @@ those fixtures, and OpenJPEG retirement is gated on it).
         the cleanroom emits codestream order. Decode-only: parse cdef in
         the jp2h walk and permute planes; a crafted mini-JP2 with distinct
         component precisions makes the permutation observable.
-- [ ] **Toward 100% — residual catchable-corruption classes (audit list):**
-      SIZ Rsiz capability value (must be 0 for Part 1 or a known profile
-      bit set); COM/CRG/PLM body sanity; COC/QCC per-component override
-      ranges; RGN roi-shift range; SOP sequence-number monotonicity + EPH
-      presence when signalled (verify these are FAIL not WARN in strict);
-      POC progression bounds vs SIZ/COD. Each gets a crafted RED before a
-      check is added, and a real-corpus specificity pass after.
+- [x] **Residual catchable-corruption audit** (2026-09-06 ~1:30pm EDT).
+      Severity policy made explicit and applied: an UNDECODABLE value is
+      FAIL (progression order > 4, MCT > 1, wavelet id > 1, quantization
+      style > 2, precision > 38 bits, > 65535 tiles, CRG length != 4·Csiz);
+      a RESERVED-but-decodable value is WARN (Rsiz undefined profile, COM
+      Rcom > 1, TLM Stlm reserved bits); a DEFINED-but-unsupported feature
+      is c145 (Rsiz Part-2/HTJ2K bits). COC/QCC/RGN ranges landed with
+      their slices; SOP Nsop + EPH presence were already FAIL. POC bounds
+      vs SIZ/COD deliberately NOT checked: T.800 B.12.1.3 lets REpoc/CEpoc
+      exceed the actual counts (clamped), so a high value is legal.
+      Eight crafted RED tests (byte-patched mini-streams); corpus Rsiz
+      census: only 0/1/2 occur. Not done: PLM cross-check (rare; mirrors
+      PLT, needs a fixture or a crafted multi-tile-part stream).
 
 ### Mecha Validate v1 leaf gate (2026-08-04 EDT)
 

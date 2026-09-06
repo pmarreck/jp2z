@@ -3391,3 +3391,157 @@ test "oracle dump: p0_13 (257 components, COC decomp/cblk per component, QCC, RG
     // comparison itself needs no decode.
     try expectT1Oracle(std.testing.allocator, p0_13_j2k, p0_13_t1_oracle, "p0_13");
 }
+
+// ── Residual catchable-corruption audit (2026-09-06) ────────────────
+//
+// Fields the walker read but never judged, or judged too gently for a
+// stream that cannot be decoded. Each case flips one field of the crafted
+// 4x4 mini-stream at a known offset (SIZ at 2, COD at 45, QCD at 59 for
+// the one-component builder output) and asserts the verdict class:
+//   - undecodable value            → FAIL (progression order, MCT, wavelet
+//                                    id, quantization style, precision,
+//                                    tile count, CRG length)
+//   - reserved-but-decodable value → WARN (Rsiz undefined bits, COM Rcom,
+//                                    TLM Stlm reserved bits)
+//   - defined-but-unsupported      → c145 WARN (Rsiz Part-2 / HTJ2K bits)
+
+fn patched(allocator: std.mem.Allocator, base: []const u8, offset: usize, bytes: []const u8) ![]u8 {
+    const out = try allocator.dupe(u8, base);
+    @memcpy(out[offset .. offset + bytes.len], bytes);
+    return out;
+}
+
+test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K capability bits → c145 WARN; undefined value → WARN, never FAIL" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    for ([_][2]u8{ .{ 0x00, 0x00 }, .{ 0x00, 0x01 }, .{ 0x00, 0x02 } }) |v| {
+        const s = try patched(allocator, base, 6, &v);
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(rep.isOk());
+        try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
+        try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    }
+    const ext = try patched(allocator, base, 6, &.{ 0x40, 0x00 }); // bit 14: Part 2 / HT capability
+    defer allocator.free(ext);
+    var rep_ext = try jp2z.validate(allocator, ext);
+    defer rep_ext.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_ext, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep_ext.overall != .fail);
+    const bad = try patched(allocator, base, 6, &.{ 0x00, 0x07 }); // undefined Part-1 profile value
+    defer allocator.free(bad);
+    var rep_bad = try jp2z.validate(allocator, bad);
+    defer rep_bad.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_siz));
+    try std.testing.expect(rep_bad.overall == .warn);
+}
+
+test "audit: SIZ Ssiz precision above 38 bits → jp2_invalid_siz FAIL (Table A.10)" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const s = try patched(allocator, base, 42, &.{0x7F}); // 128-bit unsigned
+    defer allocator.free(s);
+    var rep = try jp2z.validate(allocator, s);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_siz));
+    const ok = try patched(allocator, base, 42, &.{0x25}); // 38-bit: the ceiling, legal
+    defer allocator.free(ok);
+    var rep_ok = try jp2z.validate(allocator, ok);
+    defer rep_ok.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep_ok, .jp2_invalid_siz));
+}
+
+test "audit: SIZ tile grid of 65536 tiles → jp2_invalid_siz FAIL (A.5.1 caps tiles at 65535)" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    // 256x256 image in 1x1 tiles = 65536 tiles.
+    const s0 = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00 });
+    defer allocator.free(s0);
+    const s = try patched(allocator, s0, 24, &.{ 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01 });
+    defer allocator.free(s);
+    var rep = try jp2z.validate(allocator, s);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_siz));
+}
+
+test "audit: COD undecodable values FAIL — progression order 5, MCT 2, wavelet id 2" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const cases = [_]struct { off: usize, val: u8, code: jp2z.FindingCode }{
+        .{ .off = 50, .val = 5, .code = .jp2_bad_progression_order },
+        .{ .off = 53, .val = 2, .code = .jp2_invalid_codestream },
+        .{ .off = 58, .val = 2, .code = .jp2_invalid_codestream },
+    };
+    for (cases) |c| {
+        const s = try patched(allocator, base, c.off, &.{c.val});
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+        try std.testing.expect(hasFinding(rep, c.code));
+    }
+}
+
+test "audit: QCD quantization style 3 (reserved) → FAIL, not WARN" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const s = try patched(allocator, base, 63, &.{0x43}); // G=2, style 3
+    defer allocator.free(s);
+    var rep = try jp2z.validate(allocator, s);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+test "audit: COM Rcom registration — 0 and 1 clean; 2 (reserved) → WARN" {
+    const allocator = std.testing.allocator;
+    for ([_]u8{ 0, 1 }) |rcom| {
+        const s = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x64, 0x00, 0x06, 0x00, rcom, 0x68, 0x69 } });
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(rep.isOk());
+        try std.testing.expect(!hasFinding(rep, .jp2_invalid_codestream));
+    }
+    const bad = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x64, 0x00, 0x06, 0x00, 0x02, 0x68, 0x69 } });
+    defer allocator.free(bad);
+    var rep_bad = try jp2z.validate(allocator, bad);
+    defer rep_bad.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_codestream));
+    try std.testing.expect(rep_bad.overall == .warn);
+}
+
+test "audit: CRG length must be 2 + 4·Csiz — short → bad_marker_length FAIL; exact → clean" {
+    const allocator = std.testing.allocator;
+    const short = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x63, 0x00, 0x04, 0x00, 0x00 } });
+    defer allocator.free(short);
+    var rep = try jp2z.validate(allocator, short);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .bad_marker_length));
+    const ok = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x63, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00 } });
+    defer allocator.free(ok);
+    var rep_ok = try jp2z.validate(allocator, ok);
+    defer rep_ok.deinit(allocator);
+    try std.testing.expect(rep_ok.isOk());
+    try std.testing.expect(!hasFinding(rep_ok, .bad_marker_length));
+}
+
+test "audit: TLM Stlm reserved bits (0-3, 7) set → WARN" {
+    const allocator = std.testing.allocator;
+    // Ztlm=0, Stlm=0x01 (reserved low bit), one Ptlm=15 (the walked length).
+    const s = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x55, 0x00, 0x06, 0x00, 0x01, 0x00, 0x0F } });
+    defer allocator.free(s);
+    var rep = try jp2z.validate(allocator, s);
+    defer rep.deinit(allocator);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+    try std.testing.expect(rep.overall != .fail);
+}

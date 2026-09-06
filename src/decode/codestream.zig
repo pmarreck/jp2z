@@ -1268,6 +1268,20 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             @intFromEnum(Marker.rgn) => if (report.coding_params) |*cp| {
                 try parseRgnBody(report, allocator, cp, body, pos + 2);
             },
+            // COM (A.9.2): Rcom 0 = binary, 1 = Latin; other values reserved.
+            @intFromEnum(Marker.com) => {
+                if (body.len < 2) {
+                    try emit(report, allocator, .fail, .bad_marker_length, pos, null);
+                } else if (std.mem.readInt(u16, body[0..2], .big) > 1) {
+                    try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 2, "COM Rcom registration value is reserved");
+                }
+            },
+            // CRG (A.9.1): exactly one (Xcrg, Ycrg) u16 pair per component.
+            @intFromEnum(Marker.crg) => if (report.coding_params) |cp| {
+                if (body.len != 4 * @as(usize, cp.num_components)) {
+                    try emit(report, allocator, .fail, .bad_marker_length, pos, "CRG length is not 2 + 4 * Csiz");
+                }
+            },
             // POC is APPLIED, not ignored: entries parsed here become the
             // default progression-volume list for every tile's packet walk.
             // SIZ precedes POC in a conforming main header (T.800 A.5.1),
@@ -1422,6 +1436,10 @@ fn parseTlmBody(
     const stlm = body[1];
     const st: u8 = (stlm >> 4) & 0x3;
     const sp: u8 = (stlm >> 6) & 0x1;
+    // Table A.34: Stlm bits 0-3 and bit 7 are reserved (must be 0).
+    if (stlm & 0x8F != 0) {
+        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 1, "TLM Stlm reserved bits set");
+    }
     if (st == 3) {
         try emit(report, allocator, .fail, .bad_marker_length, offset + 1, null);
         return;
@@ -2069,9 +2087,12 @@ fn parseCodInto(
         return true;
     }
     // SGcod
+    // An undefined progression order (Table A.16: 0..4) cannot be walked:
+    // FAIL, and the caller un-publishes / skips the tile.
     const prog_order_raw = body[1];
     if (prog_order_raw > 4) {
-        try emit(report, allocator, .warn, .jp2_bad_progression_order, offset + 1, null);
+        try emit(report, allocator, .fail, .jp2_bad_progression_order, offset + 1, null);
+        return false;
     }
     const num_layers = std.mem.readInt(u16, body[2..4], .big);
     // SGcod layers: 1..65535 (T.800 Table A.14). Zero layers is
@@ -2079,9 +2100,11 @@ fn parseCodInto(
     if (num_layers == 0) {
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 2, null);
     }
+    // SGcod MCT is 0 or 1 (Table A.17); any other value names a transform
+    // no Part-1 decoder can apply.
     const mct_raw = body[4];
     if (mct_raw > 1) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 4, "SGcod multiple component transform value is not 0 or 1");
     }
     // Scod reserved bits 3-7 must be zero. Surface as WARN:
     // unknown-but-decodable per Part 1 rules.
@@ -2165,7 +2188,9 @@ fn parseSPcodInto(
     switch (qmfbid) {
         0 => try emit(report, allocator, .info, .jp2_uses_9x7_wavelet, offset + 4, null),
         1 => try emit(report, allocator, .info, .jp2_uses_5x3_wavelet, offset + 4, null),
-        else => try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 4, null),
+        // Table A.20: only 0 (9/7) and 1 (5/3) exist in Part 1; anything
+        // else names a transform that cannot be inverted.
+        else => try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 4, "SPcod wavelet transform id is not 0 or 1"),
     }
     const num_resolutions: usize = @as(usize, decomp_levels) + 1;
     const needed_precinct_bytes: usize = if (user_precincts) num_resolutions else 0;
@@ -2333,8 +2358,11 @@ fn parseQuantTable(
     const sqcd = body[0];
     const quant_style: u8 = sqcd & 0x1F;
     const guard_bits: u8 = sqcd >> 5;
+    // Table A.28: styles 0, 1, 2 only. A reserved style leaves the
+    // subband exponents unknowable — no M_b, no dequant: FAIL.
     if (quant_style > 2) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "Sqcd/Sqcc quantization style is not 0, 1 or 2");
+        return;
     }
     table.* = .{ .guard_bits = guard_bits, .quant_style = quant_style, .offset = offset, .present = true };
     // Default every band to eps 0 (M_b = G_b - 1), mant 0.
@@ -2996,6 +3024,24 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         .tile_w = xtsiz,
         .tile_h = ytsiz,
     };
+    // Rsiz (A.5.1 Table A.9): 0 = Part 1 (no profile), 1 = Profile 0,
+    // 2 = Profile 1. Bits 14/15 declare Part 2 / HTJ2K capabilities — a
+    // valid stream jp2z does not decode (c145). Any other value is an
+    // undefined Part-1 profile: surfaced, but the codestream stays walkable.
+    const rsiz = std.mem.readInt(u16, body[2..4], .big);
+    if (rsiz & 0xC000 != 0) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "SIZ Rsiz declares Part 2 / HTJ2K capabilities");
+    } else if (rsiz > 2) {
+        try emit(report, allocator, .warn, .jp2_invalid_siz, pos, "SIZ Rsiz is not a defined Part-1 profile value");
+    }
+    // A.5.1: the tile grid may not exceed 65535 tiles (Isot is 16-bit).
+    {
+        const nt = cp_local.numTilesXY(xsiz, ysiz);
+        if (@as(u64, nt.x) * @as(u64, nt.y) > 65535) {
+            try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "tile grid exceeds 65535 tiles");
+            return;
+        }
+    }
     // Components past the 16th are read through slot 15: valid as long as
     // their descriptor matches it (every consumer already clamps with
     // @min(c, 15)). A differing descriptor is an unsupported-but-valid
@@ -3015,6 +3061,11 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         }
         const prec: u8 = (ssiz & 0x7F) + 1;
         const signed = ssiz & 0x80 != 0;
+        // Table A.10: component precision is 1..38 bits.
+        if (prec > 38) {
+            try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "component precision exceeds 38 bits");
+            return;
+        }
         if (ci < cp_local.comp_prec.len) {
             cp_local.comp_prec[ci] = prec;
             if (signed) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
