@@ -121,12 +121,25 @@ those fixtures, and OpenJPEG retirement is gated on it).
       RED: vendored p1_06.t1.bin oracle (9.8 KB, 180 cblks, 2 mid-plane).
       Sweep: p1_05 18→NEAR 1, p1_06 NEAR→PASS (byte-exact 9/7), balloon
       9→0/12 tiles off. PASS 27, NEAR 4, FAIL 5, ERROR 1.
-- [ ] **e1_colr tile 7 ±2 = RGN (ROI up-shift), not a refinement bug.**
-      e1 carries 3 RGN tile-part markers (c145 today). The T1 diff on e1
-      shows mismatches only in ROI tiles with the openjpeg values shifted
-      relative to ours. Slice: parse Srgn/SPrgn (A.6.3), apply the ROI
-      descale (T.800 H.2: coefficients >= 2^s are shifted down by s) after
-      T1, and drop RGN from the c145 ignored set. Oracle: e1 t1 dump.
+- [x] **e1_colr tile 7 ±2 = ZERO-BYTE CONTRIBUTIONS, not RGN** (2026-09-06
+      ~12:20pm EDT). CORRECTION: the earlier "e1 carries 3 RGN markers"
+      claim came from grepping raw `ff5e` bytes, not marker segments — e1
+      has NO RGN. The T1 diff showed 7 tiny cblks where openjpeg carried
+      extra low bits = more passes decoded. Cause: the extractor skipped
+      any contribution with byte length 0, so passes signalled with zero
+      bytes (legal, B.10.7) never reached the plan — decode stopped short
+      AND the coding-pass budget was under-counted. CodeBlockState now
+      records last_contribution_passes; the extractor keys on it. RED:
+      crafted 1-pass/0-byte packet + the 7 e1 cblks vs oracle values.
+- [x] **QCC per-component quantization** (2026-09-06 ~12:15pm EDT). QCC
+      (main + tile-part) applied with A.6.5 precedence; CodingParams grew
+      `quant: QuantTable` + `comp_quant[16]`; mbForSubband/quantFor take
+      the component. p0_04 comp-1 numbps now 6 (was 8: QCD table used for
+      a QCC component → pass budget 2 planes too lenient). Cqcc >= Csiz →
+      FAIL; Cqcc >= 16 → c145. smoke.c's c145 invariant rides on f1_mono
+      (tile-part COD) now that p0_04 has no ignored marker. Sweep after both
+      fixes: e1 → PASS byte-exact; PASS 30, NEAR 4, FAIL 2 (d2 tile-COD,
+      file2 cdef), ERROR 1 (p0_13 COC/RGN/>16).
 - [x] **QCD-before-COD marker order** (2026-09-06 ~12:00pm EDT). p0_01 and
       file8 put QCD first (legal, A.4.1); the M_b table was sized from COD's
       decomp count at QCD-parse time → every HF band M_b=0 → numbps 0 →
@@ -144,15 +157,13 @@ those fixtures, and OpenJPEG retirement is gated on it).
         carry COD prog 3/4 vs main prog 1) — c145-ignored today, so the
         packet walk desyncs. Slice: apply tile-part COD (all SGcod/SPcod
         fields) to the tile's params like tile QCD already is.
-      - **e1_colr (2)**: RGN roishift on tile 7 (3 RGN tile-part markers).
       - **file2 (158)**: T1 matches 100%; the JP2 cdef box maps channels
         BGR (cn0→asoc3, cn2→asoc1) and the openjpeg oracle applies it;
         the cleanroom emits codestream order. Decode-only: parse cdef in
         the jp2h walk and permute planes; a crafted mini-JP2 with distinct
         component precisions makes the permutation observable.
-      - **p0_13 (ERROR TooManyComponents)**: needs COC/QCC/RGN per-component
-        overrides + >16-slot decode buffers. COC/QCC are common in the wild
-        (chroma quantisation) → next validation slice.
+      - **p0_13 (ERROR TooManyComponents)**: needs COC + RGN per-component
+        overrides (QCC landed) + >16-slot decode buffers.
 - [ ] **Toward 100% — residual catchable-corruption classes (audit list):**
       SIZ Rsiz capability value (must be 0 for Part 1 or a known profile
       bit set); COM/CRG/PLM body sanity; COC/QCC per-component override

@@ -1606,13 +1606,25 @@ test "validate: main-header COC/QCC/RGN each emit jp2_unsupported_marker_ignored
         0xFF, 0xD9,
     };
     const coc = prefix ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
-    const qcc = prefix ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
     const rgn = prefix ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ suffix;
-    inline for (.{ coc, qcc, rgn }) |s| {
+    inline for (.{ coc, rgn }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
     }
+    // QCC is APPLIED (2026-09-06): a well-formed one (Cqcc=0, Sqcc G=2 style 0,
+    // 4 SPqcc bytes for decomp=1) is silent; a truncated one surfaces
+    // structurally (like QCD), never as "ignored".
+    const qcc_ok = prefix ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x08, 0x00, 0x40, 0x40, 0x48, 0x48, 0x50 } ++ suffix;
+    var rep_qcc = try jp2z.validate(std.testing.allocator, &qcc_ok);
+    defer rep_qcc.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep_qcc, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep_qcc.isOk());
+    const qcc_short = prefix ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ suffix;
+    var rep_qcc_short = try jp2z.validate(std.testing.allocator, &qcc_short);
+    defer rep_qcc_short.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep_qcc_short, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(hasFinding(rep_qcc_short, .jp2_invalid_codestream));
     const baseline = prefix ++ suffix;
     var rep0 = try jp2z.validate(std.testing.allocator, &baseline);
     defer rep0.deinit(std.testing.allocator);
@@ -1665,9 +1677,8 @@ test "validate: tile-part-header COC/QCC/RGN each emit jp2_unsupported_marker_ig
     const sot = [_]u8{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
     const sod_eoc = [_]u8{ 0xFF, 0x93, 0xFF, 0xD9 }; // SOD then EOC (empty body)
     const coc = prefix ++ sot ++ [_]u8{ 0xFF, 0x53, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
-    const qcc = prefix ++ sot ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
     const rgn = prefix ++ sot ++ [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x08 } ++ sod_eoc;
-    inline for (.{ coc, qcc, rgn }) |s| {
+    inline for (.{ coc, rgn }) |s| {
         var report = try jp2z.validate(std.testing.allocator, &s);
         defer report.deinit(std.testing.allocator);
         try std.testing.expect(hasFinding(report, .jp2_unsupported_marker_ignored));
@@ -1681,7 +1692,9 @@ test "validate: tile-part-header COC/QCC/RGN each emit jp2_unsupported_marker_ig
     const baseline = prefix ++ sot ++ sod_eoc;
     const benign = prefix ++ sot ++ [_]u8{ 0xFF, 0x64, 0x00, 0x04, 0x00, 0x00 } ++ sod_eoc;
     const poc_ok = prefix ++ sot ++ [_]u8{ 0xFF, 0x5F, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00 } ++ sod_eoc;
-    inline for (.{ baseline, benign, poc_ok }) |s| {
+    // A well-formed tile-part QCC is APPLIED to the tile (2026-09-06), like tile QCD.
+    const qcc_ok = prefix ++ sot ++ [_]u8{ 0xFF, 0x5D, 0x00, 0x08, 0x00, 0x40, 0x40, 0x48, 0x48, 0x50 } ++ sod_eoc;
+    inline for (.{ baseline, benign, poc_ok, qcc_ok }) |s| {
         var rep0 = try jp2z.validate(std.testing.allocator, &s);
         defer rep0.deinit(std.testing.allocator);
         try std.testing.expect(!hasFinding(rep0, .jp2_unsupported_marker_ignored));
@@ -2896,11 +2909,11 @@ test "validate: QCD before COD yields the same per-subband M_b as COD before QCD
     defer allocator.free(b);
     const pa = (try jp2z.internal.inspect(allocator, a)) orelse return error.TestUnexpectedResult;
     const pb = (try jp2z.internal.inspect(allocator, b)) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(u8, 9), pa.mb_per_subband[0]);
-    try std.testing.expectEqual(@as(u8, 10), pa.mb_per_subband[1]);
-    try std.testing.expectEqual(@as(u8, 11), pa.mb_per_subband[3]);
-    try std.testing.expectEqualSlices(u8, pa.mb_per_subband[0..4], pb.mb_per_subband[0..4]);
-    try std.testing.expectEqual(pa.guard_bits, pb.guard_bits);
+    try std.testing.expectEqual(@as(u8, 9), pa.quant.mb[0]);
+    try std.testing.expectEqual(@as(u8, 10), pa.quant.mb[1]);
+    try std.testing.expectEqual(@as(u8, 11), pa.quant.mb[3]);
+    try std.testing.expectEqualSlices(u8, pa.quant.mb[0..4], pb.quant.mb[0..4]);
+    try std.testing.expectEqual(pa.quant.guard_bits, pb.quant.guard_bits);
     // Neither order is a deviation.
     var ra = try jp2z.validate(allocator, a);
     defer ra.deinit(allocator);
@@ -2990,4 +3003,125 @@ test "validate: p0_13 (257 components) is not jp2_invalid_siz and publishes codi
     defer rep.deinit(allocator);
     try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
     try std.testing.expectEqual(@as(u16, 257), rep.coding_params.?.num_components);
+}
+
+// ── QCC: per-component quantization overrides (T.800 A.6.5) ───────
+//
+// Precedence, highest first: tile-part QCC > tile-part QCD > main QCC >
+// main QCD. QCC was c145-ignored, so a component with its own exponents
+// took the QCD table: numbps off for that component (p0_04's QCCs lower
+// eps by 2 for components 1 and 2 → numbps 2 too high), which the 9/7
+// dequant cancels in pixels but which loosens the coding-pass budget the
+// validator enforces. Chroma QCCs are routine in real encoders.
+
+test "validate: p0_04 QCC → component-1 numbps matches the openjpeg oracle (QCD would give +2)" {
+    const allocator = std.testing.allocator;
+    var list = try jp2z.internal.extractCblkPlans(allocator, p0_04_j2k);
+    defer list.deinit(allocator);
+    // From the openjpeg T1 dump of p0_04 (component 1, subband-internal coords).
+    const expected = [_]struct { r: u8, b: u8, x0: i32, y0: i32, numbps: u8 }{
+        .{ .r = 2, .b = 3, .x0 = 0, .y0 = 0, .numbps = 6 },
+        .{ .r = 2, .b = 2, .x0 = 0, .y0 = 0, .numbps = 7 },
+        .{ .r = 3, .b = 1, .x0 = 0, .y0 = 0, .numbps = 6 },
+        .{ .r = 3, .b = 2, .x0 = 0, .y0 = 0, .numbps = 8 },
+        .{ .r = 4, .b = 1, .x0 = 64, .y0 = 0, .numbps = 6 },
+    };
+    var found: u32 = 0;
+    for (expected) |e| {
+        for (list.plans) |plan| {
+            if (plan.component != 1 or plan.resolution != e.r or plan.band != e.b or plan.sb_x0 != e.x0 or plan.sb_y0 != e.y0) continue;
+            try std.testing.expectEqual(e.numbps, plan.numbps);
+            found += 1;
+            break;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, expected.len), found);
+}
+
+test "validate: QCC with Cqcc >= Csiz → jp2_invalid_codestream FAIL" {
+    const allocator = std.testing.allocator;
+    // Csiz=2; QCC names component 5 (Lqcc=5, Cqcc=5, Sqcc G=3 style 0, one SPqcc byte).
+    const stream = try buildPackedMiniStream(allocator, .{ .components = 2, .main_extra = &.{ 0xFF, 0x5D, 0x00, 0x05, 0x05, 0x60, 0x40 }, .body = &.{ 0x00, 0x00 } });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+}
+
+// ── Zero-byte code-block contributions still carry coding passes ───
+//
+// A packet may include a code-block with N new passes and a length of 0
+// (T.800 B.10.7 allows it; encoders emit it for tiny blocks in later
+// layers). The walker's extractor skipped any contribution whose byte
+// length was 0, so those passes never reached the plan: the tier-1 decode
+// stopped short of openjpeg (which runs the passes over an exhausted
+// stream) and the coding-pass budget the validator enforces was under-
+// counted. e1_colr has seven such code-blocks (tiles 3, 4, 5, 7).
+
+test "extractCblkPlans: a 1-pass, 0-byte contribution yields a plan with total_passes 1" {
+    const allocator = std.testing.allocator;
+    // Mini-stream shell + one packet: non-empty(1) inclusion(1) zbp=0(1)
+    // passes=1('0') lblock('0') length=0('000') → 0xE0, no body byte.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x93, 0xE0, 0xFF, 0xD9 });
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+    var list = try jp2z.internal.extractCblkPlans(allocator, buf.items);
+    defer list.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), list.plans.len);
+    try std.testing.expectEqual(@as(u32, 1), list.plans[0].total_passes);
+    try std.testing.expectEqual(@as(usize, 0), list.plans[0].data.len);
+    try std.testing.expectEqual(@as(u8, 9), list.plans[0].numbps);
+}
+
+const e1_colr_j2c_for_zero_len = @embedFile("fixtures/conformance/e1_colr.j2c");
+
+test "oracle: e1_colr's seven zero-byte-contribution code-blocks decode to openjpeg's coefficients" {
+    const allocator = std.testing.allocator;
+    var list = try jp2z.internal.extractCblkPlans(allocator, e1_colr_j2c_for_zero_len);
+    defer list.deinit(allocator);
+    const Case = struct { tile: u32, c: u16, r: u8, b: u8, want: []const i32 };
+    const cases = [_]Case{
+        .{ .tile = 3, .c = 0, .r = 1, .b = 2, .want = &.{ -37, -29, -117 } },
+        .{ .tile = 4, .c = 2, .r = 1, .b = 1, .want = &.{ -31, 15 } },
+        .{ .tile = 5, .c = 0, .r = 0, .b = 0, .want = &.{ -207, -63 } },
+        .{ .tile = 7, .c = 2, .r = 0, .b = 0, .want = &.{207} },
+        .{ .tile = 7, .c = 1, .r = 0, .b = 0, .want = &.{-7} },
+        .{ .tile = 7, .c = 0, .r = 1, .b = 2, .want = &.{ -47, -99 } },
+        .{ .tile = 7, .c = 0, .r = 0, .b = 0, .want = &.{-95} },
+    };
+    var found: u32 = 0;
+    for (cases) |cs| {
+        for (list.plans) |plan| {
+            if (plan.tile != cs.tile or plan.component != cs.c or plan.resolution != cs.r or plan.band != cs.b or plan.sb_x0 != 0 or plan.sb_y0 != 0) continue;
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            try std.testing.expectEqual(cs.want.len, cblk.coeffs.len);
+            for (cblk.coeffs, 0..) |c, i| {
+                const ours = jp2z.internal.coeffToOpenJpegI32(c);
+                if (ours != cs.want[i]) {
+                    std.debug.print("\n[e1 zero-len] tile {d} c{d} r{d} b{d} [{d}] ours={d} oj={d} (passes {d})\n", .{ cs.tile, cs.c, cs.r, cs.b, i, ours, cs.want[i], plan.total_passes });
+                    return error.MismatchedCoefficients;
+                }
+            }
+            found += 1;
+            break;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, cases.len), found);
 }

@@ -150,7 +150,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
     try std.testing.expectEqual([_]usize{ 16, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
-    try std.testing.expectEqual([_]usize{ 2, 0 }, stats.unsupported_controls_by_family);
+    try std.testing.expectEqual([_]usize{ 1, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
     for (stats.entropy_probes_by_class) |count| try std.testing.expect(count > 0);
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes

@@ -80,6 +80,29 @@ pub const PrecinctSize = packed struct(u8) {
     y_exp: u4 = 15, // PPy
 };
 
+/// Quantization table (T.800 A.6.4/A.6.5): the default from QCD, or a
+/// per-component override from QCC (`comp_quant`). Precedence, highest
+/// first: tile-part QCC > tile-part QCD > main QCC > main QCD — a
+/// tile-part QCD therefore clears every override inherited from the
+/// main header before the tile's own QCCs re-apply.
+pub const QuantTable = struct {
+    /// Guard bits G_b from Sqcd/Sqcc high 3 bits (0..7). Applies to every
+    /// subband.
+    guard_bits: u8 = 0,
+    /// Quantization style from the low 5 bits: 0 = no-quant
+    /// (reversible / 5/3), 1 = scalar derived, 2 = scalar expounded.
+    quant_style: u8 = 0,
+    /// Per-subband number of magnitude bit-planes
+    /// M_b = G_b + epsilon_b - 1 (T.800 E.1). Indexed by subband index:
+    ///   r = 0:          subband_idx = 0   (only LL exists)
+    ///   r >= 1, band b: subband_idx = 3*(r-1) + b  (b in {1,2,3} for HL/LH/HH)
+    /// Length 1 + 3*32 = 97 covers num_decomp_levels up to 32.
+    mb: [97]u8 = @splat(0),
+    /// Per-subband quantization exponent (irreversible), same index.
+    expn: [97]u8 = @splat(0),
+    /// Per-subband quantization mantissa (11-bit) for irreversible dequant.
+    mant: [97]u16 = @splat(0),
+};
 pub const CodingParams = struct {
     progression_order: ProgressionOrder = .lrcp,
     num_layers: u16 = 0,
@@ -114,18 +137,11 @@ pub const CodingParams = struct {
     /// the values come from the COD body trailing bytes (one byte
     /// per resolution: low nibble = PPx, high nibble = PPy).
     precinct_sizes: [33]PrecinctSize = @splat(.{}),
-    /// Guard bits G_b from Sqcd high 3 bits (0..7). Applies to every
-    /// subband.
-    guard_bits: u8 = 0,
-    /// Quantization style from Sqcd low 5 bits: 0 = no-quant
-    /// (reversible / 5/3), 1 = scalar derived, 2 = scalar expounded.
-    quant_style: u8 = 0,
-    /// Per-subband number of magnitude bit-planes
-    /// M_b = G_b + epsilon_b - 1 (T.800 E.1). Indexed by subband index:
-    ///   r = 0:          subband_idx = 0   (only LL exists)
-    ///   r >= 1, band b: subband_idx = 3*(r-1) + b  (b in {1,2,3} for HL/LH/HH)
-    /// Length 1 + 3*32 = 97 covers num_decomp_levels up to 32.
-    mb_per_subband: [97]u8 = @splat(0),
+    /// QCD table (the default for every component without a QCC).
+    quant: QuantTable = .{},
+    /// QCC overrides by component (first 16 components; a QCC for a later
+    /// component is surfaced as unsupported).
+    comp_quant: [16]?QuantTable = @splat(null),
     /// Per-component precision (bit depth) from SIZ Ssiz low 7 bits + 1.
     /// Indexed by component; up to 16 captured (enough for our fixtures).
     comp_prec: [16]u8 = @splat(8),
@@ -136,11 +152,6 @@ pub const CodingParams = struct {
     /// (T.800 B.2). Default 1 (no sub-sampling). Index = component.
     comp_dx: [16]u8 = @splat(1),
     comp_dy: [16]u8 = @splat(1),
-    /// Per-subband quantization exponent (irreversible). Index matches
-    /// mb_per_subband / stepsizes order: [0]=LL@r0, then 3 per resolution.
-    qcd_expn: [97]u8 = @splat(0),
-    /// Per-subband quantization mantissa (11-bit) for irreversible dequant.
-    qcd_mant: [97]u16 = @splat(0),
     /// SIZ tile-grid geometry (for multi-tile, M6 cont.). Single-tile
     /// files have tile_w/h >= image and origins 0 (whole image = one tile).
     image_x0: u32 = 0, // XOsiz
@@ -156,11 +167,19 @@ pub const CodingParams = struct {
     pocs: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
     num_pocs: u8 = 0,
 
-    /// Look up M_b for a (resolution, band) pair. `band` follows the
-    /// OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
-    pub fn mbForSubband(self: CodingParams, r: u8, band: u8) u8 {
-        if (r == 0) return self.mb_per_subband[0];
-        return self.mb_per_subband[@as(usize, 3) * (@as(usize, r) - 1) + @as(usize, band)];
+    /// Effective quantization table for component `c`: its QCC override
+    /// when one exists, else the QCD default (T.800 A.6.5 precedence).
+    pub fn quantFor(self: *const CodingParams, c: u16) *const QuantTable {
+        if (c < self.comp_quant.len) {
+            if (self.comp_quant[c]) |*t| return t;
+        }
+        return &self.quant;
+    }
+
+    /// Look up M_b for component `c` at a (resolution, band) pair. `band`
+    /// follows the OpenJPEG convention: 0=LL@r=0, 1=HL, 2=LH, 3=HH.
+    pub fn mbForSubband(self: *const CodingParams, c: u16, r: u8, band: u8) u8 {
+        return self.quantFor(c).mb[subbandIndex(r, band)];
     }
 
     /// Subband index in QCD/stepsizes order for (resolution, bandno).
@@ -1032,6 +1051,8 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // once COD lands (or at the end of the main header if COD never does),
     // so marker order cannot zero the high-frequency M_b (p0_01, file8).
     var pending_qcd: ?struct { body: []const u8, off: usize } = null;
+    var pending_qcc: std.ArrayListUnmanaged(struct { body: []const u8, off: usize }) = .empty;
+    defer pending_qcc.deinit(allocator);
     var saw_cod = false;
     var pos: usize = 4 + lsiz;
     while (true) {
@@ -1054,6 +1075,10 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                     pending_qcd = null;
                     try parseQcdBody(report, allocator, q.body, q.off);
                 }
+                if (report.coding_params) |*cp| {
+                    for (pending_qcc.items) |q| try parseQccBody(report, allocator, cp, q.body, q.off);
+                }
+                pending_qcc.clearRetainingCapacity();
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
                 var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
@@ -1097,19 +1122,32 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                     pending_qcd = null;
                     try parseQcdBody(report, allocator, q.body, q.off);
                 }
+                if (report.coding_params) |*cp| {
+                    for (pending_qcc.items) |q| try parseQccBody(report, allocator, cp, q.body, q.off);
+                }
+                pending_qcc.clearRetainingCapacity();
             },
             @intFromEnum(Marker.qcd) => if (saw_cod) {
                 try parseQcdBody(report, allocator, body, pos);
             } else {
                 pending_qcd = .{ .body = body, .off = pos }; // last-wins, like the direct path
             },
-            // Reviewer I1: COC/QCC/RGN override per-component coding,
-            // quantization, or ROI up-shift. jp2z does not yet apply them,
-            // so decode silently falls back to COD/QCD defaults — surface a
-            // finding so a consumer is told (validate's stricter-than-
-            // openjpeg contract). pos-2 is the marker offset.
+            // QCC (A.6.5) is APPLIED: a per-component quantization table.
+            // Like QCD it needs COD's decomposition count, so one seen
+            // before COD is queued and parsed when COD lands.
+            @intFromEnum(Marker.qcc) => if (report.coding_params) |*cp| {
+                if (saw_cod) {
+                    try parseQccBody(report, allocator, cp, body, pos + 2);
+                } else {
+                    try pending_qcc.append(allocator, .{ .body = body, .off = pos + 2 });
+                }
+            },
+            // Reviewer I1: COC/RGN override per-component coding or ROI
+            // up-shift. jp2z does not yet apply them, so decode silently
+            // falls back to COD defaults — surface a finding so a consumer
+            // is told (validate's stricter-than-openjpeg contract). pos-2 is
+            // the marker offset.
             @intFromEnum(Marker.coc),
-            @intFromEnum(Marker.qcc),
             @intFromEnum(Marker.rgn),
             => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos - 2, null),
             // POC is APPLIED, not ignored: entries parsed here become the
@@ -1511,18 +1549,25 @@ fn walkTileParts(
                         // on 63 of its 64 tiles.
                         var tile_params = params;
                         if (tp_ov.has_qcd) {
+                            // A tile-part QCD outranks every main-header QCC
+                            // (A.6.5): clear inherited overrides first.
+                            tile_params.comp_quant = @splat(null);
                             try parseQcdInto(report, allocator, &tile_params, data[tp_ov.qcd_start..tp_ov.qcd_end], tp_ov.qcd_start);
+                        }
+                        for (tp_ov.qcc.items) |q| {
+                            try parseQccBody(report, allocator, &tile_params, data[q.start..q.end], q.start);
                         }
                         gop.value_ptr.* = TileWalk.init(allocator, tile_params, tcw, tch, tcx0, tcy0, isot) catch |e| {
                             // Don't leave a half-built entry in the map.
                             _ = tiles.remove(isot16);
                             return e;
                         };
-                    } else if (tp_ov.has_qcd) {
-                        // QCD is only honored in a tile's FIRST tile-part
-                        // header (T.800 A.6.4 placement); a later one is
+                    } else {
+                        // QCD/QCC are only honored in a tile's FIRST tile-part
+                        // header (T.800 A.6.4/A.6.5 placement); a later one is
                         // ignored — surface it rather than silently drop.
-                        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
+                        if (tp_ov.has_qcd) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
+                        for (tp_ov.qcc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
                     }
                     // POC entries from THIS tile-part's header accumulate
                     // onto the tile's sequencer before its body is walked
@@ -1631,10 +1676,15 @@ const TileOverrides = struct {
     ppt: std.ArrayListUnmanaged(u8) = .empty,
     has_ppt: bool = false,
     ppt_origin: u64 = 0,
+    /// QCC bodies (after Lqcc) in this tile-part header, as [start, end)
+    /// spans of `data`. Applied to the tile's params after its QCD, in
+    /// order (A.6.5 precedence: tile QCC > tile QCD > main QCC > main QCD).
+    qcc: std.ArrayListUnmanaged(struct { start: usize, end: usize }) = .empty,
 
     fn deinit(self: *TileOverrides, allocator: Allocator) void {
         self.plt.deinit(allocator);
         self.ppt.deinit(allocator);
+        self.qcc.deinit(allocator);
     }
 };
 
@@ -1673,9 +1723,12 @@ fn scanTilePartHeaderMarkers(
             // override jp2z does not yet apply — same flag as COC/QCC/RGN.
             @intFromEnum(Marker.cod),
             @intFromEnum(Marker.coc),
-            @intFromEnum(Marker.qcc),
             @intFromEnum(Marker.rgn),
             => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, p, null),
+            // Tile-part QCC is APPLIED (per-component quantization for this
+            // tile): record its body span; the caller parses it into the
+            // owning tile's params after the tile QCD.
+            @intFromEnum(Marker.qcc) => try out.qcc.append(allocator, .{ .start = p + 4, .end = p + 2 + @as(usize, lseg) }),
             @intFromEnum(Marker.poc) => if (report.coding_params) |cp| {
                 const body = data[p + 4 .. p + 2 + lseg];
                 try parsePocBody(report, allocator, body, p + 4, cp.num_components, &out.entries, &out.n);
@@ -1973,10 +2026,11 @@ fn parseQcdBody(
 /// first tile-part header of a tile, and p1_04 carries one on 63 of its
 /// 64 tiles — ignoring them mis-computes Mb AND the dequant stepsizes
 /// for every overridden tile).
-fn parseQcdInto(
+fn parseQuantTable(
     report: *ValidationReport,
     allocator: Allocator,
-    cp: *CodingParams,
+    table: *QuantTable,
+    num_decomp_levels: u8,
     body: []const u8,
     offset: usize,
 ) Allocator.Error!void {
@@ -1996,12 +2050,12 @@ fn parseQcdInto(
     // across subband index space here so the tier-1 dispatcher can pick
     // it up per (resolution, band).
     {
-        cp.guard_bits = guard_bits;
-        cp.quant_style = quant_style;
+        table.guard_bits = guard_bits;
+        table.quant_style = quant_style;
         // u16: parseCodBody rejects decomp > 32 (un-publishing params), but
         // this math must not be one marker-ordering quirk away from a u8
         // overflow panic (1 + 3*200 was exactly that before the range fix).
-        const num_subbands: u16 = 1 + 3 * @as(u16, cp.num_decomp_levels);
+        const num_subbands: u16 = 1 + 3 * @as(u16, num_decomp_levels);
         switch (quant_style) {
             // Style 0: no quantization (reversible / 5/3). Each subband
             // gets one SPqcd byte — eps_b in bits 7..3, low 3 reserved.
@@ -2012,11 +2066,11 @@ fn parseQcdInto(
                     return;
                 }
                 var sb: u8 = 0;
-                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
                     const eps: u8 = body[1 + @as(usize, sb)] >> 3;
                     // M_b = G_b + eps_b - 1; clamp at 0 if the sum is 0.
                     const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
-                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
                 }
             },
             // Style 2: scalar expounded (irreversible / 9/7). Two bytes
@@ -2029,13 +2083,13 @@ fn parseQcdInto(
                     return;
                 }
                 var sb: u8 = 0;
-                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
                     const off2: usize = 1 + 2 * @as(usize, sb);
                     const eps: u8 = body[off2] >> 3;
                     const sum: u16 = @as(u16, guard_bits) + @as(u16, eps);
-                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
-                    cp.qcd_expn[sb] = eps;
-                    cp.qcd_mant[sb] = ((@as(u16, body[off2]) & 0x07) << 8) | @as(u16, body[off2 + 1]);
+                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                    table.expn[sb] = eps;
+                    table.mant[sb] = ((@as(u16, body[off2]) & 0x07) << 8) | @as(u16, body[off2 + 1]);
                 }
             },
             // Style 1: scalar derived (irreversible). Only LL's (expn,mant)
@@ -2049,18 +2103,61 @@ fn parseQcdInto(
                 const expn0: u8 = body[1] >> 3;
                 const mant0: u16 = ((@as(u16, body[1]) & 0x07) << 8) | @as(u16, body[2]);
                 var sb: u8 = 0;
-                while (sb < num_subbands and sb < cp.mb_per_subband.len) : (sb += 1) {
+                while (sb < num_subbands and sb < table.mb.len) : (sb += 1) {
                     const dec_levels: u8 = if (sb == 0) 0 else @intCast((@as(u16, sb) - 1) / 3);
                     const e: u8 = if (expn0 > dec_levels) expn0 - dec_levels else 0;
-                    cp.qcd_expn[sb] = e;
-                    cp.qcd_mant[sb] = mant0;
+                    table.expn[sb] = e;
+                    table.mant[sb] = mant0;
                     const sum: u16 = @as(u16, guard_bits) + @as(u16, e);
-                    cp.mb_per_subband[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
+                    table.mb[sb] = if (sum >= 1) @intCast(sum - 1) else 0;
                 }
             },
             else => {},
         }
     }
+}
+
+/// QCD into `cp`'s default table. Main header: QCC overrides (by marker
+/// type, regardless of order) are left alone. Tile-part: the caller
+/// clears `comp_quant` first — a tile-part QCD outranks main-header QCCs.
+fn parseQcdInto(
+    report: *ValidationReport,
+    allocator: Allocator,
+    cp: *CodingParams,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    try parseQuantTable(report, allocator, &cp.quant, cp.num_decomp_levels, body, offset);
+}
+
+/// QCC (T.800 A.6.5): Cqcc (1 byte when Csiz < 257, else 2) names the
+/// component, then Sqcc/SPqcc in QCD layout. An out-of-range Cqcc is a
+/// structural lie (FAIL); a component past the 16 stored slots is valid
+/// but unsupported (c145). `offset` addresses `body[0]`.
+fn parseQccBody(
+    report: *ValidationReport,
+    allocator: Allocator,
+    cp: *CodingParams,
+    body: []const u8,
+    offset: usize,
+) Allocator.Error!void {
+    const cw: usize = if (cp.num_components < 257) 1 else 2;
+    if (body.len < cw + 1) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, null);
+        return;
+    }
+    const c: u16 = if (cw == 1) body[0] else std.mem.readInt(u16, body[0..2], .big);
+    if (c >= cp.num_components) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "QCC names a component beyond Csiz");
+        return;
+    }
+    if (c >= cp.comp_quant.len) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "QCC for a component beyond the 16 jp2z stores");
+        return;
+    }
+    var table: QuantTable = .{};
+    try parseQuantTable(report, allocator, &table, cp.num_decomp_levels, body[cw..], offset + cw);
+    cp.comp_quant[c] = table;
 }
 
 /// Locate the SOD marker (FF 93) inside a tile-part. `tp_start`
@@ -2378,7 +2475,11 @@ fn walkTilePartBody(
                     var gx: u32 = 0;
                     while (gx < sbs_view.grid_w) : (gx += 1) {
                         const cb = sbs_view.blocks[gy * sbs_view.grid_w + gx];
-                        if (cb.last_contribution_length == 0) continue;
+                        // Not included in this packet → nothing to record. A cblk
+                        // included with passes but ZERO bytes still appends, so its
+                        // plan.total_passes advances (openjpeg runs those passes over
+                        // the exhausted stream; the budget check counts them too).
+                        if (cb.last_contribution_passes == 0) continue;
                         const L: usize = cb.last_contribution_length;
                         if (data_base + bytes_so_far + L > tp_body.len) {
                             // Bounds-mismatched contribution; the post-loop
@@ -2407,9 +2508,9 @@ fn walkTilePartBody(
                             .sb_x1 = rect.x1,
                             .sb_y1 = rect.y1,
                             .zero_bitplanes = cb.zero_bitplanes,
-                            .m_b = params.mbForSubband(pi.resolution, band_for_key),
-                            .qcd_expn = params.qcd_expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
-                            .qcd_mant = params.qcd_mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .m_b = params.mbForSubband(@intCast(pi.component), pi.resolution, band_for_key),
+                            .qcd_expn = params.quantFor(@intCast(pi.component)).expn[CodingParams.subbandIndex(pi.resolution, band_for_key)],
+                            .qcd_mant = params.quantFor(@intCast(pi.component)).mant[CodingParams.subbandIndex(pi.resolution, band_for_key)],
                             .src_offset = body_offset_in_data + data_base + bytes_so_far,
                             .cblksty = params.cblksty,
                             .total_passes = cb.total_passes,
@@ -2694,34 +2795,34 @@ test "parseQcdBody: style 0 reversible — extracts G_b and per-subband M_b" {
     try parseQcdBody(&report, std.testing.allocator, &body, 0);
 
     const cp = report.coding_params.?;
-    try std.testing.expectEqual(@as(u8, 2), cp.guard_bits);
-    try std.testing.expectEqual(@as(u8, 0), cp.quant_style);
-    try std.testing.expectEqual(@as(u8, 9),  cp.mb_per_subband[0]);
-    try std.testing.expectEqual(@as(u8, 10), cp.mb_per_subband[1]);
-    try std.testing.expectEqual(@as(u8, 10), cp.mb_per_subband[2]);
-    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[3]);
-    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[4]);
-    try std.testing.expectEqual(@as(u8, 11), cp.mb_per_subband[5]);
-    try std.testing.expectEqual(@as(u8, 12), cp.mb_per_subband[6]);
+    try std.testing.expectEqual(@as(u8, 2), cp.quant.guard_bits);
+    try std.testing.expectEqual(@as(u8, 0), cp.quant.quant_style);
+    try std.testing.expectEqual(@as(u8, 9),  cp.quant.mb[0]);
+    try std.testing.expectEqual(@as(u8, 10), cp.quant.mb[1]);
+    try std.testing.expectEqual(@as(u8, 10), cp.quant.mb[2]);
+    try std.testing.expectEqual(@as(u8, 11), cp.quant.mb[3]);
+    try std.testing.expectEqual(@as(u8, 11), cp.quant.mb[4]);
+    try std.testing.expectEqual(@as(u8, 11), cp.quant.mb[5]);
+    try std.testing.expectEqual(@as(u8, 12), cp.quant.mb[6]);
 }
 
 test "CodingParams.mbForSubband: r=0 -> idx 0; r>=1 -> 3*(r-1)+band" {
     var cp = jp2z.CodingParams{ .num_decomp_levels = 2 };
-    cp.mb_per_subband[0] = 9;
-    cp.mb_per_subband[1] = 10;
-    cp.mb_per_subband[2] = 11;
-    cp.mb_per_subband[3] = 12;
-    cp.mb_per_subband[4] = 13;
-    cp.mb_per_subband[5] = 14;
-    cp.mb_per_subband[6] = 15;
+    cp.quant.mb[0] = 9;
+    cp.quant.mb[1] = 10;
+    cp.quant.mb[2] = 11;
+    cp.quant.mb[3] = 12;
+    cp.quant.mb[4] = 13;
+    cp.quant.mb[5] = 14;
+    cp.quant.mb[6] = 15;
 
-    try std.testing.expectEqual(@as(u8, 9),  cp.mbForSubband(0, 0));
-    try std.testing.expectEqual(@as(u8, 10), cp.mbForSubband(1, 1));
-    try std.testing.expectEqual(@as(u8, 11), cp.mbForSubband(1, 2));
-    try std.testing.expectEqual(@as(u8, 12), cp.mbForSubband(1, 3));
-    try std.testing.expectEqual(@as(u8, 13), cp.mbForSubband(2, 1));
-    try std.testing.expectEqual(@as(u8, 14), cp.mbForSubband(2, 2));
-    try std.testing.expectEqual(@as(u8, 15), cp.mbForSubband(2, 3));
+    try std.testing.expectEqual(@as(u8, 9),  cp.mbForSubband(0, 0, 0));
+    try std.testing.expectEqual(@as(u8, 10), cp.mbForSubband(0, 1, 1));
+    try std.testing.expectEqual(@as(u8, 11), cp.mbForSubband(0, 1, 2));
+    try std.testing.expectEqual(@as(u8, 12), cp.mbForSubband(0, 1, 3));
+    try std.testing.expectEqual(@as(u8, 13), cp.mbForSubband(0, 2, 1));
+    try std.testing.expectEqual(@as(u8, 14), cp.mbForSubband(0, 2, 2));
+    try std.testing.expectEqual(@as(u8, 15), cp.mbForSubband(0, 2, 3));
 }
 
 test "CodingParams.tileRect: 256x256 image, 128x128 tiles -> 2x2 grid" {

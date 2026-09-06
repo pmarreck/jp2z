@@ -192,27 +192,9 @@ int main(void) {
     int p4sev = jp2z_deep_validate(p004, sizeof p004, 1, p4s);
     ASSERT(p4sev >= 0 && p4sev < JP2Z_SEVERITY_FAIL, "p0_04 (valid, cblk over_read=3): strict ACCEPTs");
 
-    /* ── Unsupported-valid invariant (release lock, Einstein step 3) ──
-     * c145 (jp2_unsupported_marker_ignored: COC/QCC/RGN/POC seen but not
-     * applied) marks a CONFORMING stream using a feature jp2z doesn't apply
-     * yet — "unsupported-valid", never "invalid". It must stay WARN and must
-     * never independently escalate a strict verdict to FAIL. p0_04 genuinely
-     * carries two such markers (COC + POC), making it the narrowest honest
-     * fixture: the findings exist, each is WARN, and the file still ACCEPTs
-     * (asserted above). */
-    {
-        size_t n145 = 0;
-        for (size_t i = 0; i < jp2z_findings_sink_count(p4s); i++) {
-            jp2z_sink_finding_t fd = {0};
-            if (jp2z_findings_sink_get(p4s, i, &fd) != JP2Z_OK) continue;
-            if (fd.code == JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED) {
-                n145++;
-                ASSERT(fd.severity == JP2Z_SEVERITY_WARN,
-                       "c145 unsupported-valid stays WARN, never FAIL, in strict mode");
-            }
-        }
-        ASSERT(n145 >= 1, "p0_04 exercises c145 (COC/POC present) so the invariant is non-vacuous");
-    }
+    /* p0_04's two QCC markers used to be the c145 carrier here; QCC is
+     * APPLIED since 2026-09-06, so the unsupported-valid invariant now
+     * rides on e1_colr's RGN markers below. */
     jp2z_findings_sink_free(p4s);
 
     /* ── POC progression-order change must be APPLIED, not ignored ──
@@ -229,7 +211,36 @@ int main(void) {
     jp2z_findings_sink_t *e1s = jp2z_findings_sink_create();
     int e1sev = jp2z_deep_validate(e1, sizeof e1, 1, e1s);
     ASSERT(e1sev >= 0 && e1sev < JP2Z_SEVERITY_FAIL, "e1_colr (valid, POC-resequenced): strict ACCEPTs");
+
     jp2z_findings_sink_free(e1s);
+
+    /* ── Unsupported-valid invariant (release lock, Einstein step 3) ──
+     * c145 (jp2_unsupported_marker_ignored: COC/RGN/tile-COD seen but not
+     * applied) marks a CONFORMING stream using a feature jp2z doesn't apply
+     * yet — "unsupported-valid", never "invalid". It must stay WARN and must
+     * never independently escalate a strict verdict to FAIL. f1_mono (ISO
+     * class F) carries one such marker and is a must-accept control of the
+     * mutation matrix: the finding exists, is WARN, and the file ACCEPTs. */
+    static const unsigned char f1[] = {
+#embed "../unit/fixtures/conformance/f1_mono.j2c"
+    };
+    jp2z_findings_sink_t *f1s = jp2z_findings_sink_create();
+    int f1sev = jp2z_deep_validate(f1, sizeof f1, 1, f1s);
+    ASSERT(f1sev >= 0 && f1sev < JP2Z_SEVERITY_FAIL, "f1_mono (valid, unsupported-marker carrier): strict ACCEPTs");
+    {
+        size_t n145 = 0;
+        for (size_t i = 0; i < jp2z_findings_sink_count(f1s); i++) {
+            jp2z_sink_finding_t fd = {0};
+            if (jp2z_findings_sink_get(f1s, i, &fd) != JP2Z_OK) continue;
+            if (fd.code == JP2Z_FINDING_UNSUPPORTED_MARKER_IGNORED) {
+                n145++;
+                ASSERT(fd.severity == JP2Z_SEVERITY_WARN,
+                       "c145 unsupported-valid stays WARN, never FAIL, in strict mode");
+            }
+        }
+        ASSERT(n145 >= 1, "f1_mono exercises c145 so the invariant is non-vacuous");
+    }
+    jp2z_findings_sink_free(f1s);
 
     /* ── Per-tile QCD overrides must be APPLIED, not ignored ──
      * p1_04.j2k (ISO conformance, T.803 pass-case): 64 tiles, 9/7,
@@ -260,6 +271,6 @@ int main(void) {
     ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
     jp2z_findings_sink_free(pts);
 
-    printf("PASS: jp2z C FFI smoke (28 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM + code-registry + anchored-diagnostics)\n");
+    printf("PASS: jp2z C FFI smoke (29 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM + code-registry + anchored-diagnostics)\n");
     return 0;
 }

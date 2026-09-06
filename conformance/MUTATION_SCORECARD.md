@@ -27,9 +27,16 @@ decomposition count at QCD-parse time, so this order zeroed every
 high-frequency M_b and strict mode rejected the file with a false
 zero_bitplane_overflow. QCD parsing is now deferred until COD lands.
 
+2026-09-06 (later still): QCC is applied (per-component quantization,
+T.800 A.6.5, tile-part QCC > tile-part QCD > main QCC > main QCD), so
+p0_04 no longer counts as an unsupported control; f1_mono (tile-part COD
+override, still c145) is the one remaining unsupported-but-accepted
+codestream control. Zero-byte code-block contributions now carry their
+coding passes into the plan (e1_colr: seven tiny code-blocks).
+
 | Family | Valid controls | False-positive rejects | Unsupported controls accepted | Known-invalid sniper misses | Known-invalid bolter misses | Known-invalid shotgun misses |
 |---|---:|---:|---:|---:|---:|---:|
-| Raw J2K/J2C codestream | 16 | 0 | 2 | 0/16 | 0/16 | 0/16 |
+| Raw J2K/J2C codestream | 16 | 0 | 1 | 0/16 | 0/16 | 0/16 |
 | JP2 container | 3 | 0 | 0 | 0/3 | 0/3 | 0/3 |
 
 Known-invalid mutations damage the mandatory SOC marker at three scales:

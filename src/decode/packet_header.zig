@@ -75,6 +75,10 @@ pub const CodeBlockState = struct {
     /// header read to slice the contribution bytes out of the tile-part
     /// body and append them to the per-cblk concatenated buffer.
     last_contribution_length: u32 = 0,
+    /// Coding passes this packet added to the cblk (0 when not included).
+    /// Distinct from the byte length: a contribution may carry passes with
+    /// ZERO bytes (T.800 B.10.7), and those passes still count.
+    last_contribution_passes: u32 = 0,
 
     /// Per-segment {passes, byte_len} breakdown accumulated across
     /// packets (T.800 LAZY/TERMALL termination). Only built when the
@@ -141,6 +145,7 @@ pub fn readCodeBlockContribution(
     // cblk is NOT included in this packet, it stays 0 — the walker
     // skips zero-length slices when accumulating cblk byte buffers.
     state.last_contribution_length = 0;
+    state.last_contribution_passes = 0;
     // 1. Inclusion.
     if (state.included) {
         const b = reader.readBit() orelse return null;
@@ -225,6 +230,7 @@ pub fn readCodeBlockContribution(
     // pass count + byte slice.
     state.total_passes += total_new_passes;
     state.last_contribution_length = total_length;
+    state.last_contribution_passes = total_new_passes;
 
     return .{
         .included = true,
@@ -326,7 +332,10 @@ pub fn readPacketHeader(
         // for every cblk that contributed in an earlier layer (the
         // balloon_eciRGB_icc entropy_under_read false positive).
         for (subband_states) |*sbs| {
-            for (sbs.blocks) |*b| b.last_contribution_length = 0;
+            for (sbs.blocks) |*b| {
+                b.last_contribution_length = 0;
+                b.last_contribution_passes = 0;
+            }
         }
         reader.alignToByte();
         return 0;

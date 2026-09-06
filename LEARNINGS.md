@@ -373,3 +373,32 @@ findings before the pixel diff), and both are now must-accept controls.
 Any "invalid" verdict that comes from an implementation limit rather than
 the spec is a false positive waiting for a conformance file; grep for
 array lengths in validation branches.
+
+## 2026-09-06 — a wrong attribution, caught by the test that was supposed to lean on it
+
+I wrote "e1's ±2 residual is its RGN tile" into a commit message and PLAN.
+It was false: the evidence was `od | grep -c ff5e` over the whole file,
+which counts any two bytes that happen to be FF 5E, not RGN marker
+segments. e1 has no RGN. The mistake surfaced only when the C smoke test's
+"c145 must be non-vacuous" invariant was re-pointed at e1 and failed —
+the marker census tool (which walks segments) had been available the
+whole time and said so. Two rules:
+- Count markers with a segment walker, never with a byte grep. FF xx
+  appears inside entropy data constantly.
+- Before writing an attribution into a commit or PLAN, re-run the tool
+  that produces it; a claim about a fixture must come from a segment walk,
+  a T1 diff, or a sweep record — never from an inference chain.
+
+The real cause was smaller and more general: a packet may include a
+code-block with N new passes and ZERO bytes (B.10.7), and the extractor
+skipped every zero-length slice — so those passes never reached the plan.
+openjpeg runs them over the exhausted stream (extra low bits); the
+validator's pass budget was under-counted. Keep "included this packet"
+(passes) separate from "bytes this packet" in the code-block state.
+
+Tooling note: perl `s|...|...|` with `|` as the delimiter turns every
+escaped `\|` in the pattern into an ALTERNATION once the delimiter is
+stripped. Two files were mangled that way today (`|*b|` captures). Use a
+delimiter that cannot occur in Zig (`s#...#...#` is not safe either — Zig
+has none that is universally absent), or use the exact-match Edit tool for
+anything containing `|`.
