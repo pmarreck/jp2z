@@ -77,10 +77,37 @@ new behavior), `./test` green, sweep drift zero, pushed.
       (empirically 0/7730 valid cblks); two MFIC monotonicity locks on
       tag_tree.read().
 
-- [ ] Awaiting Peter: nothing pending on jp2z. Next natural blocks are
-      decode-correctness (balloon max_abs=9, sweep's 12 FAIL) and the
-      leaf-gate leftovers below (retire OpenJPEG from the decode
-      artifacts; spec-grounded entropy-corruption labels).
+### Directive: validation coverage → 100% (Peter, 2026-09-06 EDT)
+
+Overarching goal restated by Peter: any bit or byte corruption that is
+theoretically catchable in a JPEG 2000 file SHALL be caught. Both slices
+below must land; order is mine. PPM/PPT first (it is the one remaining
+class of stream the deep validator cannot walk at all), then the decode
+cluster (a wrong decode can neither confirm nor refute entropy findings on
+those fixtures, and OpenJPEG retirement is gated on it).
+
+- [x] PLAN.md stale-checkbox sweep (2026-09-06 ~11:00am EDT).
+- [ ] **PPM / PPT packed packet headers** — deep-validate streams whose
+      packet headers live in the main header (PPM, A.7.4) or tile-part
+      header (PPT, A.7.5) instead of inline. Today PPM sits in the
+      c145 ignored set (codestream.zig ~2264), so such streams get WARN
+      "unsupported" and NO tier-2/entropy walk. TDD: crafted PPT stream
+      RED first (header bytes relocated; walker must consume them from the
+      PPT store, packet bodies from SOD), then PPM (Zppm concatenation
+      across multiple PPM segments, Nppm per tile-part).
+- [ ] **Decode 127/128 cluster** — g2/g3/g4 (127), p1_05/p1_06 (128):
+      exactly half-range suggests one DC-shift / signed-sample bug on a
+      specific path. TDD vs the openjpeg oracle, one fixture as RED.
+- [ ] Then the rest of the sweep's FAILs: p1_02/d2/g1 (254-255), p0_01
+      (149), file2/file8 (158/216), p0_13 ERROR NoCodingParams, balloon
+      (max_abs 9), e1 tile-7 ±2, p1_04 >8-bit.
+- [ ] **Toward 100% — residual catchable-corruption classes (audit list):**
+      SIZ Rsiz capability value (must be 0 for Part 1 or a known profile
+      bit set); COM/CRG/PLM body sanity; COC/QCC per-component override
+      ranges; RGN roi-shift range; SOP sequence-number monotonicity + EPH
+      presence when signalled (verify these are FAIL not WARN in strict);
+      POC progression bounds vs SIZ/COD. Each gets a crafted RED before a
+      check is added, and a real-corpus specificity pass after.
 
 ### Mecha Validate v1 leaf gate (2026-08-04 EDT)
 
@@ -233,10 +260,10 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       TNsot WARN; a part arriving after its tile completed FAILs and no longer
       resurrects a fresh TileWalk over finished state. Unsound parts are
       excluded from the packet walk while traversal continues.
-- [ ] **Remaining strictness surface**: tag-tree invariants (monotonicity /
+- [x] **Remaining strictness surface**: tag-tree invariants (monotonicity /
       inclusion / zero-bitplane anomalies), embedded-stream base-offset+length
       bounds (payload-relative vs host-file offsets; no read may escape a
-      bounded Source), PLT/TLM cross-checks vs actual tile-part lengths.
+      bounded Source), PLT/TLM cross-checks vs actual tile-part lengths. (all four landed 2026-08-14: `7e3e0a2` `e214a95` `738b3d7` `f9bc51b`)
 - [x] **Diagnostics: published code registry + anchored deep findings**
       (2026-08-01). `jp2z_finding_code_t` is now in `include/jp2z_core.h`
       (full registry with band comments), so C consumers stop hardcoding
@@ -247,10 +274,10 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       — plans gained `src_offset` (first-contribution byte). Motivation was
       concrete: the p1_04 c253 hunt needed a throwaway trace build purely
       because the finding identified nothing.
-- [ ] **Diagnostics, remaining**: several structural findings still carry no
+- [x] **Diagnostics, remaining**: several structural findings still carry no
       offset where one is derivable; audit `emit` call sites for `null`
       offsets. Consider a per-finding cblk identity struct rather than
-      free-text `detail` once a consumer needs to machine-read it.
+      free-text `detail` once a consumer needs to machine-read it. (null-offset audit done `e214a95` 2026-08-14; the cblk identity struct stays deferred until a consumer needs it)
 - [x] **jpegz unblock — `@import("jp2z")` without openjpeg** (2026-07-31,
       ~8:30 PM EST; priority-bumped by Peter via jpegz: "fix U1, then U5" put
       it on jpegz's critical path, landed between the e1 and p1_04 blocks
@@ -359,18 +386,18 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
 
 ## Phase 1 — openjpeg wrapper (working v1)
 
-- [ ] `flake.nix` with openjpeg dependency wired (mirror jpegz's libjpeg-turbo setup)
-- [ ] `src/ffi/openjpeg_wrapper.zig` — port from jpegz's existing wrapper
-- [ ] `src/jp2z.zig` — public API surface (`decode`, `decodeWithOptions`, `validate`, `FindingsSink`)
-- [ ] `src/core/{errors, types, last_error}.zig` — adopt jpegz's vocabulary so future jpegz integration is a re-export shim
-- [ ] `src/decode/findings.zig` — `FindingsSink` (mirror jpegz)
-- [ ] `src/ffi/c_api.zig` — `jp2z_*` C exports matching jpegz's `jpegz_jp2_*` shape
-- [ ] `include/jp2z_core.h` — C header with usage example
-- [ ] `cli/main.c` — minimal C CLI that decodes JP2/J2K and emits PPM/PGM
-- [ ] `tests/unit/{smoke, decode, validate}.zig` — Zig test suite
-- [ ] `tests/cli/smoke.c` — C FFI smoke test
-- [ ] `tests/unit/fixtures/` — small JP2/J2K test fixtures
-- [ ] CI green on Garnix (auto-detects `flake.nix`)
+- [x] `flake.nix` with openjpeg dependency wired (mirror jpegz's libjpeg-turbo setup)
+- [x] `src/ffi/openjpeg_wrapper.zig` — port from jpegz's existing wrapper
+- [x] `src/jp2z.zig` — public API surface (`decode`, `decodeWithOptions`, `validate`, `FindingsSink`)
+- [x] `src/core/{errors, types, last_error}.zig` — adopt jpegz's vocabulary so future jpegz integration is a re-export shim
+- [x] `src/decode/findings.zig` — `FindingsSink` (mirror jpegz)
+- [x] `src/ffi/c_api.zig` — `jp2z_*` C exports matching jpegz's `jpegz_jp2_*` shape
+- [x] `include/jp2z_core.h` — C header with usage example
+- [x] `cli/main.c` — minimal C CLI that decodes JP2/J2K and emits PPM/PGM
+- [x] `tests/unit/{smoke, decode, validate}.zig` — Zig test suite
+- [x] `tests/cli/smoke.c` — C FFI smoke test
+- [x] `tests/unit/fixtures/` — small JP2/J2K test fixtures
+- [x] CI green (Garnix originally; Mechatron Prime since 2026-07-15)
 
 ## Phase 2 — pure-Zig decode milestones
 
@@ -385,8 +412,8 @@ oracle tests.
 - [x] JP2 file-format box walker (Annex I) — ihdr → width/height, dispatch jp2c to J2K walker
 - [x] `validate(...)` pure-Zig (structural integrity, no decode-through)
 - [x] Known-good fixtures: 8 vendored ISO 15444-4 + full corpus via openjpeg-data flake input
-- [ ] COD/QCD body field-level validation (prog. order, wavelet filter, decomp. levels) — optional refinement
-- [ ] Known-bad fixtures (truncations, bad markers, garbage fields) — defensive coverage
+- [x] COD/QCD body field-level validation (prog. order, wavelet filter, decomp. levels) — optional refinement (done 2026-08-01, marker-field ranges)
+- [x] Known-bad fixtures (truncations, bad markers, garbage fields) — defensive coverage (tests/mutation_matrix.zig + validate.zig crafted-stream tests)
 
 ### M2 — tier-2 (packet headers)
 - [x] Progression order syntax: LRCP / RLCP / RPCL / PCRL / CPRL
@@ -401,9 +428,9 @@ oracle tests.
 - [x] Per-precinct SubbandState (4D: component × resolution × subband × precinct)
 - [x] cblksInPrecinctSubband matches OpenJPEG opj_tcd_init_tile (subband-internal
       coords + overlap-based cblk count + T.800 A.6.1 cblk-cap-by-precinct)
-- [ ] Findings vocabulary enrichment for corruption-detection consumers
+- [x] Findings vocabulary enrichment for corruption-detection consumers
       (primary downstream use case is data integrity, not pixel decode).
-      Track every spec deviation; never silently smooth issues. Specifics
+      Track every spec deviation; never silently smooth issues. Specifics (done: registry 250-255 published through the C ABI, 2026-08-14)
       to add (FindingCode numeric values must be NEW and APPEND-ONLY —
       see core/errors.zig):
         - Per-COD-field range findings (split `jp2_invalid_codestream`
@@ -564,16 +591,16 @@ DWT and emit on:
       `entropy_under_read`. Together they catch ~97%% of single-byte
       (boltgun) and a strong majority of multi-position entropy
       corruptions that openjpeg silently accepts; clean files: 0 leftover.
-- [ ] Coding-pass budget exceeded (> 3*numbps-2); coefficient magnitude bit
-      above numbps (impossible value).
-- [ ] Tag-tree monotonicity violations; inclusion/zero-bitplane anomalies.
-- [ ] Marker field validation (reserved bits, out-of-range Scod/Sqcd/SIZ,
-      impossible param combinations) beyond what's parsed today.
-- [ ] SOT/Psot tile-part length + ordering consistency; EOC presence;
-      trailing-garbage; PTERM predictable-termination check (always-on).
+- [x] Coding-pass budget exceeded (> 3*numbps-2); coefficient magnitude bit
+      above numbps (impossible value). (c253 + c255, `f9bc51b`; a magnitude bit above numbps is unreachable by construction since the decoder only visits numbps planes)
+- [x] Tag-tree monotonicity violations; inclusion/zero-bitplane anomalies. (`f9bc51b` 2026-08-14)
+- [x] Marker field validation (reserved bits, out-of-range Scod/Sqcd/SIZ,
+      impossible param combinations) beyond what's parsed today. (Scod/cblksty reserved bits, SIZ ranges, COD caps: 2026-08-01. Residual: Rsiz capability value unchecked, see "toward 100%" below)
+- [x] SOT/Psot tile-part length + ordering consistency; EOC presence;
+      trailing-garbage; PTERM predictable-termination check (always-on). (Psot vs TLM `738b3d7`; EOC + post-EOC tail check; PTERM tail bound in reconstruct.zig)
 - [x] A `strict` mode: any deviation escalates to FAIL (vs lenient: warn).
 - [x] FFI: jp2z_deep_validate(data,len,strict,sink) exposes it to `validate`.
-- [ ] (Future M7 polish) tag-tree monotonicity + deeper marker-field validation.
+- [x] (Future M7 polish) tag-tree monotonicity + deeper marker-field validation. (2026-08-14)
 Note: strictness comes from DETERMINISTIC integrity checks (independent of
 the 9/7 float tolerance), so it is exact even on the lossy path.
 
