@@ -734,6 +734,8 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     var first_under: ?cblk_plan.CblkDecodePlan = null;
     var first_passbudget: ?cblk_plan.CblkDecodePlan = null;
     var first_zbp: ?cblk_plan.CblkDecodePlan = null;
+    var surplus_count: u32 = 0;
+    var first_surplus: ?cblk_plan.CblkDecodePlan = null;
     for (list.plans) |plan| {
         // numbps == 0 means the zero-bitplane tag tree consumed the whole
         // bit-depth budget (zero_bitplanes >= M_b). A cblk with coding
@@ -759,10 +761,17 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
             if (first_passbudget == null) first_passbudget = plan;
             continue;
         }
+        // Surplus passes: more than numbps planes can hold. Real encoders
+        // emit them (ClearCanvas/OpenJPEG-1.x DICOM: test_lossless.j2k, +2/
+        // +5/+8 on 58 cblks) and every decoder ignores passes below plane 0
+        // identically (openjpeg == JasPer byte-for-byte), so this is a
+        // WARN in both modes. The passes still run for the budget check
+        // below, which is what separates a self-consistent surplus from a
+        // garbage pass count (kodak_2layers_lrcp: over-reads of hundreds).
         const max_passes: u32 = 3 * @as(u32, plan.numbps) - 2;
         if (plan.total_passes > max_passes) {
-            passbudget_count += 1;
-            if (first_passbudget == null) first_passbudget = plan;
+            surplus_count += 1;
+            if (first_surplus == null) first_surplus = plan;
         }
         if (plan.total_passes == 0 or plan.data.len == 0) continue;
         var cblk = try cblk_dispatch.decodePlan(allocator, plan);
@@ -789,6 +798,11 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         const p = first_passbudget.?;
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than numbps allows (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ passbudget_count, p.tile, p.component, p.resolution, p.band, p.precinct });
         try appendFinding(&report, allocator, sev, .coding_pass_overflow, p.src_offset, detail);
+    }
+    if (surplus_count > 0) {
+        const p = first_surplus.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than their bit-planes hold; passes below bit-plane 0 are ignored by convention (openjpeg, JasPer) and their bytes still count toward the budget (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ surplus_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, .warn, .coding_pass_overflow, p.src_offset, detail);
     }
     if (over_count > 0) {
         const p = first_over.?;

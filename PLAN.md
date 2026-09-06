@@ -176,14 +176,21 @@ those fixtures, and OpenJPEG retirement is gated on it).
       openjpeg decodes leniently. JasPer also rejects 15 more of the 22
       "openjpeg accepts / jp2z FAILs" files. tile-hist still panics on
       issue823 in decodeCleanroom (tool-only: the CLI refuses the file).
-- [ ] **Surplus coding passes (test_lossless.j2k, ClearCanvas DICOM
-      OpenJPEG-1.x lineage).** Blocks declare 3·numbps−2 + {2,5,8} passes;
-      the bytes are real (budget clean when all passes are decoded), and
-      openjpeg + JasPer produce byte-identical full-range output by
-      ignoring passes below plane 0. jp2z runs them at a clamped plane and
-      writes bit 0 (T1 diff: ours=±1 where oj=0). Plan: surplus passes
-      keep MQ/state fidelity but never write magnitude; finding 253 → WARN
-      (decodable by convention), numbps>31 stays FAIL.
+- [x] **Surplus coding passes (test_lossless.j2k, ClearCanvas DICOM
+      OpenJPEG-1.x lineage)** (2026-09-06 ~2:25pm EDT). Blocks declare
+      3·numbps−2 + {2,5,8} passes; the bytes are real (budget clean when
+      all passes are decoded), and openjpeg + JasPer produce byte-identical
+      full-range output by ignoring passes below plane 0. jp2z ran them at
+      a clamped plane and wrote bit 0 (T1 diff: ours=±1 where oj=0). Now
+      `codeMagnitudeBit` no-ops at bp==0 (MQ/state fidelity kept, so the
+      budget still bites on garbage counts), coeffToOpenJpegI32 maps
+      surplus-only significance to 0, finding 253 is a WARN in both modes
+      for surplus (numbps>31 stays `sev`). RED: synthetic 8x8 plan 7 vs 10
+      passes must reconstruct identically; crafted 4-pass/1-plane stream
+      must WARN under strict. test_lossless: T1 diff 259/259 exact,
+      overall warn; kodak: T1 exact, still FAIL on over/under-read.
+      Observed on the way: 12-bit files reconstruct to saturated pixels
+      where openjpeg has 0 — the known >8-bit rendering gap (p1_04).
 - [ ] **Per-component wavelets in decode.** COC lets components use
       different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
       Validation walks them; decodeCleanroom now REFUSES explicitly

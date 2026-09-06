@@ -81,7 +81,7 @@ pub const FindingCode = enum(u32) {
     jp2_packets_under_read   = 250,  // walker stopped before tp_body.len — possible per-cblk decode bug
     entropy_over_read        = 251,  // MQ/RAW decoder synthesized >2 past-end 0xFF — truncated entropy data
     entropy_under_read       = 252,  // cblk had leftover unconsumed bytes — length/data inconsistency
-    coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2 (impossible — corrupt header)
+    coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2: WARN when decodable by convention (passes below plane 0 ignored), FAIL when numbps > 31
     jp2_packets_walked_to_end = 254,  // walker consumed every tile-part body byte (renumbered 209→254 per Einstein: 209 collided with jpegz jfif_metadata_present)
     zero_bitplane_overflow   = 255,  // cblk zero-bitplane tag tree consumed the whole bit-depth (zbp>=M_b → numbps=0) yet carries coding passes — impossible; distinct root cause from 253
     packed_headers_mismatch  = 256,  // PPM/PPT packed packet-header store disagrees with the packets walked: leftover header bytes at tile-part end, or a header needing bytes past the store (T.800 A.7.4/A.7.5)

@@ -132,7 +132,10 @@ test "decodePlan: non-empty plan runs the EBCOT pipeline (no crash)" {
 /// the pass count (the retired halfBitPos) reproduced openjpeg only when
 /// decoding ended on a cleanup pass (p1_05: 2235 cblks, max_abs 18).
 pub fn coeffToOpenJpegI32(coeff: ebcot.Coeff) i32 {
-    if (!coeff.significant) return 0;
+    // magnitude == 0 while significant: the coefficient only became
+    // significant in a surplus pass below plane 0 (see codeMagnitudeBit);
+    // openjpeg never decoded that pass, so its value is 0.
+    if (!coeff.significant or coeff.magnitude == 0) return 0;
     const mag: u32 = coeff.magnitude | (@as(u32, 1) << coeff.half_bp);
     const mag_i32: i32 = @intCast(mag);
     return if (coeff.sign == 0) mag_i32 else -mag_i32;

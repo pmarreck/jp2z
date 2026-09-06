@@ -3739,3 +3739,96 @@ test "audit: SIZ tile-count ceil must not overflow u32 when Ysiz + YTsiz exceed 
     try std.testing.expectEqual(@as(u32, 1), nt.x);
     try std.testing.expectEqual(@as(u32, 2), nt.y);
 }
+
+// ── Surplus coding passes (beyond 3·numbps−2) ─────────────────────
+//
+// test_lossless.j2k (COM "ClearCanvas DICOM OpenJPEG", 12-bit 5/3) declares
+// 3·numbps−2 + {2,5,8} passes on 58 code-blocks. The bytes are real — the
+// byte budget is clean when every declared pass is decoded — and openjpeg
+// and JasPer produce byte-identical full-range output by ignoring passes
+// below bit-plane 0 (t1.c: `bpno_plus_one >= 1`). jp2z ran those passes at
+// a clamped plane and wrote magnitude bit 0 (T1 diff: ours=±1, oj=0).
+// Policy: surplus passes keep MQ/state fidelity (so the budget check still
+// bites on kodak-style garbage counts) but never touch reconstruction, and
+// the finding is a WARN in both modes: decodable by convention.
+
+test "surplus coding passes never alter reconstruction but keep consuming bytes (openjpeg/JasPer convention)" {
+    const allocator = std.testing.allocator;
+    // Deterministic pseudo-random entropy bytes: any byte string is a valid
+    // MQ codeword prefix, so both decodes run real passes over real state.
+    var seed: u32 = 0x9E3779B9;
+    var data: [96]u8 = undefined;
+    for (&data) |*b| {
+        seed = seed *% 1664525 +% 1013904223;
+        b.* = @truncate(seed >> 24);
+    }
+    const numbps: u8 = 3; // 3 planes → at most 7 passes
+    var legal: jp2z.CblkDecodePlan = .{
+        .tile = 0, .component = 0, .resolution = 0, .band = 0, .precinct = 0,
+        .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 8, .sb_y1 = 8,
+        .zero_bitplanes = 0, .numbps = numbps, .total_passes = 7, .cblksty = 0,
+        .data = try allocator.dupe(u8, &data),
+    };
+    defer legal.deinit(allocator);
+    var surplus = legal;
+    surplus.data = try allocator.dupe(u8, &data);
+    surplus.total_passes = 10;
+    defer surplus.deinit(allocator);
+    var a = try jp2z.internal.decodePlan(allocator, legal);
+    defer a.deinit(allocator);
+    var b = try jp2z.internal.decodePlan(allocator, surplus);
+    defer b.deinit(allocator);
+    var nonzero: usize = 0;
+    for (a.coeffs, b.coeffs) |ca, cb| {
+        const va = jp2z.internal.coeffToOpenJpegI32(ca);
+        if (va != 0) nonzero += 1;
+        try std.testing.expectEqual(va, jp2z.internal.coeffToOpenJpegI32(cb));
+    }
+    try std.testing.expect(nonzero > 0); // the legal decode must be non-trivial
+    // The surplus passes still run over the MQ stream (state fidelity):
+    // they cannot leave MORE bytes unconsumed than the legal decode did.
+    try std.testing.expect(b.under_read <= a.under_read);
+}
+
+/// Crafted minimal stream: mini-stream shell (SIZ 4x4 8-bit, QCD G=2 eps=8
+/// → LL M_b=9) + one packet whose zero-bitplane tag tree encodes zbp=8
+/// (numbps=1 → at most 1 pass) yet declares 4 coding passes with a 4-byte
+/// body. Header bits: 1 (non-empty) 1 (included) 00000000 1 (zbp 8)
+/// 1101 (4 passes) 0 (lblock) 00100 (len 4 in 3+⌊log2 4⌋ bits) → C0 3A 20.
+fn buildSurplusPassStream(allocator: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    // Psot = 12 (SOT) + 2 (SOD) + 7 (packet: 3 header + 4 body) = 21
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x93 }); // SOD
+    try buf.appendSlice(allocator, &.{ 0xC0, 0x3A, 0x20, 0x5A, 0xC3, 0x3C, 0x0F }); // crafted packet
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 }); // EOC
+    return buf.toOwnedSlice(allocator);
+}
+
+test "deepValidate: surplus coding passes → coding_pass_overflow is a WARN even in strict mode (decodable by convention)" {
+    const allocator = std.testing.allocator;
+    const stream = try buildSurplusPassStream(allocator);
+    defer allocator.free(stream);
+    var rep = try jp2z.internal.deepValidate(allocator, stream, true);
+    defer rep.deinit(allocator);
+    var found: ?jp2z.Finding = null;
+    for (rep.findings.items) |f| if (f.code == .coding_pass_overflow) {
+        found = f;
+    };
+    const f = found orelse return error.MissingCodingPassOverflow;
+    try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    try std.testing.expect(f.detail != null);
+    try std.testing.expect(std.mem.indexOf(u8, f.detail.?, "ignored") != null);
+}

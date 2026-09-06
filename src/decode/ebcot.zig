@@ -84,6 +84,20 @@ pub fn initContexts() [NUM_CONTEXTS]mq.Context {
 /// Per-coefficient state inside a code-block. Updated incrementally
 /// across the three coding passes (significance propagation, magnitude
 /// refinement, cleanup) for each bitplane.
+/// Record a decoded magnitude bit at bit-plane `bp` (1:1 with openjpeg's
+/// bpno_plus_one: plane 0 is bp == 1). bp == 0 marks a SURPLUS pass below
+/// the last coded plane — the packet headers declared more passes than
+/// 3·numbps−2 allows (ClearCanvas/OpenJPEG-1.x DICOM streams do). The pass
+/// still runs, so MQ state and significance stay faithful to the encoder
+/// and the byte budget keeps its meaning, but nothing below plane 0 exists
+/// in the reconstruction: openjpeg (t1.c `bpno_plus_one >= 1`) and JasPer
+/// both stop there and agree byte-for-byte.
+inline fn codeMagnitudeBit(coeff: *Coeff, bp: u5, bit: u1) void {
+    if (bp == 0) return;
+    coeff.magnitude |= @as(u32, bit) << bp;
+    coeff.half_bp = bp - 1;
+}
+
 pub const Coeff = struct {
     /// True once any bit of magnitude has been decoded for this coefficient.
     significant: bool = false,
@@ -379,8 +393,7 @@ pub fn spPass(
                 cblk.coeffs[idx].visited = true;
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
-                    cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
-                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                    codeMagnitudeBit(&cblk.coeffs[idx], bp, 1);
                     const sc = scContext(cblk.*, x, y);
                     const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                     cblk.coeffs[idx].sign = raw_sign ^ sc.xor;
@@ -426,8 +439,7 @@ pub fn mrPass(
                 if (coeff.visited) continue; // became sig in this bp's SP
                 const cx = mrContext(cblk.*, x, y);
                 const bit = dec.decode(&ctxs[@intFromEnum(cx)]);
-                cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
-                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                codeMagnitudeBit(&cblk.coeffs[idx], bp, bit);
                 cblk.coeffs[idx].refined = true;
             }
         }
@@ -454,8 +466,7 @@ pub fn spPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
                 cblk.coeffs[idx].visited = true;
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
-                    cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
-                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                    codeMagnitudeBit(&cblk.coeffs[idx], bp, 1);
                     cblk.coeffs[idx].sign = dec.decode();
                 }
             }
@@ -479,8 +490,7 @@ pub fn mrPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
                 if (!coeff.significant) continue;
                 if (coeff.visited) continue;
                 const bit = dec.decode();
-                cblk.coeffs[idx].magnitude |= (@as(u32, bit) << bp);
-                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                codeMagnitudeBit(&cblk.coeffs[idx], bp, bit);
                 cblk.coeffs[idx].refined = true;
             }
         }
@@ -555,8 +565,7 @@ pub fn clPass(
                 const y = y_stripe + k;
                 const idx = y * cblk.width + x;
                 cblk.coeffs[idx].significant = true;
-                cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
-                cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                codeMagnitudeBit(&cblk.coeffs[idx], bp, 1);
                 const sc = scContext(cblk.*, x, y);
                 const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                 cblk.coeffs[idx].sign = raw_sign ^ sc.xor;
@@ -573,8 +582,7 @@ pub fn clPass(
                 const sig_bit = dec.decode(&ctxs[@intFromEnum(zc_cx)]);
                 if (sig_bit == 1) {
                     cblk.coeffs[idx].significant = true;
-                    cblk.coeffs[idx].magnitude |= (@as(u32, 1) << bp);
-                    cblk.coeffs[idx].half_bp = if (bp > 0) bp - 1 else 0;
+                    codeMagnitudeBit(&cblk.coeffs[idx], bp, 1);
                     const sc = scContext(cblk.*, x, y);
                     const raw_sign = dec.decode(&ctxs[@intFromEnum(sc.cx)]);
                     cblk.coeffs[idx].sign = raw_sign ^ sc.xor;
