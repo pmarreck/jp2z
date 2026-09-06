@@ -2761,3 +2761,33 @@ test "deepValidate strict: real PPM (g3, 214 segments, SOP+EPH) and PPT (g4, p1_
         try std.testing.expect(!hasFinding(rep, .packed_headers_mismatch));
     }
 }
+
+test "cleanroom: p1_06 (16 tiles, PPT per tile-part, SOP+EPH) matches openjpeg" {
+    // Was max_abs=128 in the sweep: with the headers ignored the walker
+    // desynced and every tile decoded as flat mid-grey.
+    const allocator = std.testing.allocator;
+    var img = try jp2z.internal.decodeCleanroom(allocator, p1_06_j2k);
+    defer img.deinit(allocator);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, p1_06_j2k);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqual(oracle.width, img.width);
+    try std.testing.expectEqual(oracle.height, img.height);
+    const comps: usize = img.num_components;
+    try std.testing.expectEqual(@as(usize, oracle.channels), comps);
+    const n: usize = @as(usize, img.width) * @as(usize, img.height);
+    var max_abs: i64 = 0;
+    var c: usize = 0;
+    while (c < comps) : (c += 1) {
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const d: i64 = @as(i64, img.planes[c][i]) - @as(i64, oracle.pixels[i * comps + c]);
+            const ad = if (d < 0) -d else d;
+            if (ad > max_abs) max_abs = ad;
+        }
+    }
+    // 9/7 integer tolerance is ±1 (sweep NEAR); 5/3 must be exact.
+    if (max_abs > 1) {
+        std.debug.print("\n[p1_06] max_abs vs openjpeg = {d}\n", .{max_abs});
+        return error.PixelMismatch;
+    }
+}

@@ -303,28 +303,51 @@ inline fn dClamp64(a: []const i64, bound: usize, i: isize) i64 {
     return a[2 * c + 1];
 }
 
+/// Low-pass sample i of a cas==1 line (low samples sit at ODD interleaved
+/// positions 2i+1), edge-clamped to [0, bound-1].
+inline fn lClamp64(a: []const i64, bound: usize, i: isize) i64 {
+    const c: usize = if (i < 0) 0 else if (@as(usize, @intCast(i)) >= bound) bound - 1 else @intCast(i);
+    return a[2 * c + 1];
+}
+/// High-pass sample i of a cas==1 line (high samples at EVEN positions 2i).
+inline fn hClamp64(a: []const i64, bound: usize, i: isize) i64 {
+    const c: usize = if (i < 0) 0 else if (@as(usize, @intCast(i)) >= bound) bound - 1 else @intCast(i);
+    return a[2 * c];
+}
+
 /// Inverse 9/7 lifting over one line of Q16 fixed-point samples. `line`
 /// holds deinterleaved `[low | high]` on input; interleaved spatial
-/// (still Q16) on return. cas==0 only (single-tile origin (0,0)).
+/// (still Q16) on return. `cas` is the parity of the resolution origin:
+/// 0 ⇒ low samples at even positions, 1 ⇒ low samples at odd positions
+/// (interior tiles, T.800 F.3.7). Both parities use symmetric extension
+/// at the ends (every sample is updated from its two spatial neighbours,
+/// clamped to the signal), which is what openjpeg's step2 boundary
+/// handling computes. Degenerate one-sample lines mirror openjpeg's
+/// opj_v8dwt_decode guards exactly: returned untouched — no K scale, and
+/// for the odd-origin case no halving either (the oracle deviates from a
+/// literal F.3.7 there; parity with the oracle is the sweep's contract).
 pub fn idwt97Line(line: []i64, sn: usize, dn: usize, cas: u1, tmp: []i64) void {
     const len = sn + dn;
     if (len == 0) return;
+    if (cas == 0) {
+        if (!(dn > 0 or sn > 1)) return; // lone low sample: unchanged
+    } else {
+        if (!(sn > 0 or dn > 1)) return; // lone high sample: unchanged
+    }
     {
         var k: usize = 0;
         while (k < sn) : (k += 1) tmp[cas + 2 * k] = line[k];
         k = 0;
         while (k < dn) : (k += 1) tmp[(1 - cas) + 2 * k] = line[sn + k];
     }
-    // Scale: even (low) ×K, odd (high) ×two_invK.
-    {
+    if (cas == 0) {
+        // Scale: even (low) ×K, odd (high) ×two_invK.
         var i: usize = 0;
         while (i < sn) : (i += 1) tmp[2 * i] = mulQ(tmp[2 * i], K_Q);
         i = 0;
         while (i < dn) : (i += 1) tmp[2 * i + 1] = mulQ(tmp[2 * i + 1], TWO_INVK_Q);
-    }
-    if (dn > 0) {
         // δ: S(i) += -delta·(D(i-1)+D(i))
-        var i: usize = 0;
+        i = 0;
         while (i < sn) : (i += 1) {
             const d = dClamp64(tmp, dn, @as(isize, @intCast(i)) - 1) + dClamp64(tmp, dn, @intCast(i));
             tmp[2 * i] += mulQ(d, NDELTA_Q);
@@ -346,6 +369,37 @@ pub fn idwt97Line(line: []i64, sn: usize, dn: usize, cas: u1, tmp: []i64) void {
         while (i < dn) : (i += 1) {
             const sm = sClamp64(tmp, sn, @intCast(i)) + sClamp64(tmp, sn, @as(isize, @intCast(i)) + 1);
             tmp[2 * i + 1] += mulQ(sm, NALPHA_Q);
+        }
+    } else {
+        // cas == 1: low S(i) at 2i+1 (neighbours D(i) at 2i, D(i+1) at
+        // 2i+2); high D(i) at 2i (neighbours S(i-1) at 2i-1, S(i) at 2i+1).
+        var i: usize = 0;
+        while (i < sn) : (i += 1) tmp[2 * i + 1] = mulQ(tmp[2 * i + 1], K_Q);
+        i = 0;
+        while (i < dn) : (i += 1) tmp[2 * i] = mulQ(tmp[2 * i], TWO_INVK_Q);
+        // δ
+        i = 0;
+        while (i < sn) : (i += 1) {
+            const d = hClamp64(tmp, dn, @intCast(i)) + hClamp64(tmp, dn, @as(isize, @intCast(i)) + 1);
+            tmp[2 * i + 1] += mulQ(d, NDELTA_Q);
+        }
+        // γ
+        i = 0;
+        while (i < dn) : (i += 1) {
+            const sm = lClamp64(tmp, sn, @as(isize, @intCast(i)) - 1) + lClamp64(tmp, sn, @intCast(i));
+            tmp[2 * i] += mulQ(sm, NGAMMA_Q);
+        }
+        // β
+        i = 0;
+        while (i < sn) : (i += 1) {
+            const d = hClamp64(tmp, dn, @intCast(i)) + hClamp64(tmp, dn, @as(isize, @intCast(i)) + 1);
+            tmp[2 * i + 1] += mulQ(d, NBETA_Q);
+        }
+        // α
+        i = 0;
+        while (i < dn) : (i += 1) {
+            const sm = lClamp64(tmp, sn, @as(isize, @intCast(i)) - 1) + lClamp64(tmp, sn, @intCast(i));
+            tmp[2 * i] += mulQ(sm, NALPHA_Q);
         }
     }
     @memcpy(line[0..len], tmp[0..len]);
@@ -400,10 +454,72 @@ pub fn idwt97(
 }
 
 
-test "idwt97Line: identity-ish — all-zero stays zero, single low sample passes K scale" {
-    var line = [_]i64{Q97_ONE}; // value 1.0 in Q16, single low sample
+test "idwt97Line: single low sample (cas 0, sn=1, dn=0) is returned unchanged" {
+    // T.800 F.3.7 1D_SR: a one-sample signal at an even coordinate is
+    // X = Y. openjpeg (opj_v8dwt_decode) returns before the K scale for
+    // this case; the sweep oracle and the spec agree, so no K here.
+    var line = [_]i64{Q97_ONE};
     var tmp = [_]i64{0};
     idwt97Line(&line, 1, 0, 0, &tmp);
-    // dn==0 → only the K scale applies to the lone low sample.
-    try std.testing.expectEqual(mulQ(Q97_ONE, K_Q), line[0]);
+    try std.testing.expectEqual(Q97_ONE, line[0]);
+}
+
+test "idwt97Line: single high sample (cas 1, sn=0, dn=1) is returned unchanged, no panic" {
+    // The p1_06 crash: 3x3 tiles with 5 resolutions yield 1-wide
+    // resolutions at odd origins (sn=0, dn=1). The cas-0-only code
+    // computed `bound - 1` with bound 0. openjpeg returns the sample
+    // untouched here (it does NOT halve, unlike the 5/3 path and unlike
+    // a literal reading of F.3.7); the oracle wins for parity.
+    var line = [_]i64{3 * Q97_ONE};
+    var tmp = [_]i64{0};
+    idwt97Line(&line, 0, 1, 1, &tmp);
+    try std.testing.expectEqual(3 * Q97_ONE, line[0]);
+}
+
+test "idwt97Line: cas 1 is the reflection of cas 0 (even lengths, metamorphic)" {
+    // The 9/7 lifting uses symmetric extension and symmetric filters, so
+    // reversing an even-length signal swaps the parity of every position:
+    // idwt(cas=1, L, H) == reverse(idwt(cas=0, reverse(L), reverse(H))).
+    // Exact in Q16 too: every step is a pointwise neighbour update whose
+    // rounding is position-independent. Seeded PRNG for determinism.
+    var prng = std.Random.DefaultPrng.init(0x9770_cafe);
+    const rnd = prng.random();
+    var len: usize = 2;
+    while (len <= 64) : (len += 2) {
+        const sn = len / 2;
+        const dn = len - sn;
+        var a: [64]i64 = undefined;
+        var b: [64]i64 = undefined;
+        var tmp: [64]i64 = undefined;
+        var k: usize = 0;
+        while (k < len) : (k += 1) a[k] = @as(i64, rnd.intRangeAtMost(i32, -5000, 5000)) * 1024;
+        // b = [reverse(L) | reverse(H)]
+        k = 0;
+        while (k < sn) : (k += 1) b[k] = a[sn - 1 - k];
+        k = 0;
+        while (k < dn) : (k += 1) b[sn + k] = a[sn + dn - 1 - k];
+        idwt97Line(a[0..len], sn, dn, 1, &tmp);
+        idwt97Line(b[0..len], sn, dn, 0, &tmp);
+        k = 0;
+        while (k < len) : (k += 1) {
+            if (a[k] != b[len - 1 - k]) {
+                std.debug.print("\n[idwt97 reflect] len {d} pos {d}: cas1={d} reflected-cas0={d}\n", .{ len, k, a[k], b[len - 1 - k] });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "idwt97Line: cas 1 odd lengths never index out of range (sn=dn-1)" {
+    // Odd length at an odd origin: sn = (len-1)/2 low samples at odd
+    // positions, dn = sn+1 high samples at even positions. Only a
+    // bounds/panic guard; values are pinned by the p1_06 oracle test.
+    var len: usize = 1;
+    while (len <= 15) : (len += 2) {
+        var a: [16]i64 = undefined;
+        var tmp: [16]i64 = undefined;
+        var k: usize = 0;
+        while (k < len) : (k += 1) a[k] = @as(i64, @intCast(k + 1)) * Q97_ONE;
+        idwt97Line(a[0..len], len / 2, len - len / 2, 1, &tmp);
+    }
 }

@@ -100,15 +100,21 @@ those fixtures, and OpenJPEG retirement is gated on it).
 - [x] **Decode 127/128 cluster** — was NOT a DC-shift bug: every fixture in
       it is a PPM/PPT user (marker census, see LEARNINGS 2026-09-06). Closed
       by the slice above: g1–g4 byte-exact, p1_02 NEAR. (2026-09-06)
-- [ ] **9/7 multi-tile decode — p1_05/p1_06** (now max_abs 255, and a
-      ReleaseSafe integer-overflow panic in dwt.zig idwt97Line beta step on
-      p1_06). Parked RED: scratchpad p1_06 cleanroom-vs-openjpeg test
-      (re-add to validate.zig as the slice opens). The 9/7 tile path takes
-      tile_x0/y0 but the overflow says coefficients or scale explode on a
-      non-origin tile; suspect dequant/expn per tile or subband placement.
-      ALSO a hardening item: a VALID file must never panic — the overflow
-      needs a bounded path (saturate or reject with a finding), then the
-      real geometry fix.
+- [x] **9/7 at odd tile origins (cas==1) + one-sample lines** (2026-09-06
+      ~11:30am EDT). idwt97Line was cas==0-only (doc comment said so) yet
+      received real parities from idwt97; interior tiles lifted with the
+      wrong neighbours and 1-sample lines underflowed `bound-1` (ReleaseSafe
+      panic / ReleaseFast OOB read). Now: cas==1 branch (low at odd
+      positions), openjpeg-exact degenerate guards (lone sample untouched,
+      no K scale, no halving — noted spec deviation), reflection
+      metamorphic test pins cas1 == reverse(cas0(reverse)). p1_06 NEAR
+      (max_abs 1), p1_05 255→18. Sweep PASS 26, NEAR 4, FAIL 6, ERROR 1.
+- [ ] **p1_05 residual max_abs 18** (15×15 tiles of 37 px, 8 resolutions,
+      cbsty BYPASS+TERMALL+PTERM, 2 layers, custom precincts). Candidates:
+      openjpeg one-sample odd-origin non-halving interacting with 8 levels;
+      BYPASS segment handling; precinct-partition placement at odd origins.
+      TDD: per-tile max_abs histogram first (which tiles/resolutions), then
+      one crafted RED.
 - [ ] Then the rest of the sweep's FAILs: p1_02/d2/g1 (254-255), p0_01
       (149), file2/file8 (158/216), p0_13 ERROR NoCodingParams, balloon
       (max_abs 9), e1 tile-7 ±2, p1_04 >8-bit.

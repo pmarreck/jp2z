@@ -292,3 +292,32 @@ What generalises:
 - `packed` is a Zig keyword. A parameter named `packed` fails to parse with
   "expected a struct, enum or union, found ':'" — an error message that
   points nowhere near the cause.
+
+## 2026-09-06 — 9/7 at odd tile origins: the "cas==0 only" comment was a bug report
+
+Once packed headers walked, p1_06 (12×12, 3×3 tiles, 5 resolutions) went
+from flat grey to a ReleaseSafe panic in `idwt97Line`: `integer overflow`
+in the β step. The line routine's own doc comment said "cas==0 only
+(single-tile origin (0,0))", and `idwt97` had been passing real `cas`
+values into it since the multi-tile branch landed. Two defects hid there:
+- cas==1 swaps the roles (low samples at ODD interleaved positions) but
+  the lifting still indexed `tmp[2i]` as low, so interior tiles were
+  transformed with the wrong neighbours (p1_05: max_abs 255).
+- Degenerate lines (sn=0,dn=1 at odd origin; sn=1,dn=0 at even) hit
+  `bound - 1` with bound 0 in the edge-clamp helpers: a usize underflow
+  panic in ReleaseSafe, an out-of-bounds read in ReleaseFast. Tiny tiles
+  with many resolution levels make these lines routine, not exotic.
+
+What generalises:
+- A "only handles X" comment on a function that receives non-X inputs is a
+  latent crash, not documentation. Grep call sites when you see one.
+- openjpeg's one-sample rules are NOT the literal spec: T.800 F.3.7 says an
+  odd-origin single sample is halved; opj_v8dwt_decode returns it untouched
+  (and skips the K scale on the even-origin one). jp2z mirrors the oracle
+  and says so in the comment; a second oracle (Kakadu .pix) could revisit.
+  The pre-existing test asserting "single low sample passes K scale"
+  encoded the bug — it disagreed with BOTH the spec and the oracle.
+- Reflection is a free metamorphic oracle for parity: for even lengths,
+  idwt(cas=1, L, H) == reverse(idwt(cas=0, reverse(L), reverse(H))) holds
+  exactly in Q16 because every lifting step is a position-independent
+  neighbour update. It pinned the cas==1 branch without a forward 9/7.
