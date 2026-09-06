@@ -121,6 +121,9 @@ pub const CblkDecodePlanList = struct {
     /// A tile-part COD changed decomposition/wavelet/MCT for some tile —
     /// see CblkExtractor.tile_override_unsupported.
     tile_override_unsupported: bool = false,
+    /// A tile declares HT code-blocks (cblksty 0x40, T.814): no plan holds
+    /// MQ/RAW entropy data. deepValidate skips the budget check; decode refuses.
+    ht_unsupported: bool = false,
 
     pub fn deinit(self: *CblkDecodePlanList, allocator: Allocator) void {
         for (self.plans) |*p| p.deinit(allocator);

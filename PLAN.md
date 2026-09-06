@@ -191,6 +191,45 @@ those fixtures, and OpenJPEG retirement is gated on it).
       overall warn; kodak: T1 exact, still FAIL on over/under-read.
       Observed on the way: 12-bit files reconstruct to saturated pixels
       where openjpeg has 0 — the known >8-bit rendering gap (p1_04).
+- [x] **Nonregression triage: the three files only jp2z rejected**
+      (2026-09-06 ~2:35pm EDT). After the JasPer cross-check, openjpeg AND
+      JasPer accept Marrin.jp2, issue211.jp2 and htj2k/Bretagne1_ht.j2k.
+      Marrin (Kakadu 5.2.1): COD says 2 layers, the tile-part holds only
+      layer 0's 12 packets — openjpeg's packet dump puts all 12 layer-1
+      packets at the tile-part end offset. TRUE positive; truncated_stream
+      now carries "tile 0: 12 of 24 packets present … next expected: layer
+      1 res 0 comp 0 prc 0". issue211: a CRLF after the last box — new
+      finding 257 jp2_trailing_bytes, WARN in both modes (no image data
+      affected). Bretagne1_ht: cblksty 0x40 (HT, T.814) is c145 now —
+      WARN jp2_unsupported_marker_ignored, deep validation skipped
+      (list.ht_unsupported), decodeCleanroom refuses with
+      UnsupportedHtCodeBlocks; the 273 phantom under-reads are gone. bit 7
+      stays the reserved-bit WARN. broken.jpc (JasPer 1.701 output, both
+      decoders accept): tier-2 agrees with openjpeg on all 75 blocks, tier-1
+      exact, yet component 2's r3–r5 budgets are off by hundreds of bytes
+      — the file is what its name says; FAIL stands.
+- [x] **CAP marker (FF50, Part 2 / T.814 capabilities)** read as
+      unknown_marker; now a named valid-but-unsupported WARN (2026-09-06
+      ~2:40pm EDT). RED: mini stream + minimal CAP (Lcap 6, Pcap 0).
+- [x] **Structural false negatives from the census** (2026-09-06 ~2:50pm
+      EDT). Five openjpeg-data files opj_decompress REFUSES were accepted
+      with no FAIL. Now: main header without COD or QCD → FAIL (A.4 Table
+      A.1; 1888.pdf.asan, issue408); SOD/EOC before any SOT → FAIL "no
+      tile-part" (issue362-2863: a fuzzed SOT became a PPM marker and the
+      walk returned silently); jp2h without a usable ihdr → FAIL (I.5.3.1;
+      issue364-903); COD/COC/RGN exact segment lengths (A.6.1–A.6.3) →
+      FAIL bad_marker_length. Four crafted-stream tests that relied on the
+      old permissiveness (SIZ-then-SOT, no SOD) now carry COD+QCD+SOD.
+      Refreshed census (151 files, 0 panics): opj-ok/jp2z-fail 22→17,
+      of which JasPer also rejects all but issue412 (palette cdef) and
+      the fuzz files; opj-fail/jp2z-accept 5→2 pending (edf_c2_1103421:
+      tile-part header COC with Lcoc 521 runs past SOD and is accepted;
+      mem-b2ace68c-1381: pclr with NE=1/NPC=4 but no entries).
+- [ ] **Tile-part header segment overrunning SOD → FAIL** (edf_c2_1103421).
+- [ ] **JP2 palette (pclr/cmap) validation + cdef channel count**
+      (issue412 false positive: cdef names cmap output channels, not
+      codestream components; mem-b2ace68c false negative: malformed pclr).
+      Palette not applied by decode → c145 WARN.
 - [ ] **Per-component wavelets in decode.** COC lets components use
       different transforms (p0_05, p0_06, p1_03: 9/7 and 5/3 side by side).
       Validation walks them; decodeCleanroom now REFUSES explicitly

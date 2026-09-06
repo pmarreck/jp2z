@@ -196,6 +196,7 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     // with the tile's params but would be reconstructed with the main
     // header's below: refuse rather than mis-render.
     if (list.tile_override_unsupported) return error.UnsupportedTileCodingOverride;
+    if (list.ht_unsupported) return error.UnsupportedHtCodeBlocks;
     // COC may give components different wavelets (p0_06: 9/7 and 5/3 side
     // by side). The two reconstruction paths below are image-wide; refuse
     // rather than run one component through the wrong transform.
@@ -721,6 +722,10 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
 
     var list = codestream.extractCblkPlans(allocator, data) catch return report;
     defer list.deinit(allocator);
+    // HT code-blocks (T.814) are not MQ/RAW data: a byte budget over them
+    // would be noise (Bretagne1_ht: 273 "under-reads"). The structural walk
+    // already surfaced the c145 WARN; stop here.
+    if (list.ht_unsupported) return report;
 
     const sev: codestream.Severity = if (strict) .fail else .warn;
     var over_count: u32 = 0;

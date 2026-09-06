@@ -41,6 +41,10 @@ pub const CblkExtractor = struct {
     /// walks with the tile's params) but decodeCleanroom reconstructs with
     /// the main header's, so it must refuse rather than mis-render.
     tile_override_unsupported: bool = false,
+    /// A tile declares HT code-blocks (cblksty 0x40, T.814): the plans'
+    /// bytes are not MQ/RAW entropy data. Deep validation stops at the
+    /// structural walk and decode refuses.
+    ht_unsupported: bool = false,
 
     pub const Entry = struct {
         buffer: std.ArrayList(u8) = .empty,
@@ -190,7 +194,7 @@ pub const CblkExtractor = struct {
             entry.segments = &.{}; // ownership moved to the plan
             idx += 1;
         }
-        return .{ .plans = plans, .tile_override_unsupported = self.tile_override_unsupported };
+        return .{ .plans = plans, .tile_override_unsupported = self.tile_override_unsupported, .ht_unsupported = self.ht_unsupported };
     }
 };
 

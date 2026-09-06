@@ -558,10 +558,13 @@ test "validate: trailing garbage after EOC emits truncated_stream warning" {
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x01, 0x07, 0x01, 0x01,
-        // SOT with Psot=14, then SOD
+        // COD (decomp 0, 5/3) + QCD (G=2, no quantization): mandatory (A.4 Table A.1)
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,
+        // SOT with Psot=15, then SOD and one empty packet
         0xFF, 0x90, 0x00, 0x0A,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00, 0x01,
-        0xFF, 0x93,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01,
+        0xFF, 0x93, 0x00,
         // EOC
         0xFF, 0xD9,
         // 4 bytes of garbage past EOC
@@ -652,6 +655,9 @@ test "validate: synthetic SOC+SIZ+SOT main header walks cleanly" {
         0x00, 0x01,
         // Ssiz0=8-bit unsigned, XRsiz0=1, YRsiz0=1
         0x07, 0x01, 0x01,
+        // COD (decomp 0, 5/3) + QCD (G=2, no quantization): mandatory (A.4 Table A.1)
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,
         // SOT marker code (start of first tile-part — ends main header walk)
         0xFF, 0x90,
         // Lsot = 10 (mandatory marker length per T.800 A.4.2)
@@ -661,12 +667,15 @@ test "validate: synthetic SOC+SIZ+SOT main header walks cleanly" {
         0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
+        // SOD + one empty packet (A.4.4: SOD is mandatory in every tile-part)
+        0xFF, 0x93, 0x00,
         // EOC
         0xFF, 0xD9,
     };
     var report = try jp2z.validate(std.testing.allocator, &stream);
     defer report.deinit(std.testing.allocator);
-    try std.testing.expectEqual(jp2z.Severity.pass, report.overall);
+    try std.testing.expect(report.isOk());
+    for (report.findings.items) |f| try std.testing.expect(f.severity != .fail);
     try std.testing.expectEqual(@as(?u32, 4), report.width);
     try std.testing.expectEqual(@as(?u32, 4), report.height);
 }
@@ -751,6 +760,9 @@ test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01, 0x07, 0x01, 0x01,
+        // COD (decomp 0, 5/3) + QCD (G=2, no quantization): mandatory (A.4 Table A.1)
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,
         // Unknown marker 0xFFAA. Lxxx=4 = 2 Lxxx bytes + 2 body bytes.
         0xFF, 0xAA, 0x00, 0x04, 0xDE, 0xAD,
         // SOT
@@ -758,6 +770,8 @@ test "validate: unknown marker emits unknown_marker warning, doesn't FAIL" {
         0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
+        // SOD + one empty packet
+        0xFF, 0x93, 0x00,
         // EOC
         0xFF, 0xD9,
     };
@@ -1884,6 +1898,8 @@ test "validate: tile delivering fewer packets than COD geometry → truncated_st
         0x00, 0x01, 0x07, 0x01, 0x01,
         // COD: num_layers=1, decomp=0 (→ 1 resolution, total=1 packet), 5/3
         0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01,
+        // QCD (G=2, no quantization): mandatory alongside COD (A.4 Table A.1)
+        0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,
         // SOT (Psot=0 → to EOC), SOD, EOC — empty tile-part body (0 packets)
         0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
         0xFF, 0x93,
@@ -1991,7 +2007,7 @@ test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
     // normative — exceeding it is non-conformant even though each exponent
     // alone is in range. Reserved bits (Scod bits 3-7, cblksty bits 6-7)
     // must be zero; a set bit is surfaced as WARN, not silently passed
-    // (cblksty 0x40 is HTJ2K's HT flag — T.814, not Part 1).
+    // (cblksty 0x40 is HTJ2K's HT flag — T.814, not Part 1 — and is reported as valid-but-unsupported instead).
     const soc_siz = [_]u8{
         0xFF, 0x4F,
         0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
@@ -2016,7 +2032,7 @@ test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
     try std.testing.expect(hasFinding(rep_area, .jp2_invalid_codestream));
 
     const cod_scod_resv = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x00 }; // Scod bit 7
-    const cod_sty_resv = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x40, 0x00 }; // cblksty bit 6 (HT)
+    const cod_sty_resv = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x04, 0x04, 0x80, 0x00 }; // cblksty bit 7 (reserved; bit 6 = HT is c145, see the HTJ2K test)
     inline for (.{ cod_scod_resv, cod_sty_resv }) |cod| {
         const s = soc_siz ++ cod ++ qcd ++ tail;
         var rep = try jp2z.validate(std.testing.allocator, &s);
@@ -3831,4 +3847,237 @@ test "deepValidate: surplus coding passes → coding_pass_overflow is a WARN eve
     try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
     try std.testing.expect(f.detail != null);
     try std.testing.expect(std.mem.indexOf(u8, f.detail.?, "ignored") != null);
+}
+
+// ── Nonregression triage: the three files only jp2z rejects ───────
+//
+// After the JasPer cross-check (LEARNINGS 2026-09-06) three openjpeg-data
+// files remained that openjpeg AND JasPer decode while jp2z FAILs:
+// Marrin.jp2 (Kakadu 5.2.1, COD says 2 layers, the tile-part holds only
+// layer 0's 12 packets — openjpeg's own packet dump places all 12 layer-1
+// packets at the tile-part's end offset), issue211.jp2 (a CRLF after the
+// last box) and htj2k/Bretagne1_ht.j2k (HT code-blocks, T.814).
+
+test "missing trailing packets: truncated_stream names the tile, the packet count and the next expected packet" {
+    const allocator = std.testing.allocator;
+    // 2 layers declared, body holds ONE empty packet: layer 1's packet is absent.
+    const data = try buildPackedMiniStream(allocator, .{ .layers = 2, .body = &.{0x00} });
+    defer allocator.free(data);
+    var rep = try jp2z.validate(allocator, data);
+    defer rep.deinit(allocator);
+    var found: ?jp2z.Finding = null;
+    for (rep.findings.items) |f| if (f.code == .truncated_stream) {
+        found = f;
+    };
+    const f = found orelse return error.MissingTruncatedStream;
+    try std.testing.expectEqual(jp2z.Severity.fail, f.severity);
+    const d = f.detail orelse return error.MissingDetail;
+    try std.testing.expect(std.mem.indexOf(u8, d, "1 of 2 packets") != null);
+    try std.testing.expect(std.mem.indexOf(u8, d, "layer 1") != null);
+}
+
+test "JP2: bytes after the last box that cannot form a box header → WARN jp2_trailing_bytes, not truncated_stream (issue211)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const clean = try wrapInJp2Ex(allocator, payload, 1, &.{});
+    defer allocator.free(clean);
+    const data = try std.mem.concat(allocator, u8, &.{ clean, &.{ 0x0D, 0x0A } });
+    defer allocator.free(data);
+    var rep = try jp2z.validate(allocator, data);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .truncated_stream));
+    var found: ?jp2z.Finding = null;
+    for (rep.findings.items) |f| if (f.code == .jp2_trailing_bytes) {
+        found = f;
+    };
+    const f = found orelse return error.MissingTrailingBytes;
+    try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    try std.testing.expectEqual(@as(?u64, clean.len), f.offset);
+    try std.testing.expect(std.mem.indexOf(u8, f.detail orelse "", "2 byte") != null);
+    try std.testing.expect(rep.overall != .fail);
+}
+
+test "HTJ2K code-blocks (cblksty 0x40, T.814) → valid-but-unsupported WARN, deep validation skipped, decode refused" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    // COD at 45: FF 52 Lcod Scod SGcod(4) SPcod: decomp xcb ycb cblksty → offset 57.
+    try std.testing.expectEqual(@as(u8, 0x00), base[57]);
+    const data = try patched(allocator, base, 57, &.{0x40});
+    defer allocator.free(data);
+    var rep = try jp2z.internal.deepValidate(allocator, data, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_codestream));
+    for (rep.findings.items) |f| switch (f.code) {
+        .entropy_over_read, .entropy_under_read, .coding_pass_overflow, .zero_bitplane_overflow => return error.DeepFindingOnUnsupportedStream,
+        else => {},
+    };
+    try std.testing.expectEqual(jp2z.Severity.warn, rep.overall);
+    try std.testing.expectError(error.UnsupportedHtCodeBlocks, jp2z.internal.decodeCleanroom(allocator, data));
+}
+
+test "CAP marker (FF50, Part 2 / T.814 capabilities) → valid-but-unsupported WARN naming it, not unknown_marker" {
+    const allocator = std.testing.allocator;
+    // Lcap 6, Pcap 0 (no capability bits set): the smallest legal CAP.
+    const data = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x50, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00 } });
+    defer allocator.free(data);
+    var rep = try jp2z.validate(allocator, data);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .unknown_marker));
+    var found: ?jp2z.Finding = null;
+    for (rep.findings.items) |f| if (f.code == .jp2_unsupported_marker_ignored) {
+        found = f;
+    };
+    const f = found orelse return error.MissingUnsupportedFinding;
+    try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    try std.testing.expect(std.mem.indexOf(u8, f.detail orelse "", "CAP") != null);
+    try std.testing.expect(rep.overall != .fail);
+}
+
+// ── Structural false negatives from the nonregression census ──────
+//
+// Five openjpeg-data files that opj_decompress REFUSES were accepted by
+// jp2z with no FAIL: 1888.pdf.asan / issue408 (main header without COD),
+// issue364-903 (jp2h without ihdr), issue362-2863 (a fuzzed SOT became a
+// PPM marker, then SOD at the top level: no tile-part at all) and
+// edf_c2_1103421 (COC with a wrong Lcoc). Each is a hard requirement of
+// T.800 A.4 Table A.1 / A.6 marker-segment lengths / I.5.3.
+
+/// Remove the first main-header marker segment `marker` (FF xx) before SOT.
+fn withoutMainMarker(allocator: std.mem.Allocator, stream: []const u8, marker: u8) ![]u8 {
+    var pos: usize = 2; // after SOC
+    while (pos + 4 <= stream.len) {
+        if (stream[pos] != 0xFF) break;
+        const m = stream[pos + 1];
+        if (m == 0x90) break; // SOT
+        const l = std.mem.readInt(u16, stream[pos + 2 ..][0..2], .big);
+        if (m == marker) return std.mem.concat(allocator, u8, &.{ stream[0..pos], stream[pos + 2 + l ..] });
+        pos += 2 + l;
+    }
+    return error.MarkerNotFound;
+}
+
+/// Offset of the first SOT in `stream` (main-header length).
+fn sotOffset(stream: []const u8) !usize {
+    var pos: usize = 2;
+    while (pos + 4 <= stream.len) {
+        if (stream[pos] != 0xFF) break;
+        if (stream[pos + 1] == 0x90) return pos;
+        pos += 2 + std.mem.readInt(u16, stream[pos + 2 ..][0..2], .big);
+    }
+    return error.MarkerNotFound;
+}
+
+fn insertAt(allocator: std.mem.Allocator, base: []const u8, offset: usize, bytes: []const u8) ![]u8 {
+    return std.mem.concat(allocator, u8, &.{ base[0..offset], bytes, base[offset..] });
+}
+
+fn failDetailContains(rep: jp2z.ValidationReport, code: jp2z.FindingCode, needle: []const u8) bool {
+    for (rep.findings.items) |f| {
+        if (f.code == code and f.severity == .fail and std.mem.indexOf(u8, f.detail orelse "", needle) != null) return true;
+    }
+    return false;
+}
+
+test "main header without COD → FAIL naming COD (T.800 A.4 Table A.1); without QCD → FAIL naming QCD" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const no_cod = try withoutMainMarker(allocator, base, 0x52);
+    defer allocator.free(no_cod);
+    var r1 = try jp2z.validate(allocator, no_cod);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "COD"));
+    const no_qcd = try withoutMainMarker(allocator, base, 0x5C);
+    defer allocator.free(no_qcd);
+    var r2 = try jp2z.validate(allocator, no_qcd);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "QCD"));
+}
+
+test "codestream without any tile-part (EOC or SOD right after the main header) → FAIL" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const sot = try sotOffset(base);
+    const eoc_only = try std.mem.concat(allocator, u8, &.{ base[0..sot], &.{ 0xFF, 0xD9 } });
+    defer allocator.free(eoc_only);
+    var r1 = try jp2z.validate(allocator, eoc_only);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "no tile-part"));
+    const sod_only = try std.mem.concat(allocator, u8, &.{ base[0..sot], &.{ 0xFF, 0x93, 0x00, 0xFF, 0xD9 } });
+    defer allocator.free(sod_only);
+    var r2 = try jp2z.validate(allocator, sod_only);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "no tile-part"));
+}
+
+test "JP2: jp2h without ihdr → FAIL naming ihdr (I.5.3.1)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
+    // jp2h holding only colr (meth 1, enumcs 17 greyscale): no ihdr.
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x17, 0x6A, 0x70, 0x32, 0x68 });
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 });
+    var lbox: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox, @intCast(8 + payload.len), .big);
+    try buf.appendSlice(allocator, &lbox);
+    try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x63 });
+    try buf.appendSlice(allocator, payload);
+    var rep = try jp2z.validate(allocator, buf.items);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "ihdr"));
+}
+
+test "COD / COC / RGN marker segments must have their exact T.800 length: one surplus byte → FAIL bad_marker_length" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    // COD at 45: Lcod (47..48) 0x000C → 0x000D and a surplus byte after its body (59).
+    try std.testing.expectEqual(@as(u8, 0x0C), base[48]);
+    const cod_long0 = try patched(allocator, base, 48, &.{0x0D});
+    defer allocator.free(cod_long0);
+    const cod_long = try insertAt(allocator, cod_long0, 59, &.{0x00});
+    defer allocator.free(cod_long);
+    var r1 = try jp2z.validate(allocator, cod_long);
+    defer r1.deinit(allocator);
+    try std.testing.expect(hasFinding(r1, .bad_marker_length));
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+
+    // COC: Lcoc must be 9 for Csiz < 257 with default precincts (A.6.2).
+    const coc_ok = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x53, 0x00, 0x09, 0x00, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 } });
+    defer allocator.free(coc_ok);
+    var r2 = try jp2z.validate(allocator, coc_ok);
+    defer r2.deinit(allocator);
+    try std.testing.expect(!hasFinding(r2, .bad_marker_length));
+    const coc_long = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x53, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01, 0x00 } });
+    defer allocator.free(coc_long);
+    var r3 = try jp2z.validate(allocator, coc_long);
+    defer r3.deinit(allocator);
+    try std.testing.expect(hasFinding(r3, .bad_marker_length));
+    try std.testing.expectEqual(jp2z.Severity.fail, r3.overall);
+
+    // RGN: Lrgn must be 5 for Csiz < 257 (A.6.3).
+    const rgn_ok = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x00 } });
+    defer allocator.free(rgn_ok);
+    var r4 = try jp2z.validate(allocator, rgn_ok);
+    defer r4.deinit(allocator);
+    try std.testing.expect(!hasFinding(r4, .bad_marker_length));
+    const rgn_long = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x5E, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00 } });
+    defer allocator.free(rgn_long);
+    var r5 = try jp2z.validate(allocator, rgn_long);
+    defer r5.deinit(allocator);
+    try std.testing.expect(hasFinding(r5, .bad_marker_length));
+    try std.testing.expectEqual(jp2z.Severity.fail, r5.overall);
 }

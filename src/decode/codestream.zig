@@ -989,6 +989,16 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
 
     while (pos < data.len) {
         if (data.len < pos + 8) {
+            if (saw_jp2c) {
+                // Fewer than 8 bytes after the last box cannot be a box
+                // (I.4): trailing junk such as a CRLF appended in transit
+                // (issue211.jp2). No image data is affected and decoders
+                // ignore it, so WARN in both modes.
+                var buf: [96]u8 = undefined;
+                const d = std.fmt.bufPrint(&buf, "{d} byte(s) after the last box cannot form a box header; decoders ignore them", .{data.len - pos}) catch null;
+                try emit(report, allocator, .warn, .jp2_trailing_bytes, pos, d);
+                break;
+            }
             try emit(report, allocator, .fail, .truncated_stream, pos, null);
             return;
         }
@@ -1031,6 +1041,10 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             BoxType.jp2h => {
                 saw_jp2h = true;
                 ihdr_dims = try parseJp2HeaderBox(report, allocator, body, pos + body_offset);
+                // I.5.3.1: ihdr is mandatory (and first) in jp2h. Without it the
+                // file has no declared geometry to cross-check the codestream
+                // against (issue364-903: openjpeg "no 'ihdr' box").
+                if (ihdr_dims == null) try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + body_offset, "jp2h has no usable ihdr box (T.800 I.5.3.1 requires it)");
             },
             BoxType.jp2c => {
                 if (saw_jp2c) {
@@ -1241,6 +1255,12 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // PPM segments (A.7.4) keyed by Zppm; merged into per-tile-part
     // chunks once the main header ends (a chunk may span segments).
     var ppm = PpmCollector{};
+    // A.4 Table A.1: COD and QCD are required in the main header. Without
+    // them coding_params holds only SIZ-seeded defaults and every walk
+    // would be fiction (1888.pdf.asan / issue408: openjpeg "required COD
+    // marker not found").
+    var saw_cod = false;
+    var saw_qcd = false;
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1268,6 +1288,14 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 // Quantization tables parse body-driven, so only the coverage
                 // check (an entry per subband for every component) waits for
                 // the whole main header.
+                if (!saw_cod) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, "main header has no COD marker segment (T.800 A.4 Table A.1 requires one)");
+                    return;
+                }
+                if (!saw_qcd) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, "main header has no QCD marker segment (T.800 A.4 Table A.1 requires one)");
+                    return;
+                }
                 if (report.coding_params) |*cp| try checkQuantCoverage(report, allocator, cp);
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
@@ -1277,8 +1305,10 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 return;
             },
             @intFromEnum(Marker.sod), @intFromEnum(Marker.eoc) => {
-                // SOD/EOC at the top level (no SOT) — spec-deviant
-                // but already structurally validated above.
+                // SOD/EOC before any SOT: a codestream with no tile-part
+                // carries no image (issue362-2863: a fuzzed SOT became a PPM
+                // marker and the walk used to return here silently).
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, "SOD/EOC before any SOT: the codestream has no tile-part (T.800 A.4)");
                 return;
             },
             else => {},
@@ -1296,7 +1326,12 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             return;
         }
 
-        if (!isKnownMainHeaderMarker(marker)) {
+        if (marker == 0xFF50) {
+            // CAP (T.800 2019 A.5.2 / T.814): declares Part 2 or HTJ2K
+            // capabilities. A valid marker jp2z does not act on (c145);
+            // the cblksty HT flag decides whether decode is refused.
+            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos - 2, "CAP marker declares Part 2 / HTJ2K capabilities; jp2z validates Part 1 only");
+        } else if (!isKnownMainHeaderMarker(marker)) {
             try emit(report, allocator, .warn, .unknown_marker, pos - 2, null);
         }
 
@@ -1305,8 +1340,14 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         // at pos+2 and ends at pos+lxxx.
         const body = data[pos + 2 .. pos + lxxx];
         switch (marker) {
-            @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
-            @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
+            @intFromEnum(Marker.cod) => {
+                saw_cod = true;
+                try parseCodBody(report, allocator, body, pos);
+            },
+            @intFromEnum(Marker.qcd) => {
+                saw_qcd = true;
+                try parseQcdBody(report, allocator, body, pos);
+            },
             // QCC (A.6.5) is APPLIED: a per-component quantization table.
             @intFromEnum(Marker.qcc) => if (report.coding_params) |*cp| {
                 try parseQccBody(report, allocator, cp, body, pos + 2);
@@ -1772,6 +1813,10 @@ fn walkTileParts(
                                 const a = tile_params.codingFor(k);
                                 const b = params.codingFor(k);
                                 if (a.num_decomp_levels != b.num_decomp_levels or a.wavelet != b.wavelet) ex.tile_override_unsupported = true;
+                                // HT code-blocks (T.814): the packet walk is Part-1
+                                // tier-2, but the entropy data is not MQ/RAW —
+                                // no plan from this tile can be decoded.
+                                if (a.cblksty & 0x40 != 0) ex.ht_unsupported = true;
                             }
                         }
                         if (tp_ov.has_qcd) {
@@ -1892,8 +1937,18 @@ fn flagIncompleteTiles(
         }
     }
     std.mem.sort(u16, keys[0..ki], {}, std.sort.asc(u16));
-    for (keys[0..ki]) |_| {
-        try emit(report, allocator, .fail, .truncated_stream, offset, null);
+    for (keys[0..ki]) |isot| {
+        // Name what is missing: Marrin.jp2 (Kakadu 5.2.1) declares 2 layers
+        // and holds only layer 0's packets; openjpeg/JasPer silently treat
+        // the absent packets as empty. The next expected packet comes from
+        // the tile's own iterator, which is being reaped anyway.
+        const w = tiles.getPtr(isot).?;
+        var buf: [192]u8 = undefined;
+        const detail: ?[]const u8 = if (w.iter.next()) |pi|
+            std.fmt.bufPrint(&buf, "tile {d}: {d} of {d} packets present before the codestream ends (next expected: layer {d} res {d} comp {d} prc {d})", .{ isot, w.packets_seen, w.total, pi.layer, pi.resolution, pi.component, pi.precinct }) catch null
+        else
+            std.fmt.bufPrint(&buf, "tile {d}: {d} of {d} packets present before the codestream ends", .{ isot, w.packets_seen, w.total }) catch null;
+        try emit(report, allocator, .fail, .truncated_stream, offset, detail);
     }
 }
 
@@ -2182,6 +2237,12 @@ fn parseCodInto(
     var cc: CompCoding = .{ .num_decomp_levels = 0, .cblk_width_exp = 0, .cblk_height_exp = 0, .cblksty = 0, .wavelet = .reversible_5x3, .precinct_sizes = @splat(.{}) };
     // Scod(1) + SGcod(4) = 5 bytes precede SPcod; the caller checked body.len >= 10.
     const walkable = try parseSPcodInto(report, allocator, body[5..], offset + 5, scod & 0x01 != 0, &cc);
+    // A.6.1: Lcod = 12 + (Scod&1 ? levels+1 : 0), exactly. openjpeg refuses
+    // any other length; a surplus byte is a corrupted or hand-edited header.
+    if (walkable) {
+        const expected: usize = 10 + (if (scod & 0x01 != 0) @as(usize, cc.num_decomp_levels) + 1 else 0);
+        if (body.len != expected) try emit(report, allocator, .fail, .bad_marker_length, offset - 2, "Lcod does not match Scod and the decomposition-level count (T.800 A.6.1)");
+    }
 
     // Update CodingParams (which parseSizBody seeded with num_components).
     if (cp_opt) |cp| {
@@ -2242,9 +2303,13 @@ fn parseSPcodInto(
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 1, null);
     }
     const cblksty = sp[3];
-    // Reserved cblksty bits 6-7 must be zero (0x40 is HTJ2K's HT flag —
-    // T.814, not Part 1). Surface as WARN: unknown-but-decodable.
-    if (cblksty & 0xC0 != 0) {
+    // cblksty bit 6 (0x40) is HTJ2K's HT flag (T.814): a valid stream jp2z
+    // does not decode (c145 — deep validation is skipped, decode refused).
+    // Bit 7 is reserved in Part 1 and T.814 alike: WARN, unknown-but-walkable.
+    if (cblksty & 0x40 != 0) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset + 3, "cblksty declares HT code-blocks (T.814 HTJ2K); jp2z decodes Part 1 code-blocks only");
+    }
+    if (cblksty & 0x80 != 0) {
         try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 3, null);
     }
     // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
@@ -2321,6 +2386,10 @@ fn parseCocBody(
     var cc = cp.codingFor(c);
     const ok = try parseSPcodInto(report, allocator, body[cw + 1 ..], offset + cw + 1, scoc & 0x01 != 0, &cc);
     if (!ok) return false;
+    // A.6.2: Lcoc = 9 (or 10 for Csiz >= 257) + (Scoc&1 ? levels+1 : 0), exactly
+    // (edf_c2_1103421: openjpeg "Error reading COC marker").
+    const expected: usize = cw + 1 + 5 + (if (scoc & 0x01 != 0) @as(usize, cc.num_decomp_levels) + 1 else 0);
+    if (body.len != expected) try emit(report, allocator, .fail, .bad_marker_length, offset - 2, "Lcoc does not match Scoc and the decomposition-level count (T.800 A.6.2)");
     if (c >= cp.comp_coding.len) {
         try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "COC for a component beyond the 16 jp2z stores");
         return true;
@@ -2343,6 +2412,8 @@ fn parseRgnBody(
         try emit(report, allocator, .fail, .bad_marker_length, offset, null);
         return;
     }
+    // A.6.3: Lrgn = 5 (or 6 for Csiz >= 257), exactly.
+    if (body.len != cw + 2) try emit(report, allocator, .fail, .bad_marker_length, offset - 2, "Lrgn is not the fixed RGN segment length (T.800 A.6.3)");
     const c: u16 = if (cw == 1) body[0] else std.mem.readInt(u16, body[0..2], .big);
     if (c >= cp.num_components) {
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "RGN names a component beyond Csiz");

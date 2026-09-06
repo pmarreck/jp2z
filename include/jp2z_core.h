@@ -212,6 +212,7 @@ typedef enum {
      * store's end. Either way the main/tile-part header lies about the
      * packet layout. */
     JP2Z_FINDING_PACKED_HEADERS_MISMATCH     = 256,
+    JP2Z_FINDING_JP2_TRAILING_BYTES          = 257,
 } jp2z_finding_code_t;
 
 typedef struct {
