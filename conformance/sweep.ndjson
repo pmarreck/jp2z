@@ -23,13 +23,13 @@
 {"fixture":"file5.jp2","status":"PASS","detail":"","w":768,"h":512,"comps":3,"max_abs":0}
 {"fixture":"file6.jp2","status":"PASS","detail":"","w":768,"h":512,"comps":1,"max_abs":0}
 {"fixture":"file7.jp2","status":"PASS","detail":"","w":480,"h":640,"comps":3,"max_abs":0}
-{"fixture":"file8.jp2","status":"FAIL","detail":"","w":700,"h":400,"comps":1,"max_abs":216}
+{"fixture":"file8.jp2","status":"PASS","detail":"","w":700,"h":400,"comps":1,"max_abs":0}
 {"fixture":"file9.jp2","status":"DECODED","detail":"skip:dim-mismatch","w":768,"h":512,"comps":1,"max_abs":0}
 {"fixture":"g1_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"g2_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"g3_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
 {"fixture":"g4_colr.j2c","status":"PASS","detail":"","w":256,"h":149,"comps":3,"max_abs":0}
-{"fixture":"p0_01.j2k","status":"FAIL","detail":"","w":128,"h":128,"comps":1,"max_abs":149}
+{"fixture":"p0_01.j2k","status":"PASS","detail":"","w":128,"h":128,"comps":1,"max_abs":0}
 {"fixture":"p0_02.j2k","status":"DECODED","detail":"skip:dim-mismatch","w":64,"h":126,"comps":1,"max_abs":0}
 {"fixture":"p0_03.j2k","status":"DECODED","detail":"skip:signed","w":256,"h":256,"comps":1,"max_abs":0}
 {"fixture":"p0_04.j2k","status":"NEAR","detail":"oracle:pix","w":640,"h":480,"comps":3,"max_abs":1}
@@ -41,7 +41,7 @@
 {"fixture":"p0_10.j2k","status":"PASS","detail":"oracle:pix","w":64,"h":64,"comps":3,"max_abs":0}
 {"fixture":"p0_11.j2k","status":"PASS","detail":"","w":128,"h":1,"comps":1,"max_abs":0}
 {"fixture":"p0_12.j2k","status":"PASS","detail":"","w":3,"h":5,"comps":1,"max_abs":0}
-{"fixture":"p0_13.j2k","status":"ERROR","detail":"NoCodingParams","w":null,"h":null,"comps":null,"max_abs":0}
+{"fixture":"p0_13.j2k","status":"ERROR","detail":"TooManyComponents","w":null,"h":null,"comps":null,"max_abs":0}
 {"fixture":"p0_14.j2k","status":"PASS","detail":"","w":49,"h":49,"comps":3,"max_abs":0}
 {"fixture":"p0_15.j2k","status":"DECODED","detail":"skip:signed","w":256,"h":256,"comps":1,"max_abs":0}
 {"fixture":"p0_16.j2k","status":"PASS","detail":"","w":128,"h":128,"comps":1,"max_abs":0}

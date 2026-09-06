@@ -1696,9 +1696,10 @@ test "validate: tile-part-header COC/QCC/RGN each emit jp2_unsupported_marker_ig
 
 test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a crash (C1/C2/C4)" {
     // A hostile-input validator must FLAG malformed SIZ, never divide-by-zero
-    // (XRsiz=0), OOB-read the descriptor table (Lsiz<38+3·Csiz), or overflow a
-    // [16] array (Csiz>16). Classifier over the malformed set; the well-formed
-    // baseline must NOT fire. (These are the inputs whose absence let the
+    // (XRsiz=0) or OOB-read the descriptor table (Lsiz<38+3·Csiz). Classifier
+    // over the malformed set; the well-formed baseline must NOT fire. Csiz>16
+    // is NOT malformed (A.5.1 allows 16384; components past the 16th read
+    // through slot 15 when uniform) — it stays here as a must-accept. (These are the inputs whose absence let the
     // multi-tile commit ship green.)
     const soc = [_]u8{ 0xFF, 0x4F };
     const eoc = [_]u8{ 0xFF, 0xD9 };
@@ -1729,7 +1730,8 @@ test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a cras
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x10, 0x07, 0x01, 0x01, // Csiz = 0x0010 = 16
     };
-    // C4: Csiz=17 with a correct Lsiz=89 and 17 descriptors → [16]-array overflow.
+    // C4 (inverted 2026-09-06): Csiz=17 with a correct Lsiz=89 and 17 uniform
+    // descriptors must be ACCEPTED, and must never overflow the [16] arrays.
     const siz_csiz17 = [_]u8{
         0xFF, 0x51, 0x00, 0x59, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
@@ -1742,7 +1744,6 @@ test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a cras
     const malformed = .{
         soc ++ siz_xrsiz0 ++ eoc,
         soc ++ siz_lsiz_short ++ eoc,
-        soc ++ siz_csiz17 ++ eoc,
     };
     inline for (malformed) |stream| {
         var report = try jp2z.validate(std.testing.allocator, &stream);
@@ -1754,6 +1755,11 @@ test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a cras
     var rep0 = try jp2z.validate(std.testing.allocator, &ok);
     defer rep0.deinit(std.testing.allocator);
     try std.testing.expect(!hasFinding(rep0, .jp2_invalid_siz));
+    const ok17 = soc ++ siz_csiz17 ++ eoc;
+    var rep17 = try jp2z.validate(std.testing.allocator, &ok17);
+    defer rep17.deinit(std.testing.allocator);
+    try std.testing.expect(!hasFinding(rep17, .jp2_invalid_siz));
+    try std.testing.expectEqual(@as(u16, 17), rep17.coding_params.?.num_components);
 }
 
 test "validate: user-precinct PPx/PPy=0 at r>0 → jp2_invalid_codestream, never a crash (reviewer)" {
@@ -2342,6 +2348,18 @@ const MiniStreamOpts = struct {
     layers: u16 = 1,
     /// COD Scod: bit 1 SOP, bit 2 EPH (custom precincts are not used here).
     scod: u8 = 0,
+    /// COD decomposition levels. >0 needs a matching `qcd_body`.
+    decomp: u8 = 0,
+    /// QCD body after Lqcd (Sqcd + SPqcd). Default: style 0, G=2, one LL byte.
+    qcd_body: []const u8 = &.{ 0x40, 0x40 },
+    /// Emit QCD before COD (T.800 A.4: main-header order is free after SIZ).
+    qcd_before_cod: bool = false,
+    /// SIZ Csiz: every component 8-bit unsigned, dx=dy=1 (a one-layer,
+    /// decomp-0 tile then holds `components` packets: body needs that many
+    /// empty-packet bytes). `last_comp_prec` overrides the LAST component's
+    /// Ssiz precision so non-uniform descriptors can be crafted.
+    components: u16 = 1,
+    last_comp_prec: ?u8 = null,
 };
 
 /// Generalised mini-stream: same 4x4 mono 5/3 shell as buildMiniStream but
@@ -2351,23 +2369,44 @@ fn buildPackedMiniStream(allocator: std.mem.Allocator, o: MiniStreamOpts) ![]u8 
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
-    // SIZ — 4x4 mono 8-bit, single 4x4 tile
+    // SIZ — 4x4 8-bit, single 4x4 tile, `components` descriptors
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x51 });
+    var lsiz: [2]u8 = undefined;
+    std.mem.writeInt(u16, &lsiz, @intCast(38 + 3 * @as(usize, o.components)), .big);
+    try buf.appendSlice(allocator, &lsiz);
     try buf.appendSlice(allocator, &.{
-        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x01, 0x07, 0x01, 0x01,
     });
-    // COD — Scod, LRCP, `layers`, no MCT, decomp=0, cblk 64x64, 5/3
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, o.scod, 0x00 });
-    var layer_bytes: [2]u8 = undefined;
-    std.mem.writeInt(u16, &layer_bytes, o.layers, .big);
-    try buf.appendSlice(allocator, &layer_bytes);
-    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
-    // QCD — style 0 (no quant), 2 guard bits, 1 subband (decomp=0)
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    var csiz: [2]u8 = undefined;
+    std.mem.writeInt(u16, &csiz, o.components, .big);
+    try buf.appendSlice(allocator, &csiz);
+    var ci: u16 = 0;
+    while (ci < o.components) : (ci += 1) {
+        const prec: u8 = if (ci + 1 == o.components and o.last_comp_prec != null) o.last_comp_prec.? - 1 else 0x07;
+        try buf.appendSlice(allocator, &.{ prec, 0x01, 0x01 });
+    }
+    // COD — Scod, LRCP, `layers`, no MCT, `decomp`, cblk 64x64, 5/3
+    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, 0x00, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, 0x00, 0x01 };
+    std.mem.writeInt(u16, cod[6..8], o.layers, .big);
+    // QCD — Lqcd = 2 + body
+    var qcd: std.ArrayList(u8) = .empty;
+    defer qcd.deinit(allocator);
+    try qcd.appendSlice(allocator, &.{ 0xFF, 0x5C });
+    var lqcd: [2]u8 = undefined;
+    std.mem.writeInt(u16, &lqcd, @intCast(2 + o.qcd_body.len), .big);
+    try qcd.appendSlice(allocator, &lqcd);
+    try qcd.appendSlice(allocator, o.qcd_body);
+    if (o.qcd_before_cod) {
+        try buf.appendSlice(allocator, qcd.items);
+        try buf.appendSlice(allocator, &cod);
+    } else {
+        try buf.appendSlice(allocator, &cod);
+        try buf.appendSlice(allocator, qcd.items);
+    }
     try buf.appendSlice(allocator, o.main_extra);
     // SOT — Psot = 12 + tp_hdr_extra + SOD(2) + body
     const psot: u32 = @intCast(12 + o.tp_hdr_extra.len + 2 + o.body.len);
@@ -2834,4 +2873,121 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for p
     }
     try std.testing.expectEqual(@as(u32, 180), compared);
     try std.testing.expectEqual(@as(u32, 0), mismatched);
+}
+
+// ── Main-header marker order: QCD before COD ───────────────────────
+//
+// T.800 A.4.1 fixes SIZ first; COD and QCD may follow in either order.
+// jp2z sized the per-subband M_b table from the COD-supplied decomposition
+// count at QCD-parse time, so "QCD then COD" (p0_01, file8) left every
+// high-frequency band with M_b = 0: numbps = 0, code-blocks skipped in
+// decode, and a strict zero_bitplane_overflow FAIL on a valid file.
+
+const p0_01_j2k = @embedFile("fixtures/conformance/p0_01.j2k");
+const p0_01_t1_oracle = @embedFile("fixtures/oracles/p0_01.t1.bin");
+
+test "validate: QCD before COD yields the same per-subband M_b as COD before QCD (metamorphic)" {
+    const allocator = std.testing.allocator;
+    // decomp=1 → 4 subbands; style 0, G=2, eps 8 (LL) / 9,9,10 → M_b 9,10,10,11.
+    const qcd = [_]u8{ 0x40, 0x40, 0x48, 0x48, 0x50 };
+    const a = try buildPackedMiniStream(allocator, .{ .decomp = 1, .qcd_body = &qcd, .body = &.{ 0x00, 0x00 } });
+    defer allocator.free(a);
+    const b = try buildPackedMiniStream(allocator, .{ .decomp = 1, .qcd_body = &qcd, .body = &.{ 0x00, 0x00 }, .qcd_before_cod = true });
+    defer allocator.free(b);
+    const pa = (try jp2z.internal.inspect(allocator, a)) orelse return error.TestUnexpectedResult;
+    const pb = (try jp2z.internal.inspect(allocator, b)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u8, 9), pa.mb_per_subband[0]);
+    try std.testing.expectEqual(@as(u8, 10), pa.mb_per_subband[1]);
+    try std.testing.expectEqual(@as(u8, 11), pa.mb_per_subband[3]);
+    try std.testing.expectEqualSlices(u8, pa.mb_per_subband[0..4], pb.mb_per_subband[0..4]);
+    try std.testing.expectEqual(pa.guard_bits, pb.guard_bits);
+    // Neither order is a deviation.
+    var ra = try jp2z.validate(allocator, a);
+    defer ra.deinit(allocator);
+    var rb = try jp2z.validate(allocator, b);
+    defer rb.deinit(allocator);
+    try std.testing.expect(ra.isOk());
+    try std.testing.expect(rb.isOk());
+}
+
+test "deepValidate strict: p0_01 (QCD before COD) is clean — no zero_bitplane_overflow false positive" {
+    const allocator = std.testing.allocator;
+    var rep = try jp2z.internal.deepValidate(allocator, p0_01_j2k, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .zero_bitplane_overflow));
+    try std.testing.expect(!hasFinding(rep, .coding_pass_overflow));
+    try std.testing.expect(rep.overall != .fail);
+}
+
+test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for p0_01 (QCD before COD)" {
+    const allocator = std.testing.allocator;
+    const records = try parseOracleDump(allocator, p0_01_t1_oracle);
+    defer freeOracleRecords(allocator, records);
+    var list = try jp2z.internal.extractCblkPlans(allocator, p0_01_j2k);
+    defer list.deinit(allocator);
+    var compared: u32 = 0;
+    var mismatched: u32 = 0;
+    for (records) |rec| {
+        for (list.plans) |plan| {
+            if (plan.component != rec.component or plan.resolution != rec.resno or plan.band != rec.orient or plan.sb_x0 != rec.cblk_x0 or plan.sb_y0 != rec.cblk_y0) continue;
+            var cblk = try jp2z.internal.decodePlan(allocator, plan);
+            defer cblk.deinit(allocator);
+            try std.testing.expectEqual(rec.data.len, cblk.coeffs.len);
+            try std.testing.expectEqual(rec.numbps, @as(u32, plan.numbps));
+            for (cblk.coeffs, 0..) |c, i| {
+                if (jp2z.internal.coeffToOpenJpegI32(c) != rec.data[i]) {
+                    mismatched += 1;
+                    break;
+                }
+            }
+            compared += 1;
+            break;
+        }
+    }
+    try std.testing.expectEqual(records.len, compared);
+    try std.testing.expectEqual(@as(u32, 0), mismatched);
+}
+
+// ── SIZ Csiz beyond 16 components ──────────────────────────────────
+//
+// T.800 A.5.1 allows Csiz in [1, 16384]. jp2z's per-component descriptor
+// arrays hold 16, and parseSizBody rejected anything larger as
+// jp2_invalid_siz — a FAIL on a valid file (p0_13: 257 components).
+// Components past the 16th are accepted when their descriptors repeat the
+// 16th's (the arrays then describe every component); a differing
+// descriptor is an unsupported-but-valid stream (c145), never invalid.
+
+const p0_13_j2k = @embedFile("fixtures/conformance/p0_13.j2k");
+
+test "validate: 17 uniform components is valid (no jp2_invalid_siz), all packets walk" {
+    const allocator = std.testing.allocator;
+    const body = [_]u8{0x00} ** 17;
+    const stream = try buildPackedMiniStream(allocator, .{ .components = 17, .body = &body });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
+    try std.testing.expect(rep.isOk());
+    try std.testing.expectEqual(@as(u16, 17), rep.coding_params.?.num_components);
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+}
+
+test "validate: 17 components where the 17th differs from the 16th → unsupported (c145 WARN), not invalid" {
+    const allocator = std.testing.allocator;
+    const body = [_]u8{0x00} ** 17;
+    const stream = try buildPackedMiniStream(allocator, .{ .components = 17, .last_comp_prec = 12, .body = &body });
+    defer allocator.free(stream);
+    var rep = try jp2z.validate(allocator, stream);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
+    try std.testing.expect(hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep.overall != .fail);
+}
+
+test "validate: p0_13 (257 components) is not jp2_invalid_siz and publishes coding params" {
+    const allocator = std.testing.allocator;
+    var rep = try jp2z.validate(allocator, p0_13_j2k);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
+    try std.testing.expectEqual(@as(u16, 257), rep.coding_params.?.num_components);
 }

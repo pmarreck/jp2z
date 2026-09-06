@@ -127,9 +127,32 @@ those fixtures, and OpenJPEG retirement is gated on it).
       relative to ours. Slice: parse Srgn/SPrgn (A.6.3), apply the ROI
       descale (T.800 H.2: coefficients >= 2^s are shifted down by s) after
       T1, and drop RGN from the c145 ignored set. Oracle: e1 t1 dump.
-- [ ] Then the rest of the sweep's FAILs: p1_02/d2/g1 (254-255), p0_01
-      (149), file2/file8 (158/216), p0_13 ERROR NoCodingParams, balloon
-      (max_abs 9), e1 tile-7 ±2, p1_04 >8-bit.
+- [x] **QCD-before-COD marker order** (2026-09-06 ~12:00pm EDT). p0_01 and
+      file8 put QCD first (legal, A.4.1); the M_b table was sized from COD's
+      decomp count at QCD-parse time → every HF band M_b=0 → numbps 0 →
+      cblks skipped AND a strict c255 FALSE POSITIVE on a valid ISO file.
+      Main-header QCD is now held until COD lands. RED: marker-order
+      metamorphic test + p0_01 vendored (control 16, T1 oracle byte-exact).
+      Sweep: p0_01 149→PASS, file8 216→PASS. PASS 29, NEAR 4, FAIL 3, ERROR 1.
+- [x] **Csiz > 16 accepted** (2026-09-06). p0_13's 257 components were a
+      jp2_invalid_siz FAIL (valid file). Csiz up to 16384 now; components
+      past the 16th read through slot 15 and must repeat its descriptor
+      (else c145 unsupported, never invalid). decodeCleanroom refuses >16
+      with error.TooManyComponents instead of indexing past its arrays.
+- [ ] Remaining sweep FAILs, attributed by tile-hist / T1 diff:
+      - **d2_colr (254)**: tile-part COD overrides progression (tiles 1, 3
+        carry COD prog 3/4 vs main prog 1) — c145-ignored today, so the
+        packet walk desyncs. Slice: apply tile-part COD (all SGcod/SPcod
+        fields) to the tile's params like tile QCD already is.
+      - **e1_colr (2)**: RGN roishift on tile 7 (3 RGN tile-part markers).
+      - **file2 (158)**: T1 matches 100%; the JP2 cdef box maps channels
+        BGR (cn0→asoc3, cn2→asoc1) and the openjpeg oracle applies it;
+        the cleanroom emits codestream order. Decode-only: parse cdef in
+        the jp2h walk and permute planes; a crafted mini-JP2 with distinct
+        component precisions makes the permutation observable.
+      - **p0_13 (ERROR TooManyComponents)**: needs COC/QCC/RGN per-component
+        overrides + >16-slot decode buffers. COC/QCC are common in the wild
+        (chroma quantisation) → next validation slice.
 - [ ] **Toward 100% — residual catchable-corruption classes (audit list):**
       SIZ Rsiz capability value (must be 0 for Part 1 or a known profile
       bit set); COM/CRG/PLM body sanity; COC/QCC per-component override

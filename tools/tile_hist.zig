@@ -23,7 +23,22 @@ pub fn main() !void {
     var fr = file.reader(io, &.{});
     const data = try fr.interface.allocRemaining(a, .limited(64 * 1024 * 1024));
 
-    const img = try jp2z.internal.decodeCleanroom(a, data);
+    // Strict findings first: a decode divergence often has a validator
+    // symptom (a false c25x on a valid file) and vice versa.
+    {
+        var rep = try jp2z.deepValidate(a, data, true);
+        defer rep.deinit(a);
+        std.debug.print("deepValidate(strict): overall={s}, {d} findings\n", .{ @tagName(rep.overall), rep.findings.items.len });
+        for (rep.findings.items) |f| {
+            if (f.severity == .warn or f.severity == .fail) {
+                std.debug.print("  {s} {s} @{?d} {s}\n", .{ @tagName(f.severity), @tagName(f.code), f.offset, f.detail orelse "" });
+            }
+        }
+    }
+    const img = jp2z.internal.decodeCleanroom(a, data) catch |e| {
+        std.debug.print("decodeCleanroom failed: {s}\n", .{@errorName(e)});
+        std.process.exit(3);
+    };
     const oracle = try jp2z.internal.openjpegDecode(a, data);
     const p = (try jp2z.internal.inspect(a, data)) orelse return error.NoCodingParams;
     const w = img.width;
@@ -167,9 +182,9 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
                 if (shown < 12) {
                     shown += 1;
                     const fb = first_bad orelse 0;
-                    std.debug.print("  MISMATCH tile {d} c{d} r{d} b{d} sb({d},{d}) {d}x{d} numbps {d}/{d} passes {d} cblksty 0x{x} segs {d}: {d}/{d} coeffs differ, first [{d}] ours={d} oj={d}\n", .{
+                    std.debug.print("  MISMATCH tile {d} c{d} r{d} b{d} sb({d},{d}) {d}x{d} numbps {d}/{d} (zbp {d} expn {d}) passes {d} cblksty 0x{x} segs {d}: {d}/{d} coeffs differ, first [{d}] ours={d} oj={d}\n", .{
                         plan.tile, plan.component, plan.resolution, plan.band, plan.sb_x0, plan.sb_y0, plan.width(), plan.height(),
-                        plan.numbps, rec.numbps, plan.total_passes, plan.cblksty, plan.segments.len, bad, rec.data.len, fb,
+                        plan.numbps, rec.numbps, plan.zero_bitplanes, plan.qcd_expn, plan.total_passes, plan.cblksty, plan.segments.len, bad, rec.data.len, fb,
                         if (fb < cblk.coeffs.len) jp2z.internal.coeffToOpenJpegI32(cblk.coeffs[fb]) else 0, if (fb < rec.data.len) rec.data[fb] else 0,
                     });
                 }

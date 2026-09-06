@@ -163,6 +163,10 @@ pub fn decodeCleanroom(allocator: Allocator, data: []const u8) !Image {
     var out_w: u32 = image_w;
     var out_h: u32 = image_h;
     const ncomp = params.num_components;
+    // The per-tile scratch buffers below are fixed 16-slot arrays. The
+    // validator accepts any Csiz (reading components past the 16th through
+    // slot 15); the decoder refuses rather than index past the arrays.
+    if (ncomp > 16) return error.TooManyComponents;
 
     var list = try codestream.extractCblkPlans(allocator, data);
     defer list.deinit(allocator);

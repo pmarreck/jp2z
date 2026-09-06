@@ -1026,6 +1026,13 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // PPM segments (A.7.4) keyed by Zppm; merged into per-tile-part
     // chunks once the main header ends (a chunk may span segments).
     var ppm = PpmCollector{};
+    // T.800 A.4.1: after SIZ, COD and QCD may appear in either order, but
+    // the per-subband M_b table QCD populates is sized by COD's
+    // decomposition count. A QCD seen before COD is held here and parsed
+    // once COD lands (or at the end of the main header if COD never does),
+    // so marker order cannot zero the high-frequency M_b (p0_01, file8).
+    var pending_qcd: ?struct { body: []const u8, off: usize } = null;
+    var saw_cod = false;
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1041,6 +1048,12 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         // Delimiting markers — main header ends.
         switch (marker) {
             @intFromEnum(Marker.sot) => {
+                // A QCD that never met a COD: parse it now so its
+                // structural findings still surface.
+                if (pending_qcd) |q| {
+                    pending_qcd = null;
+                    try parseQcdBody(report, allocator, q.body, q.off);
+                }
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
                 var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
@@ -1077,8 +1090,19 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         // at pos+2 and ends at pos+lxxx.
         const body = data[pos + 2 .. pos + lxxx];
         switch (marker) {
-            @intFromEnum(Marker.cod) => try parseCodBody(report, allocator, body, pos),
-            @intFromEnum(Marker.qcd) => try parseQcdBody(report, allocator, body, pos),
+            @intFromEnum(Marker.cod) => {
+                try parseCodBody(report, allocator, body, pos);
+                saw_cod = true;
+                if (pending_qcd) |q| {
+                    pending_qcd = null;
+                    try parseQcdBody(report, allocator, q.body, q.off);
+                }
+            },
+            @intFromEnum(Marker.qcd) => if (saw_cod) {
+                try parseQcdBody(report, allocator, body, pos);
+            } else {
+                pending_qcd = .{ .body = body, .off = pos }; // last-wins, like the direct path
+            },
             // Reviewer I1: COC/QCC/RGN override per-component coding,
             // quantization, or ROI up-shift. jp2z does not yet apply them,
             // so decode silently falls back to COD/QCD defaults — surface a
@@ -2520,10 +2544,12 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
     // malformed SIZ and bail (leaving coding_params null) BEFORE any
     // downstream code divides by / indexes with a bad value — never crash:
     //   C2: descriptor table must fit the marker (Lsiz == 38 + 3·Csiz).
-    //   C4: jp2z's per-component arrays hold 16 → Csiz ∈ [1, 16].
+    //   C4: Csiz ∈ [1, 16384] (T.800 A.5.1). jp2z's per-component arrays
+    //       hold 16; components past the 16th are accepted when they repeat
+    //       the 16th's descriptor (see below) — never rejected as invalid.
     //   numTilesXY underflow: tile grid non-degenerate, tile origin ≤ image origin.
     //   image extent must be positive.
-    if (csiz == 0 or csiz > 16 or
+    if (csiz == 0 or csiz > 16384 or
         body.len < 38 + @as(usize, 3) * @as(usize, csiz) or
         xtsiz == 0 or ytsiz == 0 or
         xtosiz > xosiz or ytosiz > yosiz or
@@ -2546,6 +2572,11 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         .tile_w = xtsiz,
         .tile_h = ytsiz,
     };
+    // Components past the 16th are read through slot 15: valid as long as
+    // their descriptor matches it (every consumer already clamps with
+    // @min(c, 15)). A differing descriptor is an unsupported-but-valid
+    // stream (c145), surfaced once after the loop.
+    var nonuniform_tail = false;
     var ci: usize = 0;
     while (ci < csiz) : (ci += 1) {
         // Each component descriptor is 3 bytes: Ssiz, XRsiz, YRsiz.
@@ -2558,10 +2589,23 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
             try emit(report, allocator, .fail, .jp2_invalid_siz, pos, null);
             return;
         }
-        cp_local.comp_prec[ci] = (ssiz & 0x7F) + 1;
-        if (ssiz & 0x80 != 0) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
-        cp_local.comp_dx[ci] = xrsiz;
-        cp_local.comp_dy[ci] = yrsiz;
+        const prec: u8 = (ssiz & 0x7F) + 1;
+        const signed = ssiz & 0x80 != 0;
+        if (ci < cp_local.comp_prec.len) {
+            cp_local.comp_prec[ci] = prec;
+            if (signed) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
+            cp_local.comp_dx[ci] = xrsiz;
+            cp_local.comp_dy[ci] = yrsiz;
+        } else {
+            const last = cp_local.comp_prec.len - 1;
+            const last_signed = (cp_local.comp_signed >> @intCast(last)) & 1 != 0;
+            if (prec != cp_local.comp_prec[last] or signed != last_signed or xrsiz != cp_local.comp_dx[last] or yrsiz != cp_local.comp_dy[last]) {
+                nonuniform_tail = true;
+            }
+        }
+    }
+    if (nonuniform_tail) {
+        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "components beyond the 16th carry descriptors that differ from the 16th's; jp2z reads them through the 16th");
     }
     report.width = xsiz - xosiz;
     report.height = ysiz - yosiz;

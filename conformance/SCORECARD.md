@@ -14,9 +14,9 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 27 | byte-exact vs oracle |
+| PASS | 29 | byte-exact vs oracle |
 | NEAR | 4 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
-| FAIL | 5 | decoded but diverges (max_abs > 1) |
+| FAIL | 3 | decoded but diverges (max_abs > 1) |
 | skip:* | 20 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
 | ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
@@ -31,16 +31,14 @@ diverge from the oracle. Largest divergence first.
 | fixture | w×h×comps | max_abs |
 |---------|-----------|--------:|
 | d2_colr.j2c | 256×149×3 | 254 |
-| file8.jp2 | 700×400×1 | 216 |
 | file2.jp2 | 480×640×3 | 158 |
-| p0_01.j2k | 128×128×1 | 149 |
 | e1_colr.j2c | 256×149×3 | 2 |
 
 ## Unsupported profiles (ERROR / CRASH / TIMEOUT)
 
 | fixture | status | detail |
 |---------|--------|--------|
-| p0_13.j2k | ERROR | NoCodingParams |
+| p0_13.j2k | ERROR | TooManyComponents |
 
 ## Per-fixture detail (all 57, by status then name)
 
@@ -66,12 +64,10 @@ diverge from the oracle. Largest divergence first.
 | subsampling_2.jp2 | DECODED | skip:dim-mismatch | 640 | 512 | 3 | 0 |
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 1953 | 1301 | 3 | 0 |
-| p0_13.j2k | ERROR | NoCodingParams |  |  |  | 0 |
+| p0_13.j2k | ERROR | TooManyComponents |  |  |  | 0 |
 | d2_colr.j2c | FAIL |  | 256 | 149 | 3 | 254 |
 | e1_colr.j2c | FAIL |  | 256 | 149 | 3 | 2 |
 | file2.jp2 | FAIL |  | 480 | 640 | 3 | 158 |
-| file8.jp2 | FAIL |  | 700 | 400 | 1 | 216 |
-| p0_01.j2k | FAIL |  | 128 | 128 | 1 | 149 |
 | p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
 | p1_02.j2k | NEAR |  | 640 | 480 | 3 | 1 |
 | p1_04.j2k | NEAR |  | 1024 | 1024 | 1 | 1 |
@@ -92,10 +88,12 @@ diverge from the oracle. Largest divergence first.
 | file5.jp2 | PASS |  | 768 | 512 | 3 | 0 |
 | file6.jp2 | PASS |  | 768 | 512 | 1 | 0 |
 | file7.jp2 | PASS |  | 480 | 640 | 3 | 0 |
+| file8.jp2 | PASS |  | 700 | 400 | 1 | 0 |
 | g1_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | g2_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | g3_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
 | g4_colr.j2c | PASS |  | 256 | 149 | 3 | 0 |
+| p0_01.j2k | PASS |  | 128 | 128 | 1 | 0 |
 | p0_09.j2k | PASS | oracle:pix | 17 | 37 | 1 | 0 |
 | p0_10.j2k | PASS | oracle:pix | 64 | 64 | 3 | 0 |
 | p0_11.j2k | PASS |  | 128 | 1 | 1 | 0 |

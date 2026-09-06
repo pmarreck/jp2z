@@ -34,6 +34,9 @@ const fixtures = [_]Fixture{
     .{ .name = "g3_colr.j2c", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/g3_colr.j2c") },
     .{ .name = "g4_colr.j2c", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/g4_colr.j2c") },
     .{ .name = "p1_06.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p1_06.j2k") },
+    // QCD precedes COD in the main header (legal, T.800 A.4.1): guards the
+    // per-subband M_b derivation against marker order (false c255 before).
+    .{ .name = "p0_01.j2k", .family = .codestream, .data = @embedFile("unit/fixtures/conformance/p0_01.j2k") },
     .{ .name = "file1.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file1.jp2") },
     .{ .name = "file9.jp2", .family = .jp2, .data = @embedFile("unit/fixtures/conformance/file9.jp2") },
     // Real-encoder multi-tile lossy JP2 (12 tiles, 8 layers, RPCL, custom
@@ -145,7 +148,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual(@as(usize, 0), stats.false_positive_rejects);
     try std.testing.expectEqual([_]usize{ fixtures.len, fixtures.len, fixtures.len }, stats.known_corrupt_by_class);
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
-    try std.testing.expectEqual([_]usize{ 15, 3 }, stats.controls_by_family);
+    try std.testing.expectEqual([_]usize{ 16, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
     try std.testing.expectEqual([_]usize{ 2, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
@@ -153,7 +156,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
     // are probes rather than known-invalid files, so improvement may raise the
     // counts without invalidating the gate.
-    const sensitivity_floor = [_]usize{ 11, 11, 15, 3, 3, 3 };
+    const sensitivity_floor = [_]usize{ 12, 12, 16, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }

@@ -354,3 +354,22 @@ What generalises:
   coordinates; jp2z plans are tile-relative. Multi-tile matching needs the
   B-15 band-origin translation (now `subbands.bandOrigin`), not a patch
   fix — the vendored single-tile dumps stay valid.
+
+## 2026-09-06 — two false positives on valid ISO files, both "the table was sized too early"
+
+p0_01 (QCD before COD) tripped a strict c255; p0_13 (257 components)
+tripped jp2_invalid_siz. Neither file is corrupt. Both came from the same
+shape of mistake: a per-item table sized from a value another marker
+supplies, checked or filled at the wrong moment.
+- The M_b table was filled while parsing QCD, using COD's decomposition
+  count — zero when QCD comes first. Fix: hold a QCD seen before COD and
+  parse it once COD lands (or at the end of the main header).
+- The component descriptor arrays hold 16, so Csiz>16 was declared invalid.
+  T.800 allows 16384. Fix: accept, read the tail through slot 15 when its
+  descriptors repeat slot 15's, flag c145 when they do not; the decoder
+  refuses >16 explicitly rather than indexing past its scratch arrays.
+Both were found by the same instrument (tile-hist prints the strict
+findings before the pixel diff), and both are now must-accept controls.
+Any "invalid" verdict that comes from an implementation limit rather than
+the spec is a false positive waiting for a conformance file; grep for
+array lengths in validation branches.

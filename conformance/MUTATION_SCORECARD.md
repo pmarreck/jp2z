@@ -21,14 +21,20 @@ ever deep-validated. They now guard the packed-header walk on the
 must-accept side; the c256 packed_headers_mismatch finding covers the
 reject side (crafted tests in tests/unit/validate.zig).
 
+2026-09-06 (later): added `p0_01.j2k` — QCD precedes COD in its main
+header (legal, A.4.1). The per-subband M_b table was sized from COD's
+decomposition count at QCD-parse time, so this order zeroed every
+high-frequency M_b and strict mode rejected the file with a false
+zero_bitplane_overflow. QCD parsing is now deferred until COD lands.
+
 | Family | Valid controls | False-positive rejects | Unsupported controls accepted | Known-invalid sniper misses | Known-invalid bolter misses | Known-invalid shotgun misses |
 |---|---:|---:|---:|---:|---:|---:|
-| Raw J2K/J2C codestream | 15 | 0 | 2 | 0/15 | 0/15 | 0/15 |
+| Raw J2K/J2C codestream | 16 | 0 | 2 | 0/16 | 0/16 | 0/16 |
 | JP2 container | 3 | 0 | 0 | 0/3 | 0/3 | 0/3 |
 
 Known-invalid mutations damage the mandatory SOC marker at three scales:
 one bit (sniper), one byte (bolter/boltgun), and up to 1 KiB (shotgun).
-All 54 are rejected. All controls and mutations completed classification;
+All 57 are rejected. All controls and mutations completed classification;
 the indeterminate count is zero.
 
 The same scales are also applied inside each first tile-part entropy body.
@@ -39,9 +45,9 @@ independent semantic or specification-grounded label.
 
 | Family | Entropy sniper detected | Entropy bolter detected | Entropy shotgun detected |
 |---|---:|---:|---:|
-| Raw J2K/J2C codestream | 11/15 | 11/15 | 15/15 |
+| Raw J2K/J2C codestream | 12/16 | 12/16 | 16/16 |
 | JP2 container | 3/3 | 3/3 | 3/3 |
-| Total | 14/18 | 14/18 | 18/18 |
+| Total | 15/19 | 15/19 | 19/19 |
 
 The test locks these values as minimum sensitivity floors. Higher detection
 counts pass. The independent OpenJPEG oracle remains available only to the
