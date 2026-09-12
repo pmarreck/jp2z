@@ -4226,7 +4226,7 @@ fn paletteJp2(allocator: std.mem.Allocator, boxes: []const []const u8) ![]u8 {
     return wrapInJp2Ex(allocator, payload, 1, extra);
 }
 
-test "JP2 palette: pclr + cmap + cdef over cmap channels is valid; palette not applied by decode → c145 WARN (issue412)" {
+test "JP2 palette: pclr + cmap + cdef over cmap channels is valid and decodes to 3 channels; no c145 (issue412)" {
     const allocator = std.testing.allocator;
     const pclr = try pclrBox(allocator, 2, 3, 8, false);
     defer allocator.free(pclr);
@@ -4237,15 +4237,17 @@ test "JP2 palette: pclr + cmap + cdef over cmap channels is valid; palette not a
     var rep = try jp2z.validate(allocator, jp2);
     defer rep.deinit(allocator);
     for (rep.findings.items) |f| try std.testing.expect(f.severity != .fail);
-    var saw = false;
-    for (rep.findings.items) |f| if (f.code == .jp2_unsupported_marker_ignored and std.mem.indexOf(u8, f.detail orelse "", "palette") != null) {
-        saw = true;
-    };
-    try std.testing.expect(saw);
-    // Decode still delivers the single unmapped codestream component.
+    // A palette is supported end to end (decode/image.zig applies it), so
+    // there is no valid-but-unsupported notice.
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    // The cleanroom planes hold the single unmapped codestream component;
+    // the public decode maps it through the palette to 3 channels.
     var img = try jp2z.internal.decodeCleanroom(allocator, jp2);
     defer img.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), img.num_components);
+    var pub_img = try jp2z.internal.decodeToImage(allocator, jp2);
+    defer pub_img.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 3), pub_img.channels);
 }
 
 test "JP2 palette: pclr shorter than NE×NPC entries → FAIL (mem-b2ace68c-1381); NE or NPC of 0 → FAIL" {

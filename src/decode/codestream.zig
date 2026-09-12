@@ -1303,11 +1303,8 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
     const nc: u16 = if (dims) |d| d.nc else 0xFFFF;
     var channels: u16 = nc;
     if (cmap_span) |cm| channels = try parseCmapBox(report, allocator, cm.body, cm.off, nc, pclr);
-    if (pclr != null) {
-        // Valid Part-1 feature jp2z's decode does not apply (c145): the
-        // codestream components come out unmapped.
-        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, base, "palette (pclr/cmap) is not applied by jp2z decode; codestream components are delivered unmapped");
-    }
+    // A palette is a supported Part-1 feature: decode/image.zig applies
+    // pclr through cmap (byte-exact against openjpeg on file9), so no c145.
     if (cdef_span) |cd| try parseCdefBox(report, allocator, cd.body, cd.off, channels);
     return dims;
 }

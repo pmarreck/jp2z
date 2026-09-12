@@ -95,3 +95,8 @@ bolter detection 15 → 16 (floor ratcheted to 16); no ISO conformance file
 (0/57) reports it. The openjpeg wrapper is out of `decode` (pure-Zig route,
 byte-exact against the wrapper on every 5/3 fixture, within 1 on 9/7);
 the matrix still diffs against the wrapper as its oracle.
+
+2026-09-12: the palette notice on `file9.jp2` is gone — decode applies
+pclr/cmap (byte-exact against openjpeg), so `unsupported {0, 0}` again.
+Proven nonconformance now FAILs everywhere (TNsot, reserved values under a
+Part-1 Rsiz, trailing bytes, ihdr C); controls unchanged, floors unchanged.

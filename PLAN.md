@@ -337,6 +337,10 @@ those fixtures, and OpenJPEG retirement is gated on it).
       Controls per item in tests/unit/validate.zig. Combined regression
       for jpegz: TNsot under-declaration FAILs at the exact SOT offset
       (SOT+11) while a fault in the later part is still detected.
+- [x] **Stale palette c145 removed** (2026-09-12 ~1:55pm EDT). decode has
+      applied pclr/cmap since the retirement commit, so the "palette not
+      applied" notice was false; file9 is a plain control again (matrix
+      unsupported {0, 0}); the palette test asserts a 3-channel decode.
 - [x] **Nonregression census, final for this round** (2026-09-06 ~3:15pm
       EDT): 151 files, 0 panics, 0 files openjpeg rejects that jp2z
       accepts, 17 files jp2z FAILs that openjpeg decodes — JasPer rejects

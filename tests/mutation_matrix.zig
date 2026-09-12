@@ -164,9 +164,9 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
     try std.testing.expectEqual([_]usize{ 23, 3 }, stats.controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0 }, stats.false_positive_rejects_by_family);
-    // file9.jp2 (ISO palette fixture) carries the c145 palette notice: valid,
-    // fully validated, but jp2z decode delivers its component unmapped.
-    try std.testing.expectEqual([_]usize{ 0, 1 }, stats.unsupported_controls_by_family);
+    // No control carries a valid-but-unsupported notice: file9's palette is
+    // applied by decode/image.zig since 2026-09-12.
+    try std.testing.expectEqual([_]usize{ 0, 0 }, stats.unsupported_controls_by_family);
     try std.testing.expectEqual([_]usize{ 0, 0, 0, 0, 0, 0 }, stats.known_corrupt_misses_by_family_and_class);
     for (stats.entropy_probes_by_class) |count| try std.testing.expect(count > 0);
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
