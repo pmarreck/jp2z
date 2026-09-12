@@ -275,6 +275,50 @@ those fixtures, and OpenJPEG retirement is gated on it).
       wrapper lives on only behind internal.openjpegDecode for the tools
       and tests. Unsupported-but-valid streams (>16 comps, HT, tile COD
       override) decode as NotImplemented (C: -1).
+- [x] **Segmentation-symbol finding c258** (2026-09-06 ~3:40pm EDT). The
+      EBCOT decoder set Cblk.segsym_error on a wrong 1010 marker (SEGSYM,
+      D.5) but deepValidate never reported it. Now finding 258
+      segmentation_symbol_mismatch (strict FAIL / lenient WARN), the one
+      in-stream integrity hook the standard offers. RED: p1_06 (VSC+SEGSYM)
+      clean → none; one byte flipped mid-stream → c258. 0/57 conformance
+      files report it; matrix codestream bolter 15 → 16, floor ratcheted.
+- [x] **JP2 container checks: ftyp, ihdr fields, colr, box order**
+      (2026-09-06 ~3:45pm EDT). ftyp must follow the signature box and
+      carry brand 'jp2 ' or list it (I.5.2) — FAIL; ihdr NC vs Csiz and
+      BPC vs every Ssiz (BPC 0xFF needs a bpcc box whose entries match)
+      (I.5.3.1/2) — FAIL, C != 7 — WARN (decoders ignore it); colr METH 1
+      exactly 7 bytes for a Part-1 EnumCS (CIELab 14 and Part-2 spaces
+      append parameters: min 7), METH 2 with a profile — FAIL; METH 3/4
+      and non-Part-1 EnumCS — valid-but-unsupported WARN; jp2h before
+      jp2c (I.5.3) — FAIL. Corpus: no conformance JP2 or fixture trips
+      any of it; every nonregression hit is a file openjpeg rejects. The cdef test's
+      crafted 8/8/12 container now declares BPC 0xFF + bpcc.
+- [x] **Quantization-table shape + duplicate JP2 boxes** (2026-09-06
+      ~3:55pm EDT). Style 1 (scalar derived) must carry exactly one 2-byte
+      entry, style 2 entries must be whole pairs (A.6.4) — FAIL
+      bad_marker_length; a second ftyp or jp2h box — FAIL (I.5.2/I.5.3).
+      Audit on the way: Isot range, TPsot sequencing and PPx/PPy ≥ 1 above
+      r0 were already enforced.
+- [x] **Severity policy corrected to Peter's rule: proven nonconformance
+      FAILs and is reported** (2026-09-12 ~12:00pm EDT; jpegz inbox note
+      relaying Peter: "our priority is not tolerance for error, it is
+      failing and reporting it"). Reverted this round's downgrades:
+      more tile-parts than TNsot declares → FAIL with "tile T: tile-part
+      N exceeds the declared TNsot M (A.4.2)", walk continues (no early
+      abort); conflicting TNsot across a tile's parts → FAIL; surplus
+      coding passes → strict FAIL / lenient WARN; trailing bytes after
+      the last JP2 box → FAIL; ihdr C ≠ 7 → FAIL. `decode` now refuses a
+      stream whose validation FAILs (never reconstructs nonconformance;
+      also closes the issue1438/issue823 CLI panics), and the two
+      reconstruction sites guard against fuzzed geometry. Controls:
+      TNsot=2 and TNsot=0 two-part streams walk clean. Proposed, NOT
+      done (reported to jpegz/Peter for a decision): the remaining
+      reserved-value WARNs are the same class — Scod reserved bits,
+      cblksty bit 7, Rsiz undefined values, TLM Stlm reserved bits, COM
+      Rcom > 1, QCD/QCC with fewer subband entries than the
+      decomposition needs, ihdr/SIZ dimension mismatch already FAILs.
+      Valid-but-unsupported (c145: HT, CAP, palette in decode, Part-2
+      colr, >16 components) stays WARN: those are conformant streams.
 - [x] **Nonregression census, final for this round** (2026-09-06 ~3:15pm
       EDT): 151 files, 0 panics, 0 files openjpeg rejects that jp2z
       accepts, 17 files jp2z FAILs that openjpeg decodes — JasPer rejects

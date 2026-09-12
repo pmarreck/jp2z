@@ -85,5 +85,6 @@ pub const FindingCode = enum(u32) {
     jp2_packets_walked_to_end = 254,  // walker consumed every tile-part body byte (renumbered 209→254 per Einstein: 209 collided with jpegz jfif_metadata_present)
     zero_bitplane_overflow   = 255,  // cblk zero-bitplane tag tree consumed the whole bit-depth (zbp>=M_b → numbps=0) yet carries coding passes — impossible; distinct root cause from 253
     packed_headers_mismatch  = 256,  // PPM/PPT packed packet-header store disagrees with the packets walked: leftover header bytes at tile-part end, or a header needing bytes past the store (T.800 A.7.4/A.7.5)
-    jp2_trailing_bytes       = 257,  // bytes after the last JP2 box that cannot form a box header (e.g. a CRLF appended in transit); decoders ignore them, so WARN in both modes
+    jp2_trailing_bytes       = 257,  // bytes after the last JP2 box that cannot form a box header (e.g. a CRLF appended in transit): a proven violation of the box structure (I.4), FAIL
+    segmentation_symbol_mismatch = 258,  // cblksty SEGSYM (0x20): a cleanup pass ended without the 1010 segmentation symbol — the in-stream integrity hook JPEG 2000 offers; entropy data corrupted
 };

@@ -522,3 +522,18 @@ afternoon. sweep-one was never fooled because it prefers the planar `.pix`
 oracle. Also: the oracle upsamples sub-sampled components to the canvas
 by nearest neighbour, so per-component planes must be mapped with
 `(x / dx, y / dy)` against `ceil(width / dx)` strides.
+
+## Severity is a contract with the consumer, not a courtesy to encoders (2026-09-12)
+
+On 2026-09-06 I downgraded "more tile-parts than TNsot declares" to WARN
+because a family of real files carries the off-by-one and openjpeg ignores
+the field. jpegz's strict facade maps only FAIL to "corrupt", so the
+downgrade would have turned a proven A.4.2 violation into "valid" at the
+consumer, and its pin promotion was held. Peter's rule, relayed through
+jpegz: proven format violations fail and are reported; successful decoding,
+common encoder mistakes, or another decoder's tolerance never lower an
+established nonconformance. Continuing the walk to find later faults is
+fine as long as the FAIL stays in the verdict. Tolerance belongs in the
+DECODER (decode by the openjpeg/JasPer convention), never in the VERDICT.
+When tempted to downgrade: is the rule in the spec, and is the violation
+proven from the bytes? Then FAIL, and say exactly what (count, offset).

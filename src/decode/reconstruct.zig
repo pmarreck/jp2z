@@ -437,7 +437,11 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
                     var tx: u32 = 0;
                     while (tx < d.w) : (tx += 1) {
                         const v = tqbufs[c][ty * d.w + tx];
-                        planes[c][(d.oy + ty) * stride + (d.ox + tx)] = std.math.clamp(dwt.fpRound(v) + dc, lo, hi);
+                        // usize index + bounds check: fuzzed tile geometry that
+                        // survived validation (issue1438) must error, not panic.
+                        const idx: usize = (@as(usize, d.oy) + ty) * stride + (@as(usize, d.ox) + tx);
+                        if (idx >= planes[c].len) return error.CorruptTileGeometry;
+                        planes[c][idx] = std.math.clamp(dwt.fpRound(v) + dc, lo, hi);
                     }
                 }
             }
@@ -787,6 +791,8 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     var first_zbp: ?cblk_plan.CblkDecodePlan = null;
     var surplus_count: u32 = 0;
     var first_surplus: ?cblk_plan.CblkDecodePlan = null;
+    var segsym_count: u32 = 0;
+    var first_segsym: ?cblk_plan.CblkDecodePlan = null;
     for (list.plans) |plan| {
         // numbps == 0 means the zero-bitplane tag tree consumed the whole
         // bit-depth budget (zero_bitplanes >= M_b). A cblk with coding
@@ -831,6 +837,14 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
             over_count += 1;
             if (first_over == null) first_over = plan;
         }
+        // SEGSYM (cblksty 0x20, T.800 D.5): every cleanup pass ends with the
+        // 1010 symbol in the UNIFORM context. A different symbol is the
+        // stream's own integrity hook firing on corrupted entropy data,
+        // independent of whether the byte budget still balances.
+        if (cblk.segsym_error) {
+            segsym_count += 1;
+            if (first_segsym == null) first_segsym = plan;
+        }
         // NOTE: under_read (declared-but-unconsumed bytes) is symmetric and could
         // in principle false-positive up to the same ~4 lookahead, but no valid
         // fixture trips it today (b1/p0_04 under_read=0); revisit with the same
@@ -853,7 +867,15 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     if (surplus_count > 0) {
         const p = first_surplus.?;
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) declare more coding passes than their bit-planes hold; passes below bit-plane 0 are ignored by convention (openjpeg, JasPer) and their bytes still count toward the budget (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ surplus_count, p.tile, p.component, p.resolution, p.band, p.precinct });
-        try appendFinding(&report, allocator, .warn, .coding_pass_overflow, p.src_offset, detail);
+        // Strict: FAIL. The passes have no defined meaning (B.10.7 / D), so a
+        // stream that declares them is nonconforming however decoders cope
+        // (Peter, 2026-09-12). Lenient mode keeps the WARN.
+        try appendFinding(&report, allocator, sev, .coding_pass_overflow, p.src_offset, detail);
+    }
+    if (segsym_count > 0) {
+        const p = first_segsym.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) ended a cleanup pass without the 1010 segmentation symbol (SEGSYM, T.800 D.5): entropy data corrupted (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ segsym_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        try appendFinding(&report, allocator, sev, .segmentation_symbol_mismatch, p.src_offset, detail);
     }
     if (over_count > 0) {
         const p = first_over.?;

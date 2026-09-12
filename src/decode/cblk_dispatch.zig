@@ -137,7 +137,9 @@ pub fn coeffToOpenJpegI32(coeff: ebcot.Coeff) i32 {
     // openjpeg never decoded that pass, so its value is 0.
     if (!coeff.significant or coeff.magnitude == 0) return 0;
     const mag: u32 = coeff.magnitude | (@as(u32, 1) << coeff.half_bp);
-    const mag_i32: i32 = @intCast(mag);
+    // 31 coded planes put bit 31 in play; saturate rather than trap on a
+    // fuzzed numbps (issue823) — the plan was already a budget violation.
+    const mag_i32: i32 = std.math.cast(i32, mag) orelse std.math.maxInt(i32);
     return if (coeff.sign == 0) mag_i32 else -mag_i32;
 }
 

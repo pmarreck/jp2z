@@ -885,6 +885,7 @@ const BoxType = struct {
     const jp2h: u32 = 0x6A703268; // 'jp2h' — JP2 Header box (container)
     const ihdr: u32 = 0x69686472; // 'ihdr' — Image Header box (in jp2h)
     const colr: u32 = 0x636F6C72; // 'colr' — Colour Specification box
+    const bpcc: u32 = 0x62706363; // 'bpcc' — Bits Per Component box (in jp2h, I.5.3.2)
     const jp2c: u32 = 0x6A703263; // 'jp2c' — Contiguous Codestream box
     const cdef: u32 = 0x63646566; // 'cdef' — Channel Definition box (in jp2h)
     const pclr: u32 = 0x70636C72; // 'pclr' — Palette box (in jp2h, I.5.3.4)
@@ -993,12 +994,13 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         if (data.len < pos + 8) {
             if (saw_jp2c) {
                 // Fewer than 8 bytes after the last box cannot be a box
-                // (I.4): trailing junk such as a CRLF appended in transit
-                // (issue211.jp2). No image data is affected and decoders
-                // ignore it, so WARN in both modes.
+                // (I.4: a JP2 file is a sequence of boxes): trailing junk such
+                // as a CRLF appended in transit (issue211.jp2). Decoders ignore
+                // it, but it is a proven violation of the box structure, so it
+                // FAILs (Peter, 2026-09-12); the walk's end checks still run.
                 var buf: [96]u8 = undefined;
-                const d = std.fmt.bufPrint(&buf, "{d} byte(s) after the last box cannot form a box header; decoders ignore them", .{data.len - pos}) catch null;
-                try emit(report, allocator, .warn, .jp2_trailing_bytes, pos, d);
+                const d = std.fmt.bufPrint(&buf, "{d} byte(s) after the last box cannot form a box header (T.800 I.4)", .{data.len - pos}) catch null;
+                try emit(report, allocator, .fail, .jp2_trailing_bytes, pos, d);
                 break;
             }
             try emit(report, allocator, .fail, .truncated_stream, pos, null);
@@ -1039,8 +1041,32 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         const body = data[pos + body_offset .. pos + box_total];
 
         switch (tbox) {
-            BoxType.ftyp => saw_ftyp = true,
+            BoxType.ftyp => {
+                if (saw_ftyp) try emit(report, allocator, .fail, .jp2_invalid_signature, pos, "second ftyp box (T.800 I.5.2: exactly one)");
+                saw_ftyp = true;
+                // I.5.2: ftyp immediately follows the signature box; BR(4)
+                // MinV(4) then 4-byte compatibility entries; a reader accepts
+                // the file when BR is 'jp2 ' or the list contains it.
+                if (pos != 12) try emit(report, allocator, .fail, .jp2_invalid_signature, pos, "ftyp must immediately follow the signature box (T.800 I.5.2)");
+                if (body.len < 8 or (body.len - 8) % 4 != 0) {
+                    try emit(report, allocator, .fail, .bad_marker_length, pos, "ftyp box length is not 8 + 4·n (T.800 I.5.2)");
+                } else {
+                    const jp2_brand: u32 = 0x6A703220; // 'jp2 '
+                    var ok = std.mem.readInt(u32, body[0..4], .big) == jp2_brand;
+                    var ci: usize = 8;
+                    while (ci + 4 <= body.len) : (ci += 4) {
+                        if (std.mem.readInt(u32, body[ci..][0..4], .big) == jp2_brand) ok = true;
+                    }
+                    if (!ok) try emit(report, allocator, .fail, .jp2_invalid_signature, pos + body_offset, "ftyp brand is not 'jp2 ' and the compatibility list does not include it (T.800 I.5.2)");
+                }
+            },
             BoxType.jp2h => {
+                if (saw_jp2h) {
+                    // I.5.3: exactly one JP2 Header box; the first one governs.
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, "second jp2h box (T.800 I.5.3: exactly one)");
+                    pos += box_total;
+                    continue;
+                }
                 saw_jp2h = true;
                 ihdr_dims = try parseJp2HeaderBox(report, allocator, body, pos + body_offset);
                 // I.5.3.1: ihdr is mandatory (and first) in jp2h. Without it the
@@ -1056,6 +1082,8 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                     // same tile keys — surface the skip instead.
                     try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, null);
                 } else {
+                    // I.5.3: the JP2 Header box precedes the codestream.
+                    if (!saw_jp2h) try emit(report, allocator, .fail, .jp2_invalid_codestream, pos, "jp2h must precede jp2c (T.800 I.5.3)");
                     saw_jp2c = true;
                     // T.800 I.5.3: the JP2 Header box shall fall before
                     // the Contiguous Codestream box.
@@ -1098,12 +1126,56 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
         if (report.width != null and (report.width.? != d.w or report.height.? != d.h)) {
             try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off, null);
         }
+        // I.5.3.1 / I.5.3.2: NC equals Csiz; BPC (or the bpcc entries when
+        // BPC is 0xFF) equals every component's Ssiz depth and sign.
+        if (report.coding_params) |cp| {
+            if (d.nc != cp.num_components) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 8, "ihdr component count (NC) disagrees with SIZ Csiz (T.800 I.5.3.1)");
+            }
+            const n: usize = @min(@as(usize, cp.num_components), 16);
+            if (d.bpc != 0xFF) {
+                var k: usize = 0;
+                while (k < n) : (k += 1) {
+                    const signed = (cp.comp_signed >> @intCast(k)) & 1 != 0;
+                    if ((d.bpc & 0x7F) + 1 != cp.comp_prec[k] or (d.bpc >> 7 != 0) != signed) {
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "ihdr bit depth (BPC) disagrees with SIZ Ssiz (T.800 I.5.3.1)");
+                        break;
+                    }
+                }
+            } else if (d.bpcc) |bpcc| {
+                if (bpcc.len != cp.num_components) {
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "bpcc entry count disagrees with SIZ Csiz (T.800 I.5.3.2)");
+                } else {
+                    var k: usize = 0;
+                    while (k < n) : (k += 1) {
+                        const signed = (cp.comp_signed >> @intCast(k)) & 1 != 0;
+                        if ((bpcc[k] & 0x7F) + 1 != cp.comp_prec[k] or (bpcc[k] >> 7 != 0) != signed) {
+                            try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "bpcc bit depth disagrees with SIZ Ssiz (T.800 I.5.3.2)");
+                            break;
+                        }
+                    }
+                }
+            } else {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "ihdr BPC 0xFF (varying depths) requires a bpcc box (T.800 I.5.3.2)");
+            }
+        }
     }
 }
 
 /// ihdr's declared dims + the host-file offset of the ihdr body, so
 /// walkJp2 can cross-check them against SIZ (T.800 I.5.3.1).
-const IhdrDims = struct { w: u32, h: u32, off: u64, nc: u16 = 0 };
+const IhdrDims = struct {
+    w: u32,
+    h: u32,
+    off: u64,
+    nc: u16 = 0,
+    /// ihdr BPC: bit 7 signed, bits 0-6 depth−1, 0xFF = varying (see bpcc).
+    bpc: u8 = 0,
+    /// ihdr C: compression type, 7 for JPEG 2000.
+    c: u8 = 7,
+    /// bpcc box body (one BPC byte per component) when present.
+    bpcc: ?[]const u8 = null,
+};
 
 /// Walk the sub-boxes inside a `jp2h` container, looking for `ihdr`
 /// (Image Header — T.800 Annex I.5.3) to pull width/height. Other
@@ -1162,16 +1234,50 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
             const width = std.mem.readInt(u32, ihdr_body[4..8], .big);
             report.height = height;
             report.width = width;
-            dims = .{ .w = width, .h = height, .off = base + pos + body_off, .nc = std.mem.readInt(u16, ihdr_body[8..10], .big) };
+            const bpc = ihdr_body[10];
+            const c = ihdr_body[11];
+            dims = .{ .w = width, .h = height, .off = base + pos + body_off, .nc = std.mem.readInt(u16, ihdr_body[8..10], .big), .bpc = bpc, .c = c };
+            // I.5.3.1: C is 7 (JPEG 2000) — the only value defined.
+            // I.5.3.1 defines exactly one value; a different C is a proven
+            // container lie and FAILs (Peter, 2026-09-12) even though decoders
+            // read the codestream regardless.
+            if (c != 7) try emit(report, allocator, .fail, .jp2_invalid_codestream, base + pos + body_off + 11, "ihdr compression type (C) must be 7 (T.800 I.5.3.1)");
+        }
+        if (tbox == BoxType.bpcc) {
+            if (dims) |*d| d.bpcc = body[pos + body_off .. pos + box_total];
         }
         if (tbox == BoxType.cdef) {
             cdef_span = .{ .body = body[pos + body_off .. pos + box_total], .off = base + pos + body_off };
         }
-        if (tbox == BoxType.colr and report.colr_enumcs == null) {
-            // I.5.3.3: METH(1) PREC(1) APPROX(1) then EnumCS(4) for METH 1.
-            // The first colr box is the one a reader uses.
+        if (tbox == BoxType.colr) {
+            // I.5.3.3: METH(1) PREC(1) APPROX(1); METH 1 → EnumCS(4), exactly
+            // 7 bytes; METH 2 → a restricted ICC profile follows. Part 1 knows
+            // EnumCS 16 (sRGB), 17 (greyscale), 18 (sYCC); other values and
+            // METH 3/4 belong to Part 2 (valid, unsupported here). The first
+            // colr box is the one a reader uses.
             const cb = body[pos + body_off .. pos + box_total];
-            if (cb.len >= 7 and cb[0] == 1) report.colr_enumcs = std.mem.readInt(u32, cb[3..7], .big);
+            const coff = base + pos + body_off;
+            if (cb.len < 3) {
+                try emit(report, allocator, .fail, .bad_marker_length, coff, "colr box shorter than METH/PREC/APPROX (T.800 I.5.3.3)");
+            } else switch (cb[0]) {
+                1 => if (cb.len < 7) {
+                    try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 1 box is shorter than METH/PREC/APPROX/EnumCS (T.800 I.5.3.3)");
+                } else {
+                    const cs = std.mem.readInt(u32, cb[3..7], .big);
+                    if (report.colr_enumcs == null) report.colr_enumcs = cs;
+                    switch (cs) {
+                        // Part-1 spaces carry no parameters: exactly 7 bytes.
+                        // Amendment / Part-2 spaces (CIELab 14, ...) append
+                        // their own fields, so only the minimum is checked.
+                        16, 17, 18 => if (cb.len != 7) try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 1 box must be exactly 7 bytes for a Part-1 EnumCS (T.800 I.5.3.3)"),
+                        else => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff + 3, "colr EnumCS is not a Part-1 colour space (16 sRGB, 17 greyscale, 18 sYCC); Part 2 / vendor value"),
+                    }
+                },
+                2 => if (cb.len <= 3) {
+                    try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 2 carries no ICC profile (T.800 I.5.3.3)");
+                },
+                else => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff, "colr METH is not 1 or 2: reserved in Part 1 (Part 2 any-ICC / vendor colour)"),
+            }
         }
         if (tbox == BoxType.pclr) {
             pclr = try parsePclrBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off);
@@ -1905,21 +2011,26 @@ fn walkTileParts(
                 s.broken = true;
                 part_ok = false;
             } else if (s.tnsot != 0 and @as(u16, tpsot) + 1 > @as(u16, s.tnsot)) {
-                // More tile-parts than TNsot declares. An encoder off-by-one
-                // seen across a family of real-world files (openjpeg's
-                // nonregression corpus: issue206, issue208, issue235, issue254,
-                // text_GBR, the eci CIELab set — all declare TNsot=5 and emit
-                // six parts); openjpeg ignores TNsot entirely. Surface it and
-                // keep walking: the TPsot sequence and the completion ledger
-                // still guard the structure, and stopping here would leave the
-                // remaining tile-parts un-validated.
-                try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 11, "more tile-parts than TNsot declares");
+                // More tile-parts than TNsot declares: A.4.2 requires TNsot to
+                // be the true count or 0. A real-world encoder off-by-one
+                // (openjpeg's nonregression corpus: issue206/208/235/254,
+                // text_GBR, the eci CIELab set, Britannica 2007 PDF JPX all
+                // declare 5 and emit 6) and openjpeg ignoring the field do not
+                // make it conformant: FAIL (Peter, 2026-09-12: proven
+                // nonconformance fails and is reported). The walk continues so
+                // the remaining tile-parts and any later fault are still seen.
+                var tn_buf: [96]u8 = undefined;
+                const tn_detail = std.fmt.bufPrint(&tn_buf, "tile {d}: tile-part {d} exceeds the declared TNsot {d} (T.800 A.4.2)", .{ isot16, tpsot, s.tnsot }) catch "more tile-parts than TNsot declares";
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 11, tn_detail);
             }
             if (s.tnsot == 0) {
                 s.tnsot = tnsot; // first nonzero declaration is authoritative
             } else if (tnsot != 0 and tnsot != s.tnsot) {
-                // Conflicting TNsot across parts of the same tile.
-                try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 11, null);
+                // Conflicting TNsot across parts of the same tile: A.4.2 lets a
+                // tile declare one count (or 0). FAIL, walk continues.
+                var tc_buf: [96]u8 = undefined;
+                const tc_detail = std.fmt.bufPrint(&tc_buf, "tile {d}: tile-part {d} declares TNsot {d} but an earlier part declared {d} (T.800 A.4.2)", .{ isot16, tpsot, tnsot, s.tnsot }) catch "conflicting TNsot across tile-parts";
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 11, tc_detail);
             }
             s.next_tpsot = @as(u16, tpsot) + 1;
         }
@@ -2768,6 +2879,15 @@ fn parseQuantTable(
     table.mb = @splat(if (guard_bits >= 1) guard_bits - 1 else 0);
     table.expn = @splat(0);
     table.mant = @splat(0);
+    // A.6.4 Table A.28 shapes: style 1 carries exactly ONE 2-byte entry
+    // (every subband derives from it, E-5); style 2 entries are 2-byte
+    // pairs, so a dangling byte is a corrupted or hand-edited marker.
+    if (quant_style == 1 and body.len != 3) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "scalar-derived quantization (style 1) carries exactly one 2-byte entry (T.800 A.6.4)");
+    }
+    if (quant_style == 2 and (body.len - 1) % 2 != 0) {
+        try emit(report, allocator, .fail, .bad_marker_length, offset, "scalar-expounded quantization (style 2) entries are 2-byte pairs; a dangling byte remains (T.800 A.6.4)");
+    }
     switch (quant_style) {
         // Style 0: no quantization (reversible / 5/3). One SPqcd byte per
         // subband — eps_b in bits 7..3, low 3 reserved.

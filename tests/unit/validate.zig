@@ -3615,7 +3615,14 @@ test "cleanroom: JP2 cdef reorders decoded channels to colour order (BGR file2 l
     // apart from the 8-bit ones (128) after the permutation.
     const payload = try buildPackedMiniStream(allocator, .{ .components = 3, .last_comp_prec = 12, .body = &.{ 0x00, 0x00, 0x00 } });
     defer allocator.free(payload);
-    const jp2 = try wrapInJp2Ex(allocator, payload, 3, &cdef_bgr);
+    // Depths vary (8, 8, 12): ihdr BPC 0xFF + a bpcc box (I.5.3.2), so the
+    // container tells the truth about its codestream.
+    const bpcc_8_8_12 = [_]u8{ 0x00, 0x00, 0x00, 0x0B, 0x62, 0x70, 0x63, 0x63, 0x07, 0x07, 0x0B };
+    const extra = try std.mem.concat(allocator, u8, &.{ &bpcc_8_8_12, &cdef_bgr });
+    defer allocator.free(extra);
+    const jp2_uniform = try wrapInJp2Ex(allocator, payload, 3, extra);
+    defer allocator.free(jp2_uniform);
+    const jp2 = try patched(allocator, jp2_uniform, 58, &.{0xFF}); // ihdr BPC: varying
     defer allocator.free(jp2);
     var rep = try jp2z.validate(allocator, jp2);
     defer rep.deinit(allocator);
@@ -3711,13 +3718,14 @@ test "validate: 32 decomposition levels with 2^15 precincts walks without panick
     try std.testing.expect(deep.overall != .fail);
 }
 
-test "validate: more tile-parts than TNsot declares → WARN, the extra part still walks" {
-    const allocator = std.testing.allocator;
-    // COD 2 layers → 2 packets; tile-part 0 carries packet 1, tile-part 1
-    // packet 2; both declare TNsot=1 (an encoder off-by-one seen in the
-    // wild). The second part must be walked (walked_to_end), not refused.
+/// Two-tile-part stream (COD 2 layers → 2 packets, one per part) with the
+/// given TNsot in BOTH SOT segments. TNsot=1 is the encoder off-by-one seen
+/// in the wild (openjpeg nonregression: issue206/208/235/254, text_GBR, the
+/// eci CIELab set; Britannica 2007 PDF JPX via validate); 2 is correct; 0
+/// is "unspecified" (A.4.2).
+fn twoPartStream(allocator: std.mem.Allocator, tnsot: u8) ![]u8 {
     var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
+    errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
     try buf.appendSlice(allocator, &.{
         0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
@@ -3729,18 +3737,40 @@ test "validate: more tile-parts than TNsot declares → WARN, the extra part sti
     });
     try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
     try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
-    // Part 0: Psot=15, TPsot=0, TNsot=1, SOD, one empty packet.
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01, 0xFF, 0x93, 0x00 });
-    // Part 1: TPsot=1, TNsot=1 (one too few), SOD, the second empty packet.
-    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x01, 0x01, 0xFF, 0x93, 0x00 });
+    // Part 0: Psot=15, TPsot=0, SOD, one empty packet.
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x00, tnsot, 0xFF, 0x93, 0x00 });
+    // Part 1: TPsot=1, SOD, the second empty packet.
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x01, tnsot, 0xFF, 0x93, 0x00 });
     try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 });
-    var rep = try jp2z.validate(allocator, buf.items);
+    return buf.toOwnedSlice(allocator);
+}
+
+test "validate: TNsot declared correctly (2) or unspecified (0) → no FAIL, both parts walk (A.4.2 controls)" {
+    const allocator = std.testing.allocator;
+    for ([_]u8{ 2, 0 }) |tnsot| {
+        const data = try twoPartStream(allocator, tnsot);
+        defer allocator.free(data);
+        var rep = try jp2z.validate(allocator, data);
+        defer rep.deinit(allocator);
+        for (rep.findings.items) |f| try std.testing.expect(f.severity != .fail);
+        try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+    }
+}
+
+test "validate: more tile-parts than TNsot declares → FAIL naming tile, part and TNsot (A.4.2); the extra part still walks" {
+    const allocator = std.testing.allocator;
+    // Peter, 2026-09-12: proven nonconformance fails and is reported; the
+    // walk continues so later faults are still found (no early abort).
+    const data = try twoPartStream(allocator, 1);
+    defer allocator.free(data);
+    var rep = try jp2z.validate(allocator, data);
     defer rep.deinit(allocator);
-    try std.testing.expect(rep.overall == .warn);
-    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "tile 0: tile-part 1 exceeds the declared TNsot 1"));
     try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
     try std.testing.expect(!hasFinding(rep, .truncated_stream));
 }
+
 
 test "audit: SIZ tile-count ceil must not overflow u32 when Ysiz + YTsiz exceed 2^32 (issue823 fuzz corpus)" {
     // issue823.jp2: Ysiz 0xFFF60001, YTsiz 0xF0000100. Every A.5.1 range
@@ -3838,7 +3868,7 @@ fn buildSurplusPassStream(allocator: std.mem.Allocator) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
-test "deepValidate: surplus coding passes → coding_pass_overflow is a WARN even in strict mode (decodable by convention)" {
+test "deepValidate: surplus coding passes → coding_pass_overflow FAILs in strict mode, WARNs in lenient (decodable by convention, still nonconforming)" {
     const allocator = std.testing.allocator;
     const stream = try buildSurplusPassStream(allocator);
     defer allocator.free(stream);
@@ -3849,9 +3879,18 @@ test "deepValidate: surplus coding passes → coding_pass_overflow is a WARN eve
         found = f;
     };
     const f = found orelse return error.MissingCodingPassOverflow;
-    try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    // Strict: the declared passes have no defined meaning → FAIL (Peter,
+    // 2026-09-12). Lenient: WARN. Either way the detail names the convention.
+    try std.testing.expectEqual(jp2z.Severity.fail, f.severity);
     try std.testing.expect(f.detail != null);
     try std.testing.expect(std.mem.indexOf(u8, f.detail.?, "ignored") != null);
+    var lenient = try jp2z.internal.deepValidate(allocator, stream, false);
+    defer lenient.deinit(allocator);
+    var lf: ?jp2z.Finding = null;
+    for (lenient.findings.items) |g| if (g.code == .coding_pass_overflow) {
+        lf = g;
+    };
+    try std.testing.expectEqual(jp2z.Severity.warn, (lf orelse return error.MissingCodingPassOverflow).severity);
 }
 
 // ── Nonregression triage: the three files only jp2z rejects ───────
@@ -3881,7 +3920,7 @@ test "missing trailing packets: truncated_stream names the tile, the packet coun
     try std.testing.expect(std.mem.indexOf(u8, d, "layer 1") != null);
 }
 
-test "JP2: bytes after the last box that cannot form a box header → WARN jp2_trailing_bytes, not truncated_stream (issue211)" {
+test "JP2: bytes after the last box that cannot form a box header → FAIL jp2_trailing_bytes, not truncated_stream (issue211)" {
     const allocator = std.testing.allocator;
     const payload = try buildPackedMiniStream(allocator, .{});
     defer allocator.free(payload);
@@ -3897,10 +3936,11 @@ test "JP2: bytes after the last box that cannot form a box header → WARN jp2_t
         found = f;
     };
     const f = found orelse return error.MissingTrailingBytes;
-    try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    // A proven violation of the box structure (I.4) FAILs (Peter, 2026-09-12).
+    try std.testing.expectEqual(jp2z.Severity.fail, f.severity);
     try std.testing.expectEqual(@as(?u64, clean.len), f.offset);
     try std.testing.expect(std.mem.indexOf(u8, f.detail orelse "", "2 byte") != null);
-    try std.testing.expect(rep.overall != .fail);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
 }
 
 test "HTJ2K code-blocks (cblksty 0x40, T.814) → valid-but-unsupported WARN, deep validation skipped, decode refused" {
@@ -4382,4 +4422,232 @@ test "report: palette entries (pclr) and component mapping (cmap) are surfaced w
     try std.testing.expectEqual(@as(u16, 0), rep.cmap[0].cmp);
     try std.testing.expectEqual(@as(u8, 1), rep.cmap[0].mtyp);
     try std.testing.expectEqual(@as(u8, 0), rep.cmap[0].pcol);
+}
+
+// ── Segmentation symbols (cblksty SEGSYM, T.800 D.5) ──────────────
+//
+// With SEGSYM every cleanup pass ends with the four-symbol marker 1010
+// coded in the UNIFORM context — the one in-stream integrity hook the
+// standard offers. The EBCOT decoder already records a wrong marker
+// (Cblk.segsym_error) but deepValidate never reported it, so a corrupted
+// cleanup pass whose byte budget still balanced passed silently.
+
+test "SEGSYM: a clean fixture has no c258; a byte flipped in its entropy data yields segmentation_symbol_mismatch (FAIL under strict)" {
+    const allocator = std.testing.allocator;
+    var clean = try jp2z.internal.deepValidate(allocator, p1_06_j2k, true);
+    defer clean.deinit(allocator);
+    try std.testing.expect(!hasFinding(clean, .segmentation_symbol_mismatch));
+    const corrupt = try allocator.dupe(u8, p1_06_j2k);
+    defer allocator.free(corrupt);
+    corrupt[corrupt.len / 2] ^= 0xFF;
+    var rep = try jp2z.internal.deepValidate(allocator, corrupt, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(failDetailContains(rep, .segmentation_symbol_mismatch, "segmentation symbol"));
+}
+
+// ── JP2 container: ftyp, ihdr fields, colr, box order (I.5.1–I.5.3) ──
+//
+// Container-level lies that decoders shrug off but a validator must name:
+// ftyp out of place or with a foreign brand, an ihdr whose NC/BPC/C
+// disagree with the codestream, a colr with a reserved METH or a Part-2
+// colour space, and jp2h after jp2c.
+
+const jp_sig = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
+const ftyp_jp2 = [_]u8{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 };
+const jp2h_min = [_]u8{ 0x00, 0x00, 0x00, 0x1E, 0x6A, 0x70, 0x32, 0x68, 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 };
+
+fn jp2cBox(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var lbox: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lbox, @intCast(8 + payload.len), .big);
+    return std.mem.concat(allocator, u8, &.{ &lbox, "jp2c", payload });
+}
+
+test "JP2: ftyp must immediately follow the signature box, and carry brand 'jp2 ' or list it as compatible (I.5.2)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const jp2c = try jp2cBox(allocator, payload);
+    defer allocator.free(jp2c);
+    // ftyp after jp2h.
+    const late = try std.mem.concat(allocator, u8, &.{ &jp_sig, &jp2h_min, &ftyp_jp2, jp2c });
+    defer allocator.free(late);
+    var r1 = try jp2z.validate(allocator, late);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_signature, "ftyp"));
+    // Brand 'jpx ' with 'jp2 ' in the compatibility list: accepted.
+    const ftyp_jpx = [_]u8{ 0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x78, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x78, 0x20, 0x6A, 0x70, 0x32, 0x20 };
+    const compat = try std.mem.concat(allocator, u8, &.{ &jp_sig, &ftyp_jpx, &jp2h_min, jp2c });
+    defer allocator.free(compat);
+    var r2 = try jp2z.validate(allocator, compat);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    // Foreign brand, no 'jp2 ' anywhere: FAIL.
+    const ftyp_foreign = [_]u8{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x61, 0x62, 0x63, 0x64, 0x00, 0x00, 0x00, 0x00, 0x61, 0x62, 0x63, 0x64 };
+    const foreign = try std.mem.concat(allocator, u8, &.{ &jp_sig, &ftyp_foreign, &jp2h_min, jp2c });
+    defer allocator.free(foreign);
+    var r3 = try jp2z.validate(allocator, foreign);
+    defer r3.deinit(allocator);
+    try std.testing.expect(failDetailContains(r3, .jp2_invalid_signature, "brand"));
+}
+
+test "JP2: ihdr NC, BPC and C must agree with the codestream (I.5.3.1); BPC 0xFF needs a bpcc box (I.5.3.2)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const base = try wrapInJp2Ex(allocator, payload, 1, &.{});
+    defer allocator.free(base);
+    try std.testing.expectEqual(@as(u8, 0x07), base[58]); // BPC
+    try std.testing.expectEqual(@as(u8, 0x07), base[59]); // C
+    const bad_c = try patched(allocator, base, 59, &.{0x08});
+    defer allocator.free(bad_c);
+    var r1 = try jp2z.validate(allocator, bad_c);
+    defer r1.deinit(allocator);
+    // I.5.3.1 defines exactly one C; a different value is a proven container
+    // lie and FAILs (Peter, 2026-09-12).
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "compression type"));
+    const bad_nc = try patched(allocator, base, 57, &.{0x02});
+    defer allocator.free(bad_nc);
+    var r2 = try jp2z.validate(allocator, bad_nc);
+    defer r2.deinit(allocator);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "component count"));
+    const bad_bpc = try patched(allocator, base, 58, &.{0x0B}); // 12-bit vs the codestream's 8
+    defer allocator.free(bad_bpc);
+    var r3 = try jp2z.validate(allocator, bad_bpc);
+    defer r3.deinit(allocator);
+    try std.testing.expect(failDetailContains(r3, .jp2_invalid_codestream, "bit depth"));
+    const varying = try patched(allocator, base, 58, &.{0xFF});
+    defer allocator.free(varying);
+    var r4 = try jp2z.validate(allocator, varying);
+    defer r4.deinit(allocator);
+    try std.testing.expect(failDetailContains(r4, .jp2_invalid_codestream, "bpcc"));
+}
+
+test "JP2: colr METH 1 needs exactly 7 body bytes; reserved METH or a Part-2 EnumCS is valid-but-unsupported (I.5.3.3)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const short = [_]u8{ 0x00, 0x00, 0x00, 0x10, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00 }; // 8 body bytes
+    const jp2a = try wrapInJp2Ex(allocator, payload, 1, &short);
+    defer allocator.free(jp2a);
+    var r1 = try jp2z.validate(allocator, jp2a);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .bad_marker_length, "colr"));
+    const meth3 = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 };
+    const jp2b = try wrapInJp2Ex(allocator, payload, 1, &meth3);
+    defer allocator.free(jp2b);
+    var r2 = try jp2z.validate(allocator, jp2b);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    try std.testing.expect(hasFinding(r2, .jp2_unsupported_marker_ignored));
+    const cmyk = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C }; // EnumCS 12 (Part 2)
+    const jp2c = try wrapInJp2Ex(allocator, payload, 1, &cmyk);
+    defer allocator.free(jp2c);
+    var r3 = try jp2z.validate(allocator, jp2c);
+    defer r3.deinit(allocator);
+    for (r3.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    try std.testing.expect(hasFinding(r3, .jp2_unsupported_marker_ignored));
+}
+
+test "JP2: jp2h must precede jp2c (I.5.3)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const jp2c = try jp2cBox(allocator, payload);
+    defer allocator.free(jp2c);
+    const late = try std.mem.concat(allocator, u8, &.{ &jp_sig, &ftyp_jp2, jp2c, &jp2h_min });
+    defer allocator.free(late);
+    var rep = try jp2z.validate(allocator, late);
+    defer rep.deinit(allocator);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "jp2h"));
+}
+
+// ── Quantization table shape (A.6.4) and duplicate JP2 boxes (I.5) ──
+
+test "QCD: scalar-derived (style 1) carries exactly one entry; expounded (style 2) entries are whole 2-byte pairs" {
+    const allocator = std.testing.allocator;
+    // Style 1 with two entries (Sqcd 0x41, 4 SPqcd bytes).
+    const derived2 = try buildPackedMiniStream(allocator, .{ .qcd_body = &.{ 0x41, 0x40, 0x00, 0x40, 0x00 } });
+    defer allocator.free(derived2);
+    var r1 = try jp2z.validate(allocator, derived2);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .bad_marker_length, "derived"));
+    // Style 1 with one entry: accepted.
+    const derived1 = try buildPackedMiniStream(allocator, .{ .qcd_body = &.{ 0x41, 0x40, 0x00 } });
+    defer allocator.free(derived1);
+    var r2 = try jp2z.validate(allocator, derived1);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    // Style 2 with three SPqcd bytes: one and a half entries.
+    const odd = try buildPackedMiniStream(allocator, .{ .qcd_body = &.{ 0x42, 0x40, 0x00, 0x40 } });
+    defer allocator.free(odd);
+    var r3 = try jp2z.validate(allocator, odd);
+    defer r3.deinit(allocator);
+    try std.testing.expect(failDetailContains(r3, .bad_marker_length, "expounded"));
+}
+
+test "JP2: a second jp2h or ftyp box → FAIL (exactly one of each, I.5.2/I.5.3)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const jp2c = try jp2cBox(allocator, payload);
+    defer allocator.free(jp2c);
+    const two_jp2h = try std.mem.concat(allocator, u8, &.{ &jp_sig, &ftyp_jp2, &jp2h_min, &jp2h_min, jp2c });
+    defer allocator.free(two_jp2h);
+    var r1 = try jp2z.validate(allocator, two_jp2h);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "second jp2h"));
+    const two_ftyp = try std.mem.concat(allocator, u8, &.{ &jp_sig, &ftyp_jp2, &ftyp_jp2, &jp2h_min, jp2c });
+    defer allocator.free(two_ftyp);
+    var r2 = try jp2z.validate(allocator, two_ftyp);
+    defer r2.deinit(allocator);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_signature, "second ftyp"));
+}
+
+// ── decode refuses structurally failed streams ─────────────────────
+//
+// With the wrapper gone, `decode` runs the cleanroom reconstruction. A
+// stream whose validation FAILs (fuzzed SIZ, missing packets) must come
+// back as an error, never reach reconstruction arithmetic (issue1438 /
+// issue823 panicked the CLI once the route switched).
+
+test "decodeToImage: a validation FAIL (fuzzed SIZ, missing packets) is InvalidJp2Codestream, never a panic" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const tall = try patched(allocator, base, 12, &.{ 0xFF, 0xF6, 0x00, 0x01 });
+    defer allocator.free(tall);
+    const fuzzed = try patched(allocator, tall, 28, &.{ 0xF0, 0x00, 0x01, 0x00 });
+    defer allocator.free(fuzzed);
+    try std.testing.expectError(error.InvalidJp2Codestream, jp2z.internal.decodeToImage(allocator, fuzzed));
+    const short = try buildPackedMiniStream(allocator, .{ .layers = 2, .body = &.{0x00} });
+    defer allocator.free(short);
+    try std.testing.expectError(error.InvalidJp2Codestream, jp2z.internal.decodeToImage(allocator, short));
+}
+
+test "validate: conflicting TNsot across a tile's parts → FAIL naming both declarations (A.4.2); both parts still walk" {
+    const allocator = std.testing.allocator;
+    // twoPartStream(2) is the clean control; part 1's TNsot byte sits 11
+    // bytes into its SOT (second FF90). Change it to 3.
+    const data = try twoPartStream(allocator, 2);
+    defer allocator.free(data);
+    var second_sot: ?usize = null;
+    var seen: usize = 0;
+    var i: usize = 0;
+    while (i + 1 < data.len) : (i += 1) {
+        if (data[i] == 0xFF and data[i + 1] == 0x90) {
+            seen += 1;
+            if (seen == 2) {
+                second_sot = i;
+                break;
+            }
+        }
+    }
+    const sot = second_sot orelse return error.NoSecondSot;
+    const conflict = try patched(allocator, data, sot + 11, &.{0x03});
+    defer allocator.free(conflict);
+    var rep = try jp2z.validate(allocator, conflict);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "declares TNsot 3 but an earlier part declared 2"));
+    try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
 }

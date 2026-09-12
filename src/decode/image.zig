@@ -28,6 +28,11 @@ pub fn decode(allocator: Allocator, data: []const u8) errors.DecodeError!types.I
     var report = try codestream.validate(allocator, data);
     defer report.deinit(allocator);
     const params = report.coding_params orelse return error.InvalidJp2Codestream;
+    // A stream whose structural validation FAILs (fuzzed SIZ, missing
+    // packets, lying container) is refused before any reconstruction
+    // arithmetic runs: issue1438 / issue823 panicked the CLI otherwise, and
+    // Peter's rule is that proven nonconformance fails, never decodes.
+    if (report.overall == .fail) return error.InvalidJp2Codestream;
     var img = reconstruct.decodeFromReport(allocator, data, &report) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.TooManyComponents, error.UnsupportedTileCodingOverride, error.UnsupportedHtCodeBlocks, error.MctNonUniformSubsampling => error.NotImplemented,

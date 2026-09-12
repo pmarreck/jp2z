@@ -172,7 +172,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     // Regression floor by family × {sniper, bolter, shotgun}. Entropy changes
     // are probes rather than known-invalid files, so improvement may raise the
     // counts without invalidating the gate.
-    const sensitivity_floor = [_]usize{ 15, 15, 21, 3, 3, 3 };
+    const sensitivity_floor = [_]usize{ 15, 16, 21, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }

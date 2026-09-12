@@ -213,6 +213,7 @@ typedef enum {
      * packet layout. */
     JP2Z_FINDING_PACKED_HEADERS_MISMATCH     = 256,
     JP2Z_FINDING_JP2_TRAILING_BYTES          = 257,
+    JP2Z_FINDING_SEGMENTATION_SYMBOL_MISMATCH = 258,
 } jp2z_finding_code_t;
 
 typedef struct {

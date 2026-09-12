@@ -86,3 +86,12 @@ therefore the one unsupported JP2 control (`unsupported {0, 1}`); it is
 still fully validated and never rejected. Surplus coding passes (beyond
 3·numbps−2) are decoded by the openjpeg/JasPer convention and reported
 as a WARN, so no control is affected; the entropy floors are unchanged.
+
+2026-09-06 (late afternoon, day 2): the EBCOT decoder's segmentation-
+symbol check (cblksty SEGSYM, T.800 D.5) is now a finding, c258
+segmentation_symbol_mismatch — the stream's own integrity hook, fired by a
+corrupted cleanup pass even when the byte budget still balances. Codestream
+bolter detection 15 → 16 (floor ratcheted to 16); no ISO conformance file
+(0/57) reports it. The openjpeg wrapper is out of `decode` (pure-Zig route,
+byte-exact against the wrapper on every 5/3 fixture, within 1 on 9/7);
+the matrix still diffs against the wrapper as its oracle.
