@@ -126,6 +126,11 @@ pub const CompCoding = struct {
 };
 
 pub const CodingParams = struct {
+    /// SIZ Rsiz as written (A.5.1 Table A.9 + amendments). Bit 15 = Part 2
+    /// (T.801), bit 14 = HTJ2K (T.814): under those, base-standard reserved
+    /// values may be extension-defined and are reported as indeterminate
+    /// (c145) instead of proven violations.
+    rsiz: u16 = 0,
     progression_order: ProgressionOrder = .lrcp,
     num_layers: u16 = 0,
     num_components: u16 = 0,
@@ -1616,7 +1621,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 if (body.len < 2) {
                     try emit(report, allocator, .fail, .bad_marker_length, pos, null);
                 } else if (std.mem.readInt(u16, body[0..2], .big) > 1) {
-                    try emit(report, allocator, .warn, .jp2_invalid_codestream, pos + 2, "COM Rcom registration value is reserved");
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 2, "COM Rcom registration value is reserved (T.800 Table A.43: 0 binary, 1 Latin)");
                 }
             },
             // CRG (A.9.1): exactly one (Xcrg, Ycrg) u16 pair per component.
@@ -1788,7 +1793,7 @@ fn parseTlmBody(
     const sp: u8 = (stlm >> 6) & 0x1;
     // Table A.34: Stlm bits 0-3 and bit 7 are reserved (must be 0).
     if (stlm & 0x8F != 0) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 1, "TLM Stlm reserved bits set");
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 1, "TLM Stlm reserved bits (0-3, 7) set (T.800 Table A.34)");
     }
     if (st == 3) {
         try emit(report, allocator, .fail, .bad_marker_length, offset + 1, null);
@@ -2604,7 +2609,15 @@ fn parseCodInto(
     // unknown-but-decodable per Part 1 rules.
     const scod = body[0];
     if (scod & 0xF8 != 0) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset, null);
+        // Table A.13 defines bits 0-2. Under a Part-2 Rsiz the rest may be
+        // extension-defined (indeterminate, c145); under Part 1 a set bit is
+        // a proven violation (Peter, 2026-09-12).
+        const part2 = if (report.coding_params) |cp| cp.rsiz & 0x8000 != 0 else false;
+        if (part2) {
+            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "COD Scod bits 3-7 set under a Part-2 Rsiz: extension-defined, not verified by jp2z");
+        } else {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "COD Scod reserved bits 3-7 set (T.800 Table A.13)");
+        }
     }
     // SPcod (shared with COC): decomposition, code-block exponents/style,
     // wavelet, precincts. Out-of-range geometry is CRASH-class downstream
@@ -2685,7 +2698,14 @@ fn parseSPcodInto(
         try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset + 3, "cblksty declares HT code-blocks (T.814 HTJ2K); jp2z decodes Part 1 code-blocks only");
     }
     if (cblksty & 0x80 != 0) {
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, offset + 3, null);
+        // Table A.19 (and T.814) leave bit 7 reserved. Under a Part-2 Rsiz it
+        // is indeterminate (c145); under Part 1 a proven violation.
+        const part2 = if (report.coding_params) |cp| cp.rsiz & 0x8000 != 0 else false;
+        if (part2) {
+            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset + 3, "cblksty bit 7 set under a Part-2 Rsiz: extension-defined, not verified by jp2z");
+        } else {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 3, "cblksty reserved bit 7 set (T.800 Table A.19)");
+        }
     }
     // qmfbid: 0 = 9/7 irreversible (lossy), 1 = 5/3 reversible (lossless).
     const qmfbid = sp[4];
@@ -2964,7 +2984,15 @@ fn checkQuantCoverage(report: *ValidationReport, allocator: Allocator, cp: *cons
         if (seen) continue;
         reported_offsets[reported] = t.offset;
         reported += 1;
-        try emit(report, allocator, .warn, .jp2_invalid_codestream, t.offset, "quantization marker carries fewer subband entries than a component's decomposition needs");
+        // A.6.4 Table A.28: one entry per subband (3·NL + 1). Under a Part-2
+        // Rsiz (T.801 arbitrary decompositions change the subband count) the
+        // count is indeterminate here (c145); under Part 1 it is a proven
+        // violation (Peter, 2026-09-12).
+        if (cp.rsiz & 0x8000 != 0) {
+            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, t.offset, "quantization marker carries fewer subband entries than a Part-1 decomposition needs; Part-2 decompositions are not verified by jp2z");
+        } else {
+            try emit(report, allocator, .fail, .jp2_invalid_codestream, t.offset, "quantization marker carries fewer subband entries than a component's decomposition needs (T.800 A.6.4 Table A.28)");
+        }
     }
 }
 
@@ -3555,10 +3583,28 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
     // valid stream jp2z does not decode (c145). Any other value is an
     // undefined Part-1 profile: surfaced, but the codestream stays walkable.
     const rsiz = std.mem.readInt(u16, body[2..4], .big);
+    cp_local.rsiz = rsiz;
     if (rsiz & 0xC000 != 0) {
         try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "SIZ Rsiz declares Part 2 / HTJ2K capabilities");
     } else if (rsiz > 2) {
-        try emit(report, allocator, .warn, .jp2_invalid_siz, pos, "SIZ Rsiz is not a defined Part-1 profile value");
+        // Profiles added by amendments (values per openjpeg's OPJ_PROFILE_*
+        // table): 3..7 digital cinema (2K, 4K, scalable 2K/4K, long-term
+        // storage; T.800 Amd 1/2), 0x0100..0x0300 + mainlevel 0..11
+        // broadcast (Amd 3), 0x0400..0x0900 + mainlevel 0..11 / sublevel
+        // 0..9 IMF (Amd 8). Recognised but their constraints are not
+        // verified here: valid-but-unchecked (c145). Anything else is
+        // defined by no edition or amendment: FAIL.
+        const hi = rsiz & 0xFF00;
+        const mainlevel = rsiz & 0x000F;
+        const sublevel = (rsiz & 0x00F0) >> 4;
+        const cinema = rsiz >= 3 and rsiz <= 7;
+        const broadcast = (hi == 0x0100 or hi == 0x0200 or hi == 0x0300) and sublevel == 0 and mainlevel <= 11;
+        const imf = hi >= 0x0400 and hi <= 0x0900 and mainlevel <= 11 and sublevel <= 9;
+        if (cinema or broadcast or imf) {
+            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "SIZ Rsiz declares a cinema/broadcast/IMF profile (T.800 amendments); its constraints are not verified by jp2z");
+        } else {
+            try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "SIZ Rsiz value is defined by neither T.800 Table A.9 nor its amendments");
+        }
     }
     // A.5.1: the tile grid may not exceed 65535 tiles (Isot is 16-bit).
     {

@@ -319,6 +319,24 @@ those fixtures, and OpenJPEG retirement is gated on it).
       decomposition needs, ihdr/SIZ dimension mismatch already FAILs.
       Valid-but-unsupported (c145: HT, CAP, palette in decode, Part-2
       colr, >16 components) stays WARN: those are conformant streams.
+- [x] **Reserved-value class, extension-aware** (2026-09-12 ~1:30pm EDT;
+      jpegz confirmed Peter's decision already covers it, asked for
+      clause/edition + controls per item and no mechanical flip). Rsiz is
+      now kept on CodingParams. Under a Part-1 Rsiz a reserved value is a
+      proven violation → FAIL; under a Part-2 Rsiz (bit 15, T.801) the
+      same value may be extension-defined → c145 WARN (indeterminate):
+      COD Scod bits 3-7 (Table A.13), cblksty bit 7 (Table A.19), QCD/QCC
+      with fewer subband entries than 3·NL+1 (A.6.4 Table A.28; T.801
+      arbitrary decompositions change the count). No extension defines
+      the rest, so they FAIL outright: TLM Stlm bits 0-3/7 (Table A.34),
+      COM Rcom > 1 (Table A.43). Rsiz itself: 0/1/2 clean; Part-2/HT bits
+      c145; cinema 3..7 (Amd 1/2), broadcast 0x0100..0x0300 + mainlevel
+      ≤ 11 (Amd 3), IMF 0x0400..0x0900 + mainlevel ≤ 11 / sublevel ≤ 9
+      (Amd 8) recognised-but-unverified c145 WARN; any other value FAILs
+      (Table A.9 + amendments; value table per openjpeg's OPJ_PROFILE_*).
+      Controls per item in tests/unit/validate.zig. Combined regression
+      for jpegz: TNsot under-declaration FAILs at the exact SOT offset
+      (SOT+11) while a fault in the later part is still detected.
 - [x] **Nonregression census, final for this round** (2026-09-06 ~3:15pm
       EDT): 151 files, 0 panics, 0 files openjpeg rejects that jp2z
       accepts, 17 files jp2z FAILs that openjpeg decodes — JasPer rejects

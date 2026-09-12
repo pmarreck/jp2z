@@ -147,9 +147,9 @@ test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wa
         0xFF, 0x52, 0x00, 0x0C,
         0x00, 0x00, 0x00, 0x01, 0x00,
         0x01, 0x04, 0x04, 0x00, 0x00,
-        // QCD — Lqcd=3, Sqcd=0x22 (scalar derived + 2 guard bits). Lqcd
-        // includes its own 2 bytes, so body after Lqcd = 1 byte = Sqcd alone.
-        0xFF, 0x5C, 0x00, 0x03, 0x22,
+        // QCD — Sqcd=0x22 (scalar expounded, 1 guard bit) with the four
+        // 2-byte entries decomp=1 needs (A.6.4 Table A.28): Lqcd = 11.
+        0xFF, 0x5C, 0x00, 0x0B, 0x22, 0x40, 0x00, 0x48, 0x00, 0x48, 0x00, 0x50, 0x00,
         // SOT
         0xFF, 0x90, 0x00, 0x0A,
         0x00, 0x00,
@@ -2005,7 +2005,7 @@ test "validate: hostile COD ranges (decomp>32, cblk exp>8, layers=0) FAIL withou
     try std.testing.expect(!hasFinding(rep0, .jp2_invalid_codestream));
 }
 
-test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
+test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits FAIL under a Part-1 Rsiz" {
     // T.800 A.6.1: xcb + ycb <= 12 (code-block area cap, 4096 samples) is
     // normative — exceeding it is non-conformant even though each exponent
     // alone is in range. Reserved bits (Scod bits 3-7, cblksty bits 6-7)
@@ -2040,13 +2040,13 @@ test "validate: cblk area xcb+ycb > 12 FAILs; reserved Scod/cblksty bits WARN" {
         const s = soc_siz ++ cod ++ qcd ++ tail;
         var rep = try jp2z.validate(std.testing.allocator, &s);
         defer rep.deinit(std.testing.allocator);
-        // Every jp2_invalid_codestream on a reserved-bit stream is the
-        // reserved-bit WARN — present, and never escalated to FAIL.
+        // Rsiz 0 (Part 1): a reserved bit set is a proven Table A.13 /
+        // Table A.19 violation → FAIL (Peter, 2026-09-12).
         var n: usize = 0;
         for (rep.findings.items) |f| {
             if (f.code == .jp2_invalid_codestream) {
                 n += 1;
-                try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+                try std.testing.expectEqual(jp2z.Severity.fail, f.severity);
             }
         }
         try std.testing.expect(n >= 1);
@@ -2177,8 +2177,8 @@ const synth_97_stream = [_]u8{
     0xFF, 0x52, 0x00, 0x0C,
     0x00, 0x00, 0x00, 0x01, 0x00,
     0x01, 0x04, 0x04, 0x00, 0x00,
-    // QCD
-    0xFF, 0x5C, 0x00, 0x03, 0x22,
+    // QCD — scalar expounded, four entries for decomp=1 (A.6.4)
+    0xFF, 0x5C, 0x00, 0x0B, 0x22, 0x40, 0x00, 0x48, 0x00, 0x48, 0x00, 0x50, 0x00,
     // SOT
     0xFF, 0x90, 0x00, 0x0A,
     0x00, 0x00,
@@ -3254,6 +3254,8 @@ test "validate: main-header COC (decomp 1 on component 1) walks every packet in 
         const stream = try buildPackedMiniStream(allocator, .{
             .components = 2,
             .prog = prog,
+            // Component 1 gets decomp 1 via COC: the shared QCD needs 4 entries (A.6.4).
+            .qcd_body = &.{ 0x40, 0x40, 0x48, 0x48, 0x50 },
             .main_extra = &.{ 0xFF, 0x53, 0x00, 0x09, 0x01, 0x00, 0x01, 0x04, 0x04, 0x00, 0x01 },
             .body = &.{ 0x00, 0x00, 0x00 },
         });
@@ -3432,7 +3434,7 @@ fn patched(allocator: std.mem.Allocator, base: []const u8, offset: usize, bytes:
     return out;
 }
 
-test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K capability bits → c145 WARN; undefined value → WARN, never FAIL" {
+test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K bits and recognised cinema/broadcast/IMF profiles → c145 WARN; undefined value → FAIL (Table A.9 + amendments)" {
     const allocator = std.testing.allocator;
     const base = try buildPackedMiniStream(allocator, .{});
     defer allocator.free(base);
@@ -3451,12 +3453,31 @@ test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K capability bits → c145 WAR
     defer rep_ext.deinit(allocator);
     try std.testing.expect(hasFinding(rep_ext, .jp2_unsupported_marker_ignored));
     try std.testing.expect(rep_ext.overall != .fail);
-    const bad = try patched(allocator, base, 6, &.{ 0x00, 0x07 }); // undefined Part-1 profile value
+    // 0x0007 is a recognised profile (Cinema LTS, T.800 Amd 1) whose
+    // constraints jp2z does not verify: valid-but-unchecked, c145 WARN.
+    const cin = try patched(allocator, base, 6, &.{ 0x00, 0x07 });
+    defer allocator.free(cin);
+    var rep_cin = try jp2z.validate(allocator, cin);
+    defer rep_cin.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_cin, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep_cin.overall != .fail);
+    // Broadcast (0x0101: multi-tile? no: single-tile, mainlevel 1) and IMF
+    // (0x0412: 2K, mainlevel 2, sublevel 1) profiles likewise.
+    for ([_][2]u8{ .{ 0x01, 0x01 }, .{ 0x04, 0x12 } }) |v| {
+        const p = try patched(allocator, base, 6, &v);
+        defer allocator.free(p);
+        var rp = try jp2z.validate(allocator, p);
+        defer rp.deinit(allocator);
+        try std.testing.expect(hasFinding(rp, .jp2_unsupported_marker_ignored));
+        try std.testing.expect(rp.overall != .fail);
+    }
+    // 0x000A is defined by neither T.800 nor any amendment: FAIL.
+    const bad = try patched(allocator, base, 6, &.{ 0x00, 0x0A });
     defer allocator.free(bad);
     var rep_bad = try jp2z.validate(allocator, bad);
     defer rep_bad.deinit(allocator);
-    try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_siz));
-    try std.testing.expect(rep_bad.overall == .warn);
+    try std.testing.expect(failDetailContains(rep_bad, .jp2_invalid_siz, "Rsiz"));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_bad.overall);
 }
 
 test "audit: SIZ Ssiz precision above 38 bits → jp2_invalid_siz FAIL (Table A.10)" {
@@ -3522,7 +3543,7 @@ test "audit: QCD quantization style 3 (reserved) → FAIL, not WARN" {
     try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
 }
 
-test "audit: COM Rcom registration — 0 and 1 clean; 2 (reserved) → WARN" {
+test "audit: COM Rcom registration — 0 and 1 clean; 2 (reserved) → FAIL (Table A.43)" {
     const allocator = std.testing.allocator;
     for ([_]u8{ 0, 1 }) |rcom| {
         const s = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x64, 0x00, 0x06, 0x00, rcom, 0x68, 0x69 } });
@@ -3536,8 +3557,8 @@ test "audit: COM Rcom registration — 0 and 1 clean; 2 (reserved) → WARN" {
     defer allocator.free(bad);
     var rep_bad = try jp2z.validate(allocator, bad);
     defer rep_bad.deinit(allocator);
-    try std.testing.expect(hasFinding(rep_bad, .jp2_invalid_codestream));
-    try std.testing.expect(rep_bad.overall == .warn);
+    try std.testing.expect(failDetailContains(rep_bad, .jp2_invalid_codestream, "Rcom"));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_bad.overall);
 }
 
 test "audit: CRG length must be 2 + 4·Csiz — short → bad_marker_length FAIL; exact → clean" {
@@ -3556,15 +3577,15 @@ test "audit: CRG length must be 2 + 4·Csiz — short → bad_marker_length FAIL
     try std.testing.expect(!hasFinding(rep_ok, .bad_marker_length));
 }
 
-test "audit: TLM Stlm reserved bits (0-3, 7) set → WARN" {
+test "audit: TLM Stlm reserved bits (0-3, 7) set → FAIL (Table A.34)" {
     const allocator = std.testing.allocator;
     // Ztlm=0, Stlm=0x01 (reserved low bit), one Ptlm=15 (the walked length).
     const s = try buildPackedMiniStream(allocator, .{ .main_extra = &.{ 0xFF, 0x55, 0x00, 0x06, 0x00, 0x01, 0x00, 0x0F } });
     defer allocator.free(s);
     var rep = try jp2z.validate(allocator, s);
     defer rep.deinit(allocator);
-    try std.testing.expect(hasFinding(rep, .jp2_invalid_codestream));
-    try std.testing.expect(rep.overall != .fail);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "Stlm"));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
 }
 
 // ── JP2 cdef channel definition (T.800 I.5.3.6) ─────────────────────
@@ -4650,4 +4671,88 @@ test "validate: conflicting TNsot across a tile's parts → FAIL naming both dec
     try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
     try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "declares TNsot 3 but an earlier part declared 2"));
     try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
+}
+
+// ── Reserved values under Peter's rule, extension-aware (2026-09-12) ──
+//
+// A reserved value in the base standard may be defined by a later part
+// (T.801 Part 2, T.814 HTJ2K). When Rsiz declares such capabilities the
+// stream is indeterminate here (valid-but-unsupported, c145 WARN); under a
+// Part-1 Rsiz the value is a proven violation and FAILs.
+
+test "Scod / cblksty reserved bits under a Part-2 Rsiz → c145 WARN (indeterminate), not FAIL" {
+    const allocator = std.testing.allocator;
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const part2 = try patched(allocator, base, 6, &.{ 0x80, 0x00 }); // Rsiz bit 15
+    defer allocator.free(part2);
+    // COD at 45: Scod at 49, cblksty at 57.
+    for ([_]struct { off: usize, v: u8 }{ .{ .off = 49, .v = 0x80 }, .{ .off = 57, .v = 0x80 } }) |c| {
+        const s = try patched(allocator, part2, c.off, &.{c.v});
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(rep.overall != .fail);
+        try std.testing.expect(hasFinding(rep, .jp2_unsupported_marker_ignored));
+    }
+}
+
+test "QCD with fewer subband entries than the decomposition needs → FAIL under Part-1 Rsiz (A.6.4 Table A.28), c145 WARN under Part-2 Rsiz" {
+    const allocator = std.testing.allocator;
+    // decomp 1 → 4 subbands; style-0 QCD with ONE entry. Body: 2 empty packets.
+    const short = try buildPackedMiniStream(allocator, .{ .decomp = 1, .qcd_body = &.{ 0x40, 0x40 }, .body = &.{ 0x00, 0x00 } });
+    defer allocator.free(short);
+    var r1 = try jp2z.validate(allocator, short);
+    defer r1.deinit(allocator);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "fewer subband entries"));
+    const part2 = try patched(allocator, short, 6, &.{ 0x80, 0x00 });
+    defer allocator.free(part2);
+    var r2 = try jp2z.validate(allocator, part2);
+    defer r2.deinit(allocator);
+    try std.testing.expect(!failDetailContains(r2, .jp2_invalid_codestream, "fewer subband entries"));
+    try std.testing.expect(hasFinding(r2, .jp2_unsupported_marker_ignored));
+    // Control: the full table (4 entries) is clean.
+    const full = try buildPackedMiniStream(allocator, .{ .decomp = 1, .qcd_body = &.{ 0x40, 0x40, 0x48, 0x48, 0x50 }, .body = &.{ 0x00, 0x00 } });
+    defer allocator.free(full);
+    var r3 = try jp2z.validate(allocator, full);
+    defer r3.deinit(allocator);
+    for (r3.findings.items) |f| try std.testing.expect(f.severity != .fail);
+}
+
+test "validate: TNsot under-declaration FAILs at the exact SOT offset AND a fault in the later part is still detected" {
+    const allocator = std.testing.allocator;
+    const data = try twoPartStream(allocator, 1);
+    defer allocator.free(data);
+    var second_sot: ?usize = null;
+    var seen: usize = 0;
+    var i: usize = 0;
+    while (i + 1 < data.len) : (i += 1) {
+        if (data[i] == 0xFF and data[i + 1] == 0x90) {
+            seen += 1;
+            if (seen == 2) {
+                second_sot = i;
+                break;
+            }
+        }
+    }
+    const sot1 = second_sot orelse return error.NoSecondSot;
+    // Part 1's single empty-packet byte (SOT 12 + SOD 2 → sot1 + 14) becomes
+    // 0xFF: a "non-empty" packet header that runs out of bytes.
+    const faulty = try patched(allocator, data, sot1 + 14, &.{0xFF});
+    defer allocator.free(faulty);
+    var rep = try jp2z.validate(allocator, faulty);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    var tnsot_at: ?u64 = null;
+    var later_fault = false;
+    for (rep.findings.items) |f| {
+        if (f.severity != .fail) continue;
+        if (std.mem.indexOf(u8, f.detail orelse "", "exceeds the declared TNsot") != null) {
+            tnsot_at = f.offset;
+        } else if (f.offset != null and f.offset.? > sot1 + 11) {
+            later_fault = true; // a distinct FAIL anchored inside the later part
+        }
+    }
+    try std.testing.expectEqual(@as(?u64, sot1 + 11), tnsot_at);
+    try std.testing.expect(later_fault);
 }
