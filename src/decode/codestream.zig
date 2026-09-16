@@ -1198,6 +1198,7 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
     var pclr: ?PclrInfo = null;
     var cmap_span: ?struct { body: []const u8, off: u64 } = null;
     var cdef_span: ?struct { body: []const u8, off: u64 } = null;
+    var saw_colr = false;
     var pos: usize = 0;
     while (pos + 8 <= body.len) {
         const lbox = std.mem.readInt(u32, body[pos..][0..4], .big);
@@ -1262,6 +1263,12 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
             // colr box is the one a reader uses.
             const cb = body[pos + body_off .. pos + box_total];
             const coff = base + pos + body_off;
+            // I.5.3.3: a reader uses the first colr box it understands; ISO
+            // file5/file7 carry an ICC colr first and an e-sRGB / ROMM-RGB
+            // enumerated one second. Only the first box decides the
+            // colour-space notice; later boxes get the structural checks.
+            const first_colr = !saw_colr;
+            saw_colr = true;
             if (cb.len < 3) {
                 try emit(report, allocator, .fail, .bad_marker_length, coff, "colr box shorter than METH/PREC/APPROX (T.800 I.5.3.3)");
             } else switch (cb[0]) {
@@ -1275,13 +1282,13 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
                         // Amendment / Part-2 spaces (CIELab 14, ...) append
                         // their own fields, so only the minimum is checked.
                         16, 17, 18 => if (cb.len != 7) try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 1 box must be exactly 7 bytes for a Part-1 EnumCS (T.800 I.5.3.3)"),
-                        else => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff + 3, "colr EnumCS is not a Part-1 colour space (16 sRGB, 17 greyscale, 18 sYCC); Part 2 / vendor value"),
+                        else => if (first_colr) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff + 3, "colr EnumCS is not a Part-1 colour space (16 sRGB, 17 greyscale, 18 sYCC); Part 2 / vendor value"),
                     }
                 },
                 2 => if (cb.len <= 3) {
                     try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 2 carries no ICC profile (T.800 I.5.3.3)");
                 },
-                else => try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff, "colr METH is not 1 or 2: reserved in Part 1 (Part 2 any-ICC / vendor colour)"),
+                else => if (first_colr) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff, "colr METH is not 1 or 2: reserved in Part 1 (Part 2 any-ICC / vendor colour)"),
             }
         }
         if (tbox == BoxType.pclr) {
@@ -2274,6 +2281,26 @@ fn walkTileParts(
             // I1: a valid EOC doesn't excuse a tile that delivered fewer whole
             // packets than its COD geometry requires — flag those before exit.
             try flagIncompleteTiles(report, allocator, &tiles, next_pos);
+            // B.3 partitions the image into numXtiles × numYtiles tiles; a
+            // tile that never appears carries no image data (corruption-probe
+            // on p0_10: an inflated Xsiz declared 1016 tiles over a 4-tile
+            // codestream and validation said nothing). WARN, not FAIL: the ISO
+            // conformance codestream b2_mono.j2c omits 9 of its 25 tiles (the
+            // thin boundary strips) and both reference decoders accept it, so
+            // whether omission violates A.4.2 is unresolved (flagged to Peter,
+            // 2026-09-16). The counts are in the detail either way.
+            if (report.coding_params) |p| {
+                if (report.width != null and report.height != null) {
+                    const nt = p.numTilesXY(p.image_x0 + report.width.?, p.image_y0 + report.height.?);
+                    const grid: u64 = @as(u64, nt.x) * @as(u64, nt.y);
+                    const seen: u64 = tp_state.count();
+                    if (seen < grid) {
+                        var mb: [128]u8 = undefined;
+                        const md = std.fmt.bufPrint(&mb, "{d} of {d} tiles in the SIZ grid have no tile-part (T.800 B.3 / A.4.2)", .{ grid - seen, grid }) catch null;
+                        try emit(report, allocator, .warn, .jp2_invalid_codestream, next_pos, md);
+                    }
+                }
+            }
             return;
         }
         if (data[next_pos] == 0xFF and data[next_pos + 1] == 0x90) {
@@ -3284,9 +3311,14 @@ fn walkTilePartBody(
         // SOP marker (Scod bit 1): a per-packet delimiter when enabled. Consume +
         // validate it. Unlike openjpeg (which TODOs the Nsop check) we ALSO verify
         // the packet sequence number — the strict corruption-detection mission.
-        if (params.scod & 0x02 != 0) {
-            if (body_pos + 6 > tp_body.len or tp_body[body_pos] != 0xFF or tp_body[body_pos + 1] != 0x91) {
-                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + body_pos, null);
+        // Table A.13: the Scod bit means SOP marker segments MAY be used, so a
+        // packet without one is legal (ISO f2_mono: tile-part 4's trailing
+        // empty packets carry none). FF91 cannot occur inside a packet header
+        // (bit-stuffing forbids a 1 MSB after 0xFF) nor in MQ/raw data, so its
+        // presence is unambiguous; when present, Lsop and Nsop are checked.
+        if (params.scod & 0x02 != 0 and body_pos + 2 <= tp_body.len and tp_body[body_pos] == 0xFF and tp_body[body_pos + 1] == 0x91) {
+            if (body_pos + 6 > tp_body.len) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, body_offset_in_data + body_pos, "SOP marker segment truncated (T.800 A.6.6)");
                 return .broken;
             }
             const lsop = std.mem.readInt(u16, tp_body[body_pos + 2 ..][0..2], .big);

@@ -537,3 +537,24 @@ fine as long as the FAIL stays in the verdict. Tolerance belongs in the
 DECODER (decode by the openjpeg/JasPer convention), never in the VERDICT.
 When tempted to downgrade: is the rule in the spec, and is the violation
 proven from the bytes? Then FAIL, and say exactly what (count, offset).
+
+## corruption-probe: read the region before reading the rate (2026-09-16)
+
+First external mutation run over the 27 fixtures (`jp2z validate --strict`
+as the validator). The raw table looked alarming: p1_04 rejected 28% of
+single-bit flips and 43% of 4 KB garbage windows. The file's tile-part 29
+carries a 65 KB COM segment (64% of the file); every "survivor" there was
+comment text. Classify survivors by the file's own marker map before
+drawing conclusions, and keep comment bytes out of the denominator. The
+same run found one real gap (an inflated SIZ grid with tiles never
+delivered) that nine hundred in-repo mutation trials had never hit,
+because the in-repo matrix mutates entropy data, not headers. The probe
+mutates everything; that independence is the point.
+
+Mechanics: `--exit-map 2=warning` for the verb's warn code; usage exits
+64 and I/O 74 so they can never collide with the verdict codes 0/1/2 the
+probe reads. `zig build test` does not install the CLI, so build before
+probing or you measure the previous binary. Scratch `mutate.lua`
+(bit:n / xor:hex / rand:len at an offset) and `tileparts.lua` reproduce a
+survivor by hand in seconds; LuaJIT has no `~` operator (use `bit.bxor`)
+and `luajit -e` does not receive `arg`, so keep them as files.

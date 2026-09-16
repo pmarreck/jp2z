@@ -100,3 +100,12 @@ the matrix still diffs against the wrapper as its oracle.
 pclr/cmap (byte-exact against openjpeg), so `unsupported {0, 0}` again.
 Proven nonconformance now FAILs everywhere (TNsot, reserved values under a
 Part-1 Rsiz, trailing bytes, ihdr C); controls unchanged, floors unchanged.
+
+2026-09-16: first external corruption-probe run (conformance/PROBE_COVERAGE.md).
+A strict sweep of all 57 ISO conformance codestreams with the new
+`jp2z validate` verb found two false positives that no in-repo control
+covered: p1_05.j2k (PTERM code-blocks over-reading by 3; openjpeg's own
+check_pterm warns on the same four blocks) → PTERM cap 2 → 3, corpus-
+calibrated like the non-PTERM 12; f2_mono.j2c (Scod SOP bit, trailing
+empty packets without SOP) → SOP is optional per packet (Table A.13
+"may"), still validated when present. Controls and floors unchanged.

@@ -287,4 +287,12 @@ pub fn build(b: *std.Build) void {
     run_e2e_rgb.addFileArg(b.path("tests/unit/fixtures/conformance/d1_colr.j2c"));
     run_e2e_rgb.addArgs(&.{ "ppm", "256", "149" });
     test_step.dependOn(&run_e2e_rgb.step);
+
+    // (7) Bash-driven CLI test for the `validate` verb (exit codes, JSON,
+    // stdin, corrupted copy under strict/lenient, paths with spaces).
+    const run_validate_cli = b.addSystemCommand(&.{"bash"});
+    run_validate_cli.addFileArg(b.path("tests/cli/validate_cli"));
+    run_validate_cli.addArtifactArg(cli);
+    run_validate_cli.addDirectoryArg(b.path("tests/unit/fixtures/conformance"));
+    test_step.dependOn(&run_validate_cli.step);
 }

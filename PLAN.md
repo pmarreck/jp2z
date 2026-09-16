@@ -77,6 +77,56 @@ new behavior), `./test` green, sweep drift zero, pushed.
       (empirically 0/7730 valid cblks); two MFIC monotonicity locks on
       tag_tree.read().
 
+### Directive: exceed the oracle; profiles validated, not just recognised (Peter, 2026-09-16 EDT)
+
+Peter: OpenJPEG stays as the oracle until jp2z exceeds it; recognised
+profiles must also be validated; corruption-probe must be run on jp2z
+honestly. Agreed order:
+
+- [x] `jp2z validate [--strict|--lenient] [--json] <file|->` verb in the C
+      CLI (dogfoods jp2z_deep_validate): exit 0 pass/info, 2 warn, 1 fail,
+      64 usage, 74 I/O, 70 internal; findings to stderr, JSON on request;
+      later flags win; `-`/`@stdin`. tests/cli/validate_cli (Bash, 13
+      checks incl. a corrupted copy strict vs lenient and a path with
+      spaces) runs from build.zig's test step. (2026-09-16 ~6:20pm EDT)
+- [x] corruption-probe over every vendored fixture, grouped by Rsiz
+      (0/1/2 today; no cinema/broadcast/IMF fixtures exist): 27 fixtures
+      × 100 rounds × 4 modes at seed 0x1234, reports and per-trial events
+      under conformance/probe/, table and survivor classification in
+      conformance/PROBE_COVERAGE.md. Shotgun/truncation 100% outside
+      comment text; sniper/bolter in packet data 47..99% (MQ cap residue,
+      the checksum-less ceiling); header survivors are comment bytes,
+      equivalent encodings, self-consistent field changes, and ONE real
+      gap: tiles declared by SIZ but never delivered → now reported with
+      counts (B.3 / A.4.2), regression + control. WARN pending Peter's
+      ruling: ISO b2_mono.j2c omits 9 of 25 tiles and both reference
+      decoders accept it. (2026-09-16 ~6:40pm EDT)
+- [ ] **Ruling needed (Peter):** is a codestream that never delivers a
+      tile of its SIZ grid nonconforming (→ FAIL), or a legal sparse
+      codestream (→ WARN stays)? b2_mono is the evidence for the latter;
+      the T.803 description of b2_mono or T.800 A.4.2's wording decides.
+- [x] Strict sweep of all 57 ISO conformance codestreams through the
+      verb (2026-09-16 ~6:45pm EDT): two false positives fixed. p1_05
+      (PTERM, over-read 3; openjpeg warns on the same 4 blocks) → PTERM
+      cap 3; f2_mono (SOP bit, trailing packets without SOP; Table A.13
+      says "may") → SOP optional per packet, validated when present.
+      Both with RED tests. Sweep now: 0 FAIL; b2_mono the one WARN.
+- [ ] Candidate from the probe: reversible (5/3) QCD exponents versus
+      precision + band gain (Annex E.1.1, Eq. E-4) — needs the clause text
+      to confirm it is normative before it becomes a FAIL.
+- [ ] Profile checks from docs/T800_PROFILES.md: Rsiz 1/2 → Table A.45
+      as FAILs with controls (until then, report "profile claimed,
+      constraints not verified"); then cinema (3..7), broadcast (ML 1..7;
+      0x0306/0x0307 only for reversible), IMF (A.51 structural rules; rate
+      limits need frame rate and are not checkable from a still
+      codestream). Fix the Rsiz table: broadcast ML 1..7, reversible only
+      0x0306/0x0307, IMF ML 1..11 / SL 0..9.
+- [ ] Oracle wrapper: u8 component cast (257 comps) and `unreachable`
+      on 2 channels; then lift jp2z's 16-component ceiling so p0_13
+      decodes (exceed the oracle, not dodge it).
+- [ ] Runtime-only flake output (CLI + archive, no openjpeg); the oracle
+      tools keep their own output.
+
 ### Directive: validation coverage → 100% (Peter, 2026-09-06 EDT)
 
 Overarching goal restated by Peter: any bit or byte corruption that is

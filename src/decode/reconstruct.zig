@@ -645,13 +645,15 @@ test "inverseIct: known YCbCr->RGB vector (Q16) rounds to expected RGB" {
 /// complexity: O(1)
 fn overReadCap(cblksty: u8) u32 {
     // PTERM (cblksty bit 0x10, T.800 predictable termination): every terminated
-    // pass ends with a full flush, so the legitimate tail IS bounded, at 2 —
-    // openjpeg's check_pterm bound, applied here WITH its precondition (and as
-    // a strict finding rather than openjpeg's warning-only). The PTERM corpus
-    // files (p0_02, p1_01: cbsty 0x34) sit at 2.
-    return if (cblksty & 0x10 != 0) 2 else 12;
+    // pass ends with a full flush, so the legitimate tail IS bounded. openjpeg's
+    // check_pterm tolerates 2 synthesized bytes and WARNS above that; the ISO
+    // conformance codestream p1_05.j2k (cblksty 0x19: BYPASS+VSC+PTERM,
+    // Kakadu) has 4 code-blocks at exactly 3, on which openjpeg prints its
+    // warning too (verified 2026-09-16). A conformance file cannot FAIL, so the
+    // bound is corpus-calibrated at 3: the other PTERM files (p0_02, p1_01:
+    // cbsty 0x34) sit at 2. Strict finding here, not openjpeg's warning-only.
+    return if (cblksty & 0x10 != 0) 3 else 12;
 }
-
 test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
     const PTERM: u8 = 0x10; // T.800 SPcod cblksty bit 4 — predictable termination
     // Under PTERM every terminated pass ends with a full flush, so the tail is
@@ -668,10 +670,11 @@ test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
         .{ .sty = 0x00, .over = 21, .flag = true }, // e1_colr desync class
         // PTERM: boundary tightens to 2
         .{ .sty = PTERM, .over = 2, .flag = false },
-        .{ .sty = PTERM, .over = 3, .flag = true }, // legal without PTERM, violation with
+        .{ .sty = PTERM, .over = 3, .flag = false }, // ISO p1_05: 4 blocks at 3 (openjpeg's check_pterm warns on the same 4)
         .{ .sty = PTERM, .over = 4, .flag = true },
         // PTERM composes with other style bits (BYPASS|TERMALL|PTERM etc.)
-        .{ .sty = PTERM | 0x0f, .over = 3, .flag = true },
+        .{ .sty = PTERM | 0x0f, .over = 3, .flag = false },
+        .{ .sty = PTERM | 0x0f, .over = 4, .flag = true },
         .{ .sty = 0x2f, .over = 3, .flag = false }, // c2-style flags, NO pterm bit
     };
     for (cases) |c| {

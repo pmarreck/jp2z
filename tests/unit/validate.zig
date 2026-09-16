@@ -4758,3 +4758,90 @@ test "validate: TNsot under-declaration FAILs at the exact SOT offset AND a faul
     try std.testing.expectEqual(@as(?u64, sot1 + 11), tnsot_at);
     try std.testing.expect(later_fault);
 }
+
+// ── Every tile in the SIZ grid must be delivered (corruption-probe find) ──
+//
+// corruption-probe on p0_10 (2026-09-16): a bolter on Xsiz's second byte
+// turned 256 into 65024, so the SIZ grid declared 1016 tiles while the
+// codestream carried 4, and strict validation said "info". B.3 partitions
+// the image into numXtiles × numYtiles tiles and A.4.2 gives every tile at
+// least one tile-part; a tile that never appears is missing image data.
+
+test "validate: a tile of the SIZ grid with no tile-part → WARN naming the counts (severity pending a ruling); a full grid is clean" {
+    const allocator = std.testing.allocator;
+    // Mini stream is 4x4 with 4x4 tiles. Xsiz 8 → a 2x1 grid; the codestream
+    // still carries only tile 0.
+    const base = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base);
+    const wide = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x00, 0x08 });
+    defer allocator.free(wide);
+    var r1 = try jp2z.validate(allocator, wide);
+    defer r1.deinit(allocator);
+    // WARN with the counts (see the walker comment: ISO b2_mono omits tiles
+    // and both reference decoders accept it; severity awaits Peter's ruling).
+    try std.testing.expectEqual(jp2z.Severity.warn, r1.overall);
+    var saw = false;
+    for (r1.findings.items) |f| if (f.code == .jp2_invalid_codestream and f.severity == .warn and std.mem.indexOf(u8, f.detail orelse "", "1 of 2 tiles") != null) {
+        saw = true;
+    };
+    try std.testing.expect(saw);
+    // Control: add tile 1 (Isot 1, Psot 15, one empty packet) before EOC.
+    const eoc = wide.len - 2;
+    const full = try std.mem.concat(allocator, u8, &.{ wide[0..eoc], &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01, 0xFF, 0x93, 0x00 }, wide[eoc..] });
+    defer allocator.free(full);
+    var r2 = try jp2z.validate(allocator, full);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+}
+
+// ── SOP is optional per packet when Scod allows it (Table A.13) ──────
+//
+// ISO f2_mono.j2c: tile-part 4's COD sets the SOP bit, and its trailing
+// empty packets carry no SOP marker. Table A.13 reads "SOP marker segments
+// may be used"; EPH, by contrast, "shall be used" when its bit is set.
+// jp2z required an SOP before every packet and failed the conformance
+// file. A present SOP is still validated (Lsop 4, Nsop = packet index).
+
+test "validate: Scod SOP bit with a packet that carries no SOP marker → clean; a present SOP with a wrong Nsop → FAIL" {
+    const allocator = std.testing.allocator;
+    // scod 0x02: SOP allowed. Body: one empty packet, no SOP.
+    const no_sop = try buildPackedMiniStream(allocator, .{ .scod = 0x02, .body = &.{0x00} });
+    defer allocator.free(no_sop);
+    var r1 = try jp2z.validate(allocator, no_sop);
+    defer r1.deinit(allocator);
+    for (r1.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    try std.testing.expect(hasFinding(r1, .jp2_packets_walked_to_end));
+    // With SOP (Lsop 4, Nsop 0): clean.
+    const with_sop = try buildPackedMiniStream(allocator, .{ .scod = 0x02, .body = &.{ 0xFF, 0x91, 0x00, 0x04, 0x00, 0x00, 0x00 } });
+    defer allocator.free(with_sop);
+    var r2 = try jp2z.validate(allocator, with_sop);
+    defer r2.deinit(allocator);
+    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    // Present SOP with Nsop 5 for packet 0: FAIL.
+    const bad_nsop = try buildPackedMiniStream(allocator, .{ .scod = 0x02, .body = &.{ 0xFF, 0x91, 0x00, 0x04, 0x00, 0x05, 0x00 } });
+    defer allocator.free(bad_nsop);
+    var r3 = try jp2z.validate(allocator, bad_nsop);
+    defer r3.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r3.overall);
+}
+
+test "JP2: only the first colr box governs the colour-space notice; a later Part-2 EnumCS is not flagged (ISO file5/file7 shape)" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const srgb = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 };
+    const romm = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x15 };
+    const both = try std.mem.concat(allocator, u8, &.{ &srgb, &romm });
+    defer allocator.free(both);
+    const jp2 = try wrapInJp2Ex(allocator, payload, 1, both);
+    defer allocator.free(jp2);
+    var rep = try jp2z.validate(allocator, jp2);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expectEqual(@as(?u32, 16), rep.colr_enumcs);
+    const lone = try wrapInJp2Ex(allocator, payload, 1, &romm);
+    defer allocator.free(lone);
+    var rep2 = try jp2z.validate(allocator, lone);
+    defer rep2.deinit(allocator);
+    try std.testing.expect(hasFinding(rep2, .jp2_unsupported_marker_ignored));
+}
