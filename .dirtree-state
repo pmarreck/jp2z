@@ -13,6 +13,7 @@ annotate=[
 	docs/T800_PROFILES.md = T.800 Rsiz table A.10 and profile restriction tables (A.45, cinema, broadcast, IMF) transcribed by Peter from the 2015 consolidated text; source for profile checks
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/image.zig = Planar cleanroom output → public interleaved Image: canvas at finest sub-sampling, palette (pclr/cmap) application, clamp, u8/u16, colr colour space; the wrapper-free decode route
+	src/decode/profiles.zig = Rsiz profile classification (Table A.10 + amendment families) and per-profile restriction checks (Table A.45, cinema, broadcast, IMF) emitting 259 profile_violation; tile-part rules consumed by walkTileParts
 	src/decode/reconstruct.zig = Cleanroom reconstruct (5/3 + 9/7 + RCT/ICT + level shift) AND deepValidate strict-findings entry point (M7)
 	sweep = Conformance-sweep driver: runs sweep_one over all 57 ISO 15444-4 fixtures, writes conformance/{sweep.ndjson,SCORECARD.md}; deterministic regression net
 	tests/cli/validate_cli = Bash CLI test for the validate verb: verdict exit codes (0 pass/info, 2 warn, 1 fail, 64 usage, 74 I/O), --json, stdin, corrupted copy strict vs lenient, paths with spaces

@@ -48,12 +48,13 @@ fully self-consistent. The survivors were classified by hand into:
    p0_10, pterm_test, p1_07) declared more tiles than the codestream
    delivered and validation said nothing. jp2z now reports "N of M tiles
    in the SIZ grid have no tile-part" (B.3 / A.4.2) with a regression and
-   a full-grid control. Severity is WARN, not FAIL, for a documented
-   reason: the ISO conformance codestream b2_mono.j2c omits 9 of its 25
-   tiles (the thin boundary strips) and OpenJPEG and JasPer both decode
-   it, so whether omission violates the text is an open question for
-   Peter (a sparse codestream by design and a corrupted SIZ look the
-   same from the bytes). The probe counts a WARN as rejected.
+   a full-grid control. The ISO conformance codestream b2_mono.j2c omits
+   9 of its 25 tiles and both reference decoders accept it; the spec
+   explains why: its component is sub-sampled 5×3 and every omitted tile
+   has an empty tile-component rect (B.3), hence no precincts (B.6) and
+   no packets. So the rule is: an absent tile that would carry samples in
+   any component is a FAIL; an absent tile empty in every component is
+   clean. b2_mono passes, the inflated-grid mutants fail.
 
 Shotgun and truncation are rejected 100% on every fixture except p1_04's
 shotgun, where 57 of 100 windows fell inside the comment segment.

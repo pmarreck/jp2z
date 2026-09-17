@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const profiles = @import("profiles.zig");
 const jp2z = @import("../jp2z.zig");
 const errors = @import("../core/errors.zig");
 const BitReader = @import("bit_reader.zig").BitReader;
@@ -1514,6 +1515,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
     // marker not found").
     var saw_cod = false;
     var saw_qcd = false;
+    var saw_rgn = false;
     var pos: usize = 4 + lsiz;
     while (true) {
         if (data.len < pos + 2) {
@@ -1550,6 +1552,18 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                     return;
                 }
                 if (report.coding_params) |*cp| try checkQuantCoverage(report, allocator, cp);
+                // The main header is complete: check it against the profile
+                // Rsiz claims (Table A.45 and the amendments). Rules that need
+                // facts outside the codestream (bitrate, throughput level)
+                // leave the profile partially verified: c145.
+                if (report.coding_params) |*cp| {
+                    const fully = try profiles.checkMainHeader(report, allocator, cp, report.width orelse 0, report.height orelse 0, .{ .has_ppm = ppm.seen, .has_tlm = saw_tlm, .has_rgn = saw_rgn }, pos);
+                    if (!fully) {
+                        var pv_buf: [256]u8 = undefined;
+                        const pv = std.fmt.bufPrint(&pv_buf, "SIZ Rsiz claims {s}: its structural rules are verified; its bitrate and level limits need facts outside the codestream and are not", .{profiles.name(profiles.classify(cp.rsiz))}) catch "profile partially verified";
+                        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, pv);
+                    }
+                }
                 // Hand off to the tile-part walker — it consumes
                 // every tile-part via Psot and confirms EOC at end.
                 var ppm_chunks: ?PpmChunks = if (ppm.seen) try ppm.merge(report, allocator) else null;
@@ -1618,6 +1632,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 if (!ok) report.coding_params = null;
             },
             @intFromEnum(Marker.rgn) => if (report.coding_params) |*cp| {
+                saw_rgn = true;
                 try parseRgnBody(report, allocator, cp, body, pos + 2);
             },
             // COM (A.9.2): Rcom 0 = binary, 1 = Latin; other values reserved.
@@ -1936,6 +1951,14 @@ fn walkTileParts(
 ) Allocator.Error!void {
     var pos: usize = start;
     var plm_short = false;
+    // Profile tile-part rules (profiles.tilePartRules): Profile 0 wants
+    // every first tile-part (TPsot 0) before any later part, in tile
+    // order; several profiles confine COD/COC/QCD/QCC to the main header
+    // and prohibit PPT.
+    const tp_rules: profiles.TilePartRules = if (report.coding_params) |cp| profiles.tilePartRules(profiles.classify(cp.rsiz)) else .{};
+    const tp_profile: []const u8 = if (report.coding_params) |cp| profiles.name(profiles.classify(cp.rsiz)) else "";
+    var saw_later_part = false;
+    var last_first_isot: i32 = -1;
     // TLM cross-check cursor: entry N describes the Nth tile-part in
     // file order. `tlm == null` means no TLM marker was present (an
     // EMPTY list is a present-but-lying TLM and still checks). First
@@ -1990,6 +2013,16 @@ fn walkTileParts(
         const isot16: u16 = std.mem.readInt(u16, data[pos + 4 ..][0..2], .big);
         const tpsot: u8 = data[pos + 10];
         const tnsot: u8 = data[pos + 11];
+        if (tp_rules.tpsot_order) {
+            if (tpsot == 0) {
+                if (saw_later_part or @as(i32, isot16) < last_first_isot) {
+                    var po_buf: [160]u8 = undefined;
+                    const po = std.fmt.bufPrint(&po_buf, "{s}: tile {d} first tile-part appears after a later tile-part or out of tile order (Table A.45)", .{ tp_profile, isot16 }) catch "tile-part order";
+                    try emit(report, allocator, .fail, .profile_violation, pos + 4, po);
+                }
+                last_first_isot = isot16;
+            } else saw_later_part = true;
+        }
         // Structural soundness of THIS part; an unsound part is skipped by
         // the packet walk below (its bytes cannot be attributed) while the
         // structural traversal continues to the next SOT.
@@ -2095,6 +2128,16 @@ fn walkTileParts(
         defer tp_ov.deinit(allocator);
         if (sod) |sod_pos| {
             tp_ov = try scanTilePartHeaderMarkers(report, allocator, data, pos + 12, sod_pos, ppm != null);
+            if (tp_rules.main_header_only and (tp_ov.cod != null or tp_ov.coc.items.len > 0 or tp_ov.has_qcd or tp_ov.qcc.items.len > 0)) {
+                var mh_buf: [160]u8 = undefined;
+                const mh = std.fmt.bufPrint(&mh_buf, "{s}: tile {d} tile-part header carries COD, COC, QCD or QCC; the profile confines them to the main header", .{ tp_profile, isot16 }) catch "tile-part header coding marker";
+                try emit(report, allocator, .fail, .profile_violation, pos + 12, mh);
+            }
+            if (tp_rules.no_ppt and tp_ov.has_ppt) {
+                var pp_buf: [96]u8 = undefined;
+                const pp = std.fmt.bufPrint(&pp_buf, "{s}: tile {d} uses PPT; the profile prohibits it", .{ tp_profile, isot16 }) catch "PPT prohibited";
+                try emit(report, allocator, .fail, .profile_violation, pos + 12, pp);
+            }
         } else {
             // A.4.4: every tile-part carries SOD. Unreachable means a header
             // segment's length runs past the tile-part end (edf_c2_1103421:
@@ -2281,23 +2324,46 @@ fn walkTileParts(
             // I1: a valid EOC doesn't excuse a tile that delivered fewer whole
             // packets than its COD geometry requires — flag those before exit.
             try flagIncompleteTiles(report, allocator, &tiles, next_pos);
-            // B.3 partitions the image into numXtiles × numYtiles tiles; a
-            // tile that never appears carries no image data (corruption-probe
-            // on p0_10: an inflated Xsiz declared 1016 tiles over a 4-tile
-            // codestream and validation said nothing). WARN, not FAIL: the ISO
-            // conformance codestream b2_mono.j2c omits 9 of its 25 tiles (the
-            // thin boundary strips) and both reference decoders accept it, so
-            // whether omission violates A.4.2 is unresolved (flagged to Peter,
-            // 2026-09-16). The counts are in the detail either way.
+            // B.3 partitions the image into numXtiles × numYtiles tiles. A tile
+            // that never appears is missing coded data WHEN it would carry
+            // packets, i.e. when some component's tile-component rect
+            // (ceil(tx/XRsiz)..ceil(tx1/XRsiz), B.3) is non-empty; an empty
+            // rect has no precincts (B.6) and so no packets, and such a tile
+            // may be absent. That is exactly the ISO conformance codestream
+            // b2_mono.j2c: XRsiz 5 / YRsiz 3 empty its 9 boundary-strip tiles,
+            // which it omits. corruption-probe on p0_10 found the other case
+            // (an inflated Xsiz declaring 1012 tiles of real data that never
+            // came) passing silently; it FAILs now (Peter, 2026-09-16).
             if (report.coding_params) |p| {
                 if (report.width != null and report.height != null) {
-                    const nt = p.numTilesXY(p.image_x0 + report.width.?, p.image_y0 + report.height.?);
+                    const xsiz = p.image_x0 + report.width.?;
+                    const ysiz = p.image_y0 + report.height.?;
+                    const nt = p.numTilesXY(xsiz, ysiz);
                     const grid: u64 = @as(u64, nt.x) * @as(u64, nt.y);
-                    const seen: u64 = tp_state.count();
-                    if (seen < grid) {
-                        var mb: [128]u8 = undefined;
-                        const md = std.fmt.bufPrint(&mb, "{d} of {d} tiles in the SIZ grid have no tile-part (T.800 B.3 / A.4.2)", .{ grid - seen, grid }) catch null;
-                        try emit(report, allocator, .warn, .jp2_invalid_codestream, next_pos, md);
+                    var missing_with_data: u64 = 0;
+                    var t: u32 = 0;
+                    while (@as(u64, t) < grid) : (t += 1) {
+                        if (tp_state.contains(@intCast(t))) continue;
+                        const tr = p.tileRect(xsiz, ysiz, t);
+                        var has_samples = false;
+                        var c: u16 = 0;
+                        while (c < p.num_components) : (c += 1) {
+                            const ci: usize = @min(c, 15);
+                            const dx = p.comp_dx[ci];
+                            const dy = p.comp_dy[ci];
+                            const cw = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
+                            const ch = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
+                            if (cw > 0 and ch > 0) {
+                                has_samples = true;
+                                break;
+                            }
+                        }
+                        if (has_samples) missing_with_data += 1;
+                    }
+                    if (missing_with_data > 0) {
+                        var mb: [160]u8 = undefined;
+                        const md = std.fmt.bufPrint(&mb, "{d} of {d} tiles in the SIZ grid have no tile-part although they carry samples (T.800 B.3 / B.6 / A.4.2)", .{ missing_with_data, grid }) catch null;
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, next_pos, md);
                     }
                 }
             }
@@ -3623,15 +3689,11 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         // 0..9 IMF (Amd 8). Recognised but their constraints are not
         // verified here: valid-but-unchecked (c145). Anything else is
         // defined by no edition or amendment: FAIL.
-        const hi = rsiz & 0xFF00;
-        const mainlevel = rsiz & 0x000F;
-        const sublevel = (rsiz & 0x00F0) >> 4;
-        const cinema = rsiz >= 3 and rsiz <= 7;
-        const broadcast = (hi == 0x0100 or hi == 0x0200 or hi == 0x0300) and sublevel == 0 and mainlevel <= 11;
-        const imf = hi >= 0x0400 and hi <= 0x0900 and mainlevel <= 11 and sublevel <= 9;
-        if (cinema or broadcast or imf) {
-            try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "SIZ Rsiz declares a cinema/broadcast/IMF profile (T.800 amendments); its constraints are not verified by jp2z");
-        } else {
+        // (profiles.classify holds the families: broadcast main level 1..7
+        // with reversible only at 0x0306/0x0307, IMF main level 1..11 and
+        // sub level 0..9.) The recognised profiles are checked against
+        // their tables once the main header is complete (profiles.zig).
+        if (profiles.classify(rsiz) == .undefined) {
             try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "SIZ Rsiz value is defined by neither T.800 Table A.9 nor its amendments");
         }
     }
@@ -3689,7 +3751,7 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
 }
 
 
-fn emit(
+pub fn emit(
     report: *ValidationReport,
     allocator: Allocator,
     severity: Severity,
@@ -3971,4 +4033,8 @@ test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, pass
         }
         try std.testing.expectEqual(@as(?PacketIndex, null), seq.next());
     }
+}
+
+test {
+    _ = profiles;
 }

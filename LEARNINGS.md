@@ -558,3 +558,38 @@ probing or you measure the previous binary. Scratch `mutate.lua`
 (bit:n / xor:hex / rand:len at an offset) and `tileparts.lua` reproduce a
 survivor by hand in seconds; LuaJIT has no `~` operator (use `bit.bxor`)
 and `luajit -e` does not receive `arg`, so keep them as files.
+
+## When an ISO file contradicts a rule, find the mechanism before choosing a severity (2026-09-16)
+
+b2_mono.j2c omits 9 of 25 tiles and both reference decoders accept it,
+which looked like "omission is tolerated". The mechanism is that its one
+component is sub-sampled 5×3, and every omitted tile is a boundary strip
+whose tile-component rect (ceil(tx0/XRsiz)..ceil(tx1/XRsiz), B.3) is
+empty: no precincts, no packets, nothing to code. Once the mechanism is
+known the strict rule writes itself (absent tile with samples → FAIL;
+absent all-empty tile → clean) and the conformance file becomes a
+control for the rule instead of an exception to it. A WARN "pending a
+ruling" would have been the lazy answer; Peter asked what the spec plus
+strictness require, and the answer was in the file's own SIZ.
+
+## A profile is a claim; verify it against its table, and report what you could not verify (2026-09-16)
+
+Rsiz used to earn a blanket "recognised, not verified" c145 for every
+cinema, broadcast and IMF value. Peter's rule: distinguish "recognised
+profile" from "profile we can validate", and always try to do both.
+`profiles.zig` now checks every rule the codestream alone can prove
+(sizes, sampling, bit depth, code-block geometry, progression, layers,
+levels, marker prohibitions, tile layout, tile-part ordering) and FAILs
+on a violation with 259 profile_violation, since a stream that breaks
+the profile it declares is nonconforming to its own claim. The rules that
+need a frame rate (bitrate per frame, main/sub level throughput) are
+named in the c145 detail as the unverified remainder, so a consumer sees
+exactly which half of the claim was checked. Rsiz is a parameterized
+family (main level in the low nibble, sub level above it), never an enum:
+the classifier accepts broadcast main levels 1..7 only, reversible
+broadcast only at 0x0306/0x0307, IMF main level 1..11 and sub level 0..9,
+and everything else is undefined and FAILs at the SIZ. The Profile-1
+tile rule was transcribed as "at least 1024"; the ISO p1_04 (128×128
+tiles) and p1_06 (3×3) fixtures are Profile 1, so the rule is read as an
+upper bound on the finest component. When a transcription and a
+conformance file disagree, the file wins and the reading is written down.

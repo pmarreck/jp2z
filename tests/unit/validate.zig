@@ -3434,7 +3434,7 @@ fn patched(allocator: std.mem.Allocator, base: []const u8, offset: usize, bytes:
     return out;
 }
 
-test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K bits and recognised cinema/broadcast/IMF profiles → c145 WARN; undefined value → FAIL (Table A.9 + amendments)" {
+test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K bits → c145 WARN; recognised cinema/broadcast/IMF profiles are checked (c145 for the unverifiable limits, profile_violation for broken rules); undefined value → FAIL (Table A.9 + amendments)" {
     const allocator = std.testing.allocator;
     const base = try buildPackedMiniStream(allocator, .{});
     defer allocator.free(base);
@@ -3453,24 +3453,33 @@ test "audit: SIZ Rsiz — 0/1/2 clean; Part-2/HTJ2K bits and recognised cinema/b
     defer rep_ext.deinit(allocator);
     try std.testing.expect(hasFinding(rep_ext, .jp2_unsupported_marker_ignored));
     try std.testing.expect(rep_ext.overall != .fail);
-    // 0x0007 is a recognised profile (Cinema LTS, T.800 Amd 1) whose
-    // constraints jp2z does not verify: valid-but-unchecked, c145 WARN.
+    // 0x0007 is a recognised profile (Cinema LTS, T.800 Amd 1). Its
+    // bitrate limits are unverifiable here (c145 WARN), and the LRCP mini
+    // stream without EPH breaks its structural rules: profile_violation.
     const cin = try patched(allocator, base, 6, &.{ 0x00, 0x07 });
     defer allocator.free(cin);
     var rep_cin = try jp2z.validate(allocator, cin);
     defer rep_cin.deinit(allocator);
     try std.testing.expect(hasFinding(rep_cin, .jp2_unsupported_marker_ignored));
-    try std.testing.expect(rep_cin.overall != .fail);
-    // Broadcast (0x0101: multi-tile? no: single-tile, mainlevel 1) and IMF
-    // (0x0412: 2K, mainlevel 2, sublevel 1) profiles likewise.
-    for ([_][2]u8{ .{ 0x01, 0x01 }, .{ 0x04, 0x12 } }) |v| {
-        const p = try patched(allocator, base, 6, &v);
-        defer allocator.free(p);
-        var rp = try jp2z.validate(allocator, p);
-        defer rp.deinit(allocator);
-        try std.testing.expect(hasFinding(rp, .jp2_unsupported_marker_ignored));
-        try std.testing.expect(rp.overall != .fail);
-    }
+    try std.testing.expect(profileFails(rep_cin, "CPRL"));
+    try std.testing.expect(profileFails(rep_cin, "EPH"));
+    // Broadcast single-tile (0x0101, mainlevel 1) on the same stream: no
+    // TLM and LRCP are violations. IMF 2K (0x0412: mainlevel 2, sublevel 1)
+    // on a 1-component 8-bit single-tile stream breaks no structural rule
+    // and is only partially verified.
+    const bc = try patched(allocator, base, 6, &.{ 0x01, 0x01 });
+    defer allocator.free(bc);
+    var rep_bc = try jp2z.validate(allocator, bc);
+    defer rep_bc.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_bc, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(profileFails(rep_bc, "TLM"));
+    const imf = try patched(allocator, base, 6, &.{ 0x04, 0x12 });
+    defer allocator.free(imf);
+    var rep_imf = try jp2z.validate(allocator, imf);
+    defer rep_imf.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_imf, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(!hasFinding(rep_imf, .profile_violation));
+    try std.testing.expect(rep_imf.overall != .fail);
     // 0x000A is defined by neither T.800 nor any amendment: FAIL.
     const bad = try patched(allocator, base, 6, &.{ 0x00, 0x0A });
     defer allocator.free(bad);
@@ -4767,7 +4776,7 @@ test "validate: TNsot under-declaration FAILs at the exact SOT offset AND a faul
 // the image into numXtiles × numYtiles tiles and A.4.2 gives every tile at
 // least one tile-part; a tile that never appears is missing image data.
 
-test "validate: a tile of the SIZ grid with no tile-part → WARN naming the counts (severity pending a ruling); a full grid is clean" {
+test "validate: an absent tile that would carry packets → FAIL naming the counts; an absent tile empty in every component (b2_mono shape) and a full grid are clean" {
     const allocator = std.testing.allocator;
     // Mini stream is 4x4 with 4x4 tiles. Xsiz 8 → a 2x1 grid; the codestream
     // still carries only tile 0.
@@ -4777,14 +4786,22 @@ test "validate: a tile of the SIZ grid with no tile-part → WARN naming the cou
     defer allocator.free(wide);
     var r1 = try jp2z.validate(allocator, wide);
     defer r1.deinit(allocator);
-    // WARN with the counts (see the walker comment: ISO b2_mono omits tiles
-    // and both reference decoders accept it; severity awaits Peter's ruling).
-    try std.testing.expectEqual(jp2z.Severity.warn, r1.overall);
-    var saw = false;
-    for (r1.findings.items) |f| if (f.code == .jp2_invalid_codestream and f.severity == .warn and std.mem.indexOf(u8, f.detail orelse "", "1 of 2 tiles") != null) {
-        saw = true;
-    };
-    try std.testing.expect(saw);
+    // Tile 1 would carry packets (its tile-component is 4 samples wide), so
+    // its absence is missing coded data: FAIL (Peter's ruling, 2026-09-16).
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "1 of 2 tiles"));
+    // Control (the ISO b2_mono shape): Xsiz 5, XTsiz 4, XRsiz 3 → tile 1 spans
+    // x [4,5) whose tile-component rect is ceil(4/3)..ceil(5/3) = 2..2: empty
+    // in every component, so it has no packets and may be absent (B.3 / B.6).
+    const five = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x00, 0x05 });
+    defer allocator.free(five);
+    try std.testing.expectEqual(@as(u8, 0x01), five[43]); // XRsiz of component 0
+    const empty_tile = try patched(allocator, five, 43, &.{0x03});
+    defer allocator.free(empty_tile);
+    var r3 = try jp2z.validate(allocator, empty_tile);
+    defer r3.deinit(allocator);
+    for (r3.findings.items) |f| try std.testing.expect(f.severity != .fail);
+    try std.testing.expect(!failDetailContains(r3, .jp2_invalid_codestream, "tiles"));
     // Control: add tile 1 (Isot 1, Psot 15, one empty packet) before EOC.
     const eoc = wide.len - 2;
     const full = try std.mem.concat(allocator, u8, &.{ wide[0..eoc], &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x00, 0x01, 0xFF, 0x93, 0x00 }, wide[eoc..] });
@@ -4844,4 +4861,195 @@ test "JP2: only the first colr box governs the colour-space notice; a later Part
     var rep2 = try jp2z.validate(allocator, lone);
     defer rep2.deinit(allocator);
     try std.testing.expect(hasFinding(rep2, .jp2_unsupported_marker_ignored));
+}
+
+// ── Profile checks (docs/T800_PROFILES.md: Table A.10, Table A.45, cinema, broadcast, IMF) ──
+//
+// A codestream that claims a profile in Rsiz and breaks one of its
+// restrictions is nonconforming to its own claim: finding 259
+// profile_violation, FAIL. Controls: every vendored p0_* (Profile 0) and
+// p1_* (Profile 1) fixture stays clean (see the corpus test below).
+// Mini-stream offsets: Rsiz 6, Xsiz 8, Ysiz 12, XOsiz 16, XTsiz 24, Csiz 40,
+// Ssiz 42 / XRsiz 43 / YRsiz 44 (per component +3); COD at 45: Scod 49,
+// prog 50, layers 51-52, mct 53, decomp 54, xcb 55, ycb 56, cblksty 57.
+
+const p1_04_j2k = @embedFile("fixtures/conformance/p1_04.j2k");
+
+fn profileFails(rep: jp2z.ValidationReport, needle: []const u8) bool {
+    for (rep.findings.items) |f| if (f.code == .profile_violation and f.severity == .fail and std.mem.indexOf(u8, f.detail orelse "", needle) != null) return true;
+    return false;
+}
+
+test "profile 0 (Rsiz 1): a conforming mini stream is clean; sub-sampling 3, unequal code-blocks, BYPASS, a tile-part COD, a non-zero origin, and 4x4 tiles each FAIL (Table A.45)" {
+    const allocator = std.testing.allocator;
+    const base0 = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base0);
+    const base = try patched(allocator, base0, 6, &.{ 0x00, 0x01 });
+    defer allocator.free(base);
+    var rc = try jp2z.validate(allocator, base);
+    defer rc.deinit(allocator);
+    try std.testing.expect(!hasFinding(rc, .profile_violation));
+    try std.testing.expect(!hasFinding(rc, .jp2_unsupported_marker_ignored));
+    const cases = [_]struct { off: usize, v: []const u8, needle: []const u8 }{
+        .{ .off = 43, .v = &.{0x03}, .needle = "sub-sampling" },
+        .{ .off = 55, .v = &.{0x03}, .needle = "code-block" }, // xcb 32, ycb 64
+        .{ .off = 57, .v = &.{0x01}, .needle = "BYPASS" },
+        .{ .off = 16, .v = &.{ 0x00, 0x00, 0x00, 0x01 }, .needle = "origin" },
+    };
+    for (cases) |c| {
+        const s = try patched(allocator, base, c.off, c.v);
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(profileFails(rep, c.needle));
+    }
+    // 2 tiles of 4x4: neither 128x128 nor a single tile.
+    const wide = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x00, 0x08 });
+    defer allocator.free(wide);
+    var rt = try jp2z.validate(allocator, wide);
+    defer rt.deinit(allocator);
+    try std.testing.expect(profileFails(rt, "tile"));
+    // A COD in the tile-part header.
+    const tcod = try buildPackedMiniStream(allocator, .{ .tp_hdr_extra = &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 } });
+    defer allocator.free(tcod);
+    const tcod0 = try patched(allocator, tcod, 6, &.{ 0x00, 0x01 });
+    defer allocator.free(tcod0);
+    var rtc = try jp2z.validate(allocator, tcod0);
+    defer rtc.deinit(allocator);
+    try std.testing.expect(profileFails(rtc, "tile-part header"));
+}
+
+test "profile 1 (Rsiz 2): 128-wide code-blocks FAIL (xcb <= 6); an LL band wider than 128 FAILs; the vendored p1_* fixtures are clean" {
+    const allocator = std.testing.allocator;
+    const base0 = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(base0);
+    const base = try patched(allocator, base0, 6, &.{ 0x00, 0x02 });
+    defer allocator.free(base);
+    const big_cblk = try patched(allocator, base, 55, &.{0x05}); // 128 wide (would also break xcb+ycb <= 12? 5+2 + 4+2 = 13 → that is a separate FAIL)
+    defer allocator.free(big_cblk);
+    var r1 = try jp2z.validate(allocator, big_cblk);
+    defer r1.deinit(allocator);
+    try std.testing.expect(profileFails(r1, "code-block"));
+    // 512x4 image, single 512x4 tile, decomp 0 → the LL band is 512 wide.
+    const wide0 = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x02, 0x00 });
+    defer allocator.free(wide0);
+    const wide = try patched(allocator, wide0, 24, &.{ 0x00, 0x00, 0x02, 0x00 });
+    defer allocator.free(wide);
+    var r2 = try jp2z.validate(allocator, wide);
+    defer r2.deinit(allocator);
+    try std.testing.expect(profileFails(r2, "lowest resolution"));
+    for ([_][]const u8{ p1_01_j2k, p1_04_j2k, p1_06_j2k, p1_07_j2k, p0_06_j2k }) |fx| {
+        var rep = try jp2z.validate(allocator, fx);
+        defer rep.deinit(allocator);
+        try std.testing.expect(!hasFinding(rep, .profile_violation));
+    }
+}
+
+test "profile 0 corpus controls: every vendored p0_* fixture and file1/file9 stay clean" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ p0_01_j2k, p0_02_j2k, p0_03_j2k, p0_04_j2k, p0_10_j2k, p0_13_j2k, file1_jp2, file9_jp2 }) |fx| {
+        var rep = try jp2z.validate(allocator, fx);
+        defer rep.deinit(allocator);
+        try std.testing.expect(!hasFinding(rep, .profile_violation));
+    }
+}
+
+
+test "cinema 2K (Rsiz 3): a conforming stream is clean but noted as partially verified; 8-bit, LRCP, 2 layers, 64x64 code-blocks, 4 components each FAIL" {
+    const allocator = std.testing.allocator;
+    // With 3 components the COD starts at 45 + 6 = 51: Scod 55, prog 56, layers 57-58, mct 59, decomp 60, xcb 61, ycb 62.
+    const b0 = try buildPackedMiniStream(allocator, .{ .components = 3, .prog = 4, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(b0);
+    const b1 = try patched(allocator, b0, 6, &.{ 0x00, 0x03 });
+    defer allocator.free(b1);
+    const b2 = try patched(allocator, b1, 42, &.{ 0x0B, 0x01, 0x01, 0x0B, 0x01, 0x01, 0x0B, 0x01, 0x01 });
+    defer allocator.free(b2);
+    const base = try patched(allocator, b2, 61, &.{ 0x03, 0x03 });
+    defer allocator.free(base);
+    var rc = try jp2z.validate(allocator, base);
+    defer rc.deinit(allocator);
+    try std.testing.expect(!hasFinding(rc, .profile_violation));
+    try std.testing.expect(hasFinding(rc, .jp2_unsupported_marker_ignored)); // bitrate limits unverified
+    const cases = [_]struct { off: usize, v: []const u8, needle: []const u8 }{
+        .{ .off = 42, .v = &.{0x07}, .needle = "12-bit" },
+        .{ .off = 56, .v = &.{0x00}, .needle = "CPRL" },
+        .{ .off = 57, .v = &.{ 0x00, 0x02 }, .needle = "layer" },
+        .{ .off = 61, .v = &.{ 0x04, 0x04 }, .needle = "code-block" },
+    };
+    for (cases) |c| {
+        const s = try patched(allocator, base, c.off, c.v);
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(profileFails(rep, c.needle));
+    }
+    const four = try buildPackedMiniStream(allocator, .{ .components = 4, .prog = 4, .body = &.{ 0x00, 0x00, 0x00, 0x00 } });
+    defer allocator.free(four);
+    const four3 = try patched(allocator, four, 6, &.{ 0x00, 0x03 });
+    defer allocator.free(four3);
+    var r4 = try jp2z.validate(allocator, four3);
+    defer r4.deinit(allocator);
+    try std.testing.expect(profileFails(r4, "component"));
+}
+
+test "IMF 2K lossy (Rsiz 0x0401): a conforming stream is clean but noted as partially verified; 4 components, XRsiz (1,1,2), YRsiz 2, and a 2049-wide image each FAIL" {
+    const allocator = std.testing.allocator;
+    const b0 = try buildPackedMiniStream(allocator, .{ .components = 3, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(b0);
+    const base = try patched(allocator, b0, 6, &.{ 0x04, 0x01 });
+    defer allocator.free(base);
+    var rc = try jp2z.validate(allocator, base);
+    defer rc.deinit(allocator);
+    try std.testing.expect(!hasFinding(rc, .profile_violation));
+    try std.testing.expect(hasFinding(rc, .jp2_unsupported_marker_ignored));
+    const cases = [_]struct { off: usize, v: []const u8, needle: []const u8 }{
+        .{ .off = 49, .v = &.{0x02}, .needle = "XRsiz" }, // component 2's XRsiz (42+3*2+1)
+        .{ .off = 44, .v = &.{0x02}, .needle = "YRsiz" },
+    };
+    for (cases) |c| {
+        const s = try patched(allocator, base, c.off, c.v);
+        defer allocator.free(s);
+        var rep = try jp2z.validate(allocator, s);
+        defer rep.deinit(allocator);
+        try std.testing.expect(profileFails(rep, c.needle));
+    }
+    const wide0 = try patched(allocator, base, 8, &.{ 0x00, 0x00, 0x08, 0x01 });
+    defer allocator.free(wide0);
+    const wide = try patched(allocator, wide0, 24, &.{ 0x00, 0x00, 0x08, 0x01 });
+    defer allocator.free(wide);
+    var rw = try jp2z.validate(allocator, wide);
+    defer rw.deinit(allocator);
+    try std.testing.expect(profileFails(rw, "2048"));
+    const four = try buildPackedMiniStream(allocator, .{ .components = 4, .body = &.{ 0x00, 0x00, 0x00, 0x00 } });
+    defer allocator.free(four);
+    const four_imf = try patched(allocator, four, 6, &.{ 0x04, 0x01 });
+    defer allocator.free(four_imf);
+    var r4 = try jp2z.validate(allocator, four_imf);
+    defer r4.deinit(allocator);
+    try std.testing.expect(profileFails(r4, "component"));
+}
+
+test "broadcast single-tile (Rsiz 0x0101): CPRL + TLM is clean; LRCP FAILs; no TLM FAILs" {
+    const allocator = std.testing.allocator;
+    // TLM: Ztlm 0, Stlm 0x00 (no Ttlm, 16-bit Ptlm), Ptlm 15 (the single tile-part's Psot).
+    const tlm = [_]u8{ 0xFF, 0x55, 0x00, 0x06, 0x00, 0x00, 0x00, 0x0F };
+    const ok0 = try buildPackedMiniStream(allocator, .{ .prog = 4, .main_extra = &tlm });
+    defer allocator.free(ok0);
+    const ok = try patched(allocator, ok0, 6, &.{ 0x01, 0x01 });
+    defer allocator.free(ok);
+    var rc = try jp2z.validate(allocator, ok);
+    defer rc.deinit(allocator);
+    try std.testing.expect(!hasFinding(rc, .profile_violation));
+    const lrcp = try patched(allocator, ok, 50, &.{0x00});
+    defer allocator.free(lrcp);
+    var r1 = try jp2z.validate(allocator, lrcp);
+    defer r1.deinit(allocator);
+    try std.testing.expect(profileFails(r1, "CPRL"));
+    const notlm0 = try buildPackedMiniStream(allocator, .{ .prog = 4 });
+    defer allocator.free(notlm0);
+    const notlm = try patched(allocator, notlm0, 6, &.{ 0x01, 0x01 });
+    defer allocator.free(notlm);
+    var r2 = try jp2z.validate(allocator, notlm);
+    defer r2.deinit(allocator);
+    try std.testing.expect(profileFails(r2, "TLM"));
 }

@@ -101,10 +101,14 @@ honestly. Agreed order:
       counts (B.3 / A.4.2), regression + control. WARN pending Peter's
       ruling: ISO b2_mono.j2c omits 9 of 25 tiles and both reference
       decoders accept it. (2026-09-16 ~6:40pm EDT)
-- [ ] **Ruling needed (Peter):** is a codestream that never delivers a
-      tile of its SIZ grid nonconforming (→ FAIL), or a legal sparse
-      codestream (→ WARN stays)? b2_mono is the evidence for the latter;
-      the T.803 description of b2_mono or T.800 A.4.2's wording decides.
+- [x] **Absent tiles, ruled by the spec** (2026-09-16 ~7:50pm EDT). Peter
+      asked what the standard plus strictness require. b2_mono's omitted
+      tiles are exactly those whose tile-component rect (B.3, ceil by
+      XRsiz 5 / YRsiz 3) is empty: no precincts (B.6), no packets, nothing
+      to code. Rule: an absent tile with samples in any component → FAIL
+      "N of M tiles ... although they carry samples"; an absent all-empty
+      tile → clean. p0_10's inflated grid FAILs, b2_mono is clean; the
+      test carries both plus a full-grid control.
 - [x] Strict sweep of all 57 ISO conformance codestreams through the
       verb (2026-09-16 ~6:45pm EDT): two false positives fixed. p1_05
       (PTERM, over-read 3; openjpeg warns on the same 4 blocks) → PTERM
@@ -114,13 +118,25 @@ honestly. Agreed order:
 - [ ] Candidate from the probe: reversible (5/3) QCD exponents versus
       precision + band gain (Annex E.1.1, Eq. E-4) — needs the clause text
       to confirm it is normative before it becomes a FAIL.
-- [ ] Profile checks from docs/T800_PROFILES.md: Rsiz 1/2 → Table A.45
-      as FAILs with controls (until then, report "profile claimed,
-      constraints not verified"); then cinema (3..7), broadcast (ML 1..7;
-      0x0306/0x0307 only for reversible), IMF (A.51 structural rules; rate
-      limits need frame rate and are not checkable from a still
-      codestream). Fix the Rsiz table: broadcast ML 1..7, reversible only
-      0x0306/0x0307, IMF ML 1..11 / SL 0..9.
+- [x] Profile checks from docs/T800_PROFILES.md (2026-09-16 ~8:05pm EDT):
+      `src/decode/profiles.zig` classifies Rsiz into the Table A.10 and
+      amendment families (broadcast ML 1..7, reversible only 0x0306/0x0307,
+      IMF ML 1..11 / SL 0..9; anything else is undefined → FAIL) and checks
+      the claimed profile against its table once the main header is
+      complete: Profile 0/1 (Table A.45: origins, tiles, sub-sampling,
+      code-block size and style, lowest resolution ≤128, Profile-0
+      precincts, RGN ≤37, PPM, first POC), cinema 2K/4K/scalable/LTS
+      (size, 3×12-bit unsigned, CPRL, layers, 32×32 code-blocks, levels,
+      RGN/PPM, EPH/SOP), broadcast (CPRL, TLM, single tile), IMF (Table
+      A.51 sizes, ≤3 components, 8..16-bit unsigned, XRsiz 1/1,2, YRsiz 1,
+      equal levels). Tile-part rules in walkTileParts: COD/COC/QCD/QCC
+      main-header-only, no PPT, Profile-0 TPsot-0-first order. Violations
+      are finding 259 profile_violation FAIL; the bitrate and level limits
+      that need a frame rate leave the profile partially verified (c145
+      names the profile). Controls: every vendored p0_*/p1_*/file1/file9
+      clean; 27-fixture CLI sweep shows no c259. Profile-1 tile rule read
+      as square ≤1024 samples in the finest component (p1_04 128×128 and
+      p1_06 3×3 tiles are Profile 1, so "at least 1024" cannot be it).
 - [ ] Oracle wrapper: u8 component cast (257 comps) and `unreachable`
       on 2 channels; then lift jp2z's 16-component ceiling so p0_13
       decodes (exceed the oracle, not dodge it).
