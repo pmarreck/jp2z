@@ -8,7 +8,7 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | a5\_mono.j2c |
 | Bytes | 34747 |
-| Started | 2026-09-16T22:21:29Z |
+| Started | 2026-09-17T00:43:19Z |
 | Attempted / planned | 400 / 400 |
 | Conclusive outcomes | 400 |
 | Warnings and failures | 0 |
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 778236f572254390472d6271879c71a0d6508fb850fe86b919dc36753859e0e0 |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 4096 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

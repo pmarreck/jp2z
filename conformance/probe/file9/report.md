@@ -8,7 +8,7 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | file9.jp2 |
 | Bytes | 300208 |
-| Started | 2026-09-16T22:23:25Z |
+| Started | 2026-09-17T00:57:15Z |
 | Attempted / planned | 400 / 400 |
 | Conclusive outcomes | 400 |
 | Warnings and failures | 0 |
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 6dfea011b013b62353fedcce9520e7c061dbbe8bf0c06d9edad4ac8889274b91 |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 4096 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

@@ -8,7 +8,7 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | balloon\_eciRGB\_icc.jp2 |
 | Bytes | 1864443 |
-| Started | 2026-09-16T22:21:31Z |
+| Started | 2026-09-17T00:43:33Z |
 | Attempted / planned | 400 / 400 |
 | Conclusive outcomes | 400 |
 | Warnings and failures | 0 |
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | f9f1c5db873d46fe024af70bbd7ff2a785af1fbcfe8fc6309235811b0b767c40 |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 4096 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

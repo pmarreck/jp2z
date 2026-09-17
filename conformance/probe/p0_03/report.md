@@ -1,6 +1,6 @@
 # Corruption Probe
 
-## COMPLETE
+## COMPLETE WITH EXCEPTIONS
 
 Baseline: **accepted** · **SAFE: restoration verified**
 
@@ -8,10 +8,10 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | p0\_03.j2k |
 | Bytes | 12845 |
-| Started | 2026-09-16T22:23:33Z |
+| Started | 2026-09-17T00:58:06Z |
 | Attempted / planned | 400 / 400 |
-| Conclusive outcomes | 400 |
-| Warnings and failures | 0 |
+| Conclusive outcomes | 399 |
+| Warnings and failures | 1 |
 | Not run | 0 |
 
 ## Mutation rejection
@@ -20,7 +20,7 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | Rejected/conclusive | Rate | 95% Wilson CI | Not run |
 | --- | ---: | ---: | ---: | ---: |
-| sniper | 86/100 | 86.0% | 77.9..91.5% | 0 |
+| sniper | 85/99 | 85.9% | 77.7..91.4% | 0 |
 | bolter | 89/100 | 89.0% | 81.4..93.7% | 0 |
 | shotgun | 100/100 | 100.0% | 96.3..100.0% | 0 |
 | truncation | 100/100 | 100.0% | 96.3..100.0% | 0 |
@@ -29,7 +29,7 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | warning | error | crash | timeout | interrupted |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| sniper | 0 | 0 | 0 | 0 | 0 |
+| sniper | 1 | 0 | 0 | 0 | 0 |
 | bolter | 0 | 0 | 0 | 0 | 0 |
 | shotgun | 0 | 0 | 0 | 0 | 0 |
 | truncation | 0 | 0 | 0 | 0 | 0 |
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 0aa26db75e8414d554e1fa93a0c7e101f16bb203f1fe06983fdd0c01fa61ddee |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 1605 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

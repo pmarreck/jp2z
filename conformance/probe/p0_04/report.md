@@ -8,7 +8,7 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | p0\_04.j2k |
 | Bytes | 264635 |
-| Started | 2026-09-16T22:23:34Z |
+| Started | 2026-09-17T00:58:11Z |
 | Attempted / planned | 400 / 400 |
 | Conclusive outcomes | 400 |
 | Warnings and failures | 0 |
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 3d35a4eeffb00e150bb69611afec80fba9570d5fca18a04c4e644badfd052c6f |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 4096 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |
