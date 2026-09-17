@@ -650,3 +650,18 @@ equality. The corpus survey (a 20-line LuaJIT script over COD/QCD bytes,
 scratch qstyle.lua) is what showed the equality is violated by
 conformance files. Read the clause, then measure the corpus, before
 choosing a severity.
+
+## Reaching Peter's reference material on Tiki (2026-09-16)
+
+Peter keeps retrieved spec extracts in the Windows Documents folder of
+his Tiki machine (`C:\Users\Peter Marreck\Documents\`, a Codex output
+tree beside it holds the source PDF). What worked from Thelio: plain
+`ssh tiki` (the Windows OpenSSH node on Tailscale, key auth as the
+default user) lands in cmd.exe, so join commands with `&`, not `;`, and
+fetch files with `ssh tiki 'type "C:\...\file"' > local` (strip CR for
+text). What did not: `ssh tiki-wsl` under either user name (publickey
+denied), `scp` with a quoted Windows path (the quotes reach the remote
+literally), SMB (access denied), and the local /mnt/win mount (this
+machine's own Windows partition, no Users tree). The ITU PDF is
+copyrighted and stays out of the repo; the verbatim extracts Peter
+transcribed live under docs/.
