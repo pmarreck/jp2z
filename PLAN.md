@@ -165,9 +165,12 @@ honestly. Agreed order:
       `-Dopenjpeg-*` flags (`ldd` on the built CLI: libc only); the test
       check and the dev shell keep the oracle. The CLI gained `--about`
       (name, version, platform, arch; CLI test).
-- [ ] Re-probe the other 25 fixtures after the profile checks so the
-      coverage table is one run again (p0_13 and p1_07 done; expect the
-      Profile 0/1 rows to gain header catches).
+- [x] Re-probe of all 27 fixtures at 449eb1d (2026-09-16 ~9:05pm EDT):
+      one-run table in conformance/PROBE_COVERAGE.md; 17 fixtures with no
+      flipped trial, every flip on the other 10 explained (Profile 0
+      FAILs replacing the slot-15 WARN, absent-tile and profile header
+      catches, 7 self-consistent precision flips on p0_13, 4 PTERM
+      3-byte over-reads accepted by the p1_05 cap raise).
 
 ### Directive: validation coverage → 100% (Peter, 2026-09-06 EDT)
 
