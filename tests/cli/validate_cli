@@ -59,5 +59,11 @@ check_rc "no path exits 64 (usage)" 64 "$rc"
 # 8. help mentions the verb
 "$cli" --help 2>/dev/null | grep -q 'validate' && pass "--help lists validate" || fail "--help lists validate"
 
+# 9. --about: one line with the name, version, platform and architecture
+about=$("$cli" --about 2>/dev/null); rc=$?
+check_rc "--about exits 0" 0 "$rc"
+[ "$(printf '%s\n' "$about" | wc -l)" = "1" ] && pass "--about is one line" || fail "--about is one line (got: $about)"
+case "$about" in jp2z*[0-9]*linux*|jp2z*[0-9]*macos*|jp2z*[0-9]*windows*) pass "--about names version and platform";; *) fail "--about names version and platform (got: $about)";; esac
+
 printf '%s\n' "validate_cli: $fails failure(s)"
 exit "$fails"

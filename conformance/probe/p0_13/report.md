@@ -8,10 +8,10 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | p0\_13.j2k |
 | Bytes | 2486 |
-| Started | 2026-09-16T22:23:43Z |
+| Started | 2026-09-17T00:35:05Z |
 | Attempted / planned | 400 / 400 |
-| Conclusive outcomes | 337 |
-| Warnings and failures | 63 |
+| Conclusive outcomes | 378 |
+| Warnings and failures | 22 |
 | Not run | 0 |
 
 ## Mutation rejection
@@ -20,8 +20,8 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | Rejected/conclusive | Rate | 95% Wilson CI | Not run |
 | --- | ---: | ---: | ---: | ---: |
-| sniper | 28/74 | 37.8% | 27.6..49.2% | 0 |
-| bolter | 37/63 | 58.7% | 46.4..70.0% | 0 |
+| sniper | 39/92 | 42.4% | 32.8..52.6% | 0 |
+| bolter | 64/86 | 74.4% | 64.3..82.5% | 0 |
 | shotgun | 100/100 | 100.0% | 96.3..100.0% | 0 |
 | truncation | 100/100 | 100.0% | 96.3..100.0% | 0 |
 
@@ -29,8 +29,8 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | warning | error | crash | timeout | interrupted |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| sniper | 26 | 0 | 0 | 0 | 0 |
-| bolter | 37 | 0 | 0 | 0 | 0 |
+| sniper | 8 | 0 | 0 | 0 | 0 |
+| bolter | 14 | 0 | 0 | 0 | 0 |
 | shotgun | 0 | 0 | 0 | 0 | 0 |
 | truncation | 0 | 0 | 0 | 0 | 0 |
 
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 12463d0c67e803fac6637d384263abbb6b546826419ecb725aed18fd45bcabb0 |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 310 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

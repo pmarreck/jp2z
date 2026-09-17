@@ -8,7 +8,7 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | p1\_07.j2k |
 | Bytes | 569 |
-| Started | 2026-09-16T22:23:50Z |
+| Started | 2026-09-17T00:35:07Z |
 | Attempted / planned | 400 / 400 |
 | Conclusive outcomes | 398 |
 | Warnings and failures | 2 |
@@ -20,8 +20,8 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | Rejected/conclusive | Rate | 95% Wilson CI | Not run |
 | --- | ---: | ---: | ---: | ---: |
-| sniper | 73/99 | 73.7% | 64.3..81.4% | 0 |
-| bolter | 83/99 | 83.8% | 75.3..89.8% | 0 |
+| sniper | 74/99 | 74.7% | 65.4..82.3% | 0 |
+| bolter | 84/99 | 84.8% | 76.5..90.6% | 0 |
 | shotgun | 100/100 | 100.0% | 96.3..100.0% | 0 |
 | truncation | 100/100 | 100.0% | 96.3..100.0% | 0 |
 
@@ -45,9 +45,9 @@ Intervals describe this input and sampling model. Warnings and failures are excl
 | Setting | Value |
 | --- | --- |
 | Source SHA-256 | 59576c42568098e4e5d9967eefb0a59b0002fedd7776c201c2c9f9aeb3cf1949 |
-| Validator | ./zig-out/bin/jp2z validate --strict \{file\} |
+| Validator | zig-out/bin/jp2z validate --strict \{file\} |
 | Seed | 0x0000000000000000000000000000000000000000000000000000000000001234 |
 | Shotgun bytes | 71 |
-| Workers | 8 |
+| Workers | 1 |
 | Algorithm | corruption\_probe mutation v1 |
 | RNG | random BLAKE3 keyed XOF (random-luajit-lib @436f512eebf2ae705f852c9edeceb68e1d495519) |

@@ -26,6 +26,24 @@
 #define EX_SOFTWARE 70
 #define EX_IOERR 74
 
+/* Build platform for --about, from the compiler's predefined macros. */
+#if defined(__APPLE__)
+#define JP2Z_PLATFORM "macos"
+#elif defined(_WIN32)
+#define JP2Z_PLATFORM "windows"
+#elif defined(__linux__)
+#define JP2Z_PLATFORM "linux"
+#else
+#define JP2Z_PLATFORM "unknown-os"
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define JP2Z_ARCH "aarch64"
+#elif defined(__x86_64__) || defined(_M_X64)
+#define JP2Z_ARCH "x86_64"
+#else
+#define JP2Z_ARCH "unknown-arch"
+#endif
+
 static void usage(FILE *out) {
     fputs(
         "jp2z — cleanroom JPEG 2000 decoder and validator\n"
@@ -35,6 +53,7 @@ static void usage(FILE *out) {
         "  jp2z decode <input|->\n"
         "  jp2z validate [--strict|--lenient] [--json] <input|->\n"
         "  jp2z --version\n"
+        "  jp2z --about\n"
         "  jp2z -h | --help\n"
         "\n"
         "validate: strict by default (deep entropy findings FAIL); --lenient\n"
@@ -211,6 +230,12 @@ static int cmd_decode(const char *path) {
 int main(int argc, char *argv[]) {
     if (argc < 2) { usage(stderr); return EX_USAGE; }
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) { usage(stdout); return 0; }
+    if (strcmp(argv[1], "--about") == 0) {
+        /* One line: what it is, the version, and the platform it was built for. */
+        printf("jp2z %s: pure-Zig JPEG 2000 Part 1 decoder and validator (%s %s)\n",
+               jp2z_version(), JP2Z_PLATFORM, JP2Z_ARCH);
+        return 0;
+    }
     if (strcmp(argv[1], "--version") == 0) {
         printf("jp2z %s\n", jp2z_version());
         return 0;

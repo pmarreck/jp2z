@@ -94,6 +94,45 @@ shotgun, where 57 of 100 windows fell inside the comment segment.
 Survivor columns are accepted/total for header (JP2 boxes, main header,
 tile-part headers), packet data, and comment bytes.
 
+## Re-probe after the profile checks and the component-ceiling lift (2026-09-16, evening)
+
+Same seed, same rounds, same modes, so every trial pairs with the run
+above. p0_13 (257 components) and p1_07 (2 components) were re-probed
+because both now decode through jp2z and the validator no longer reads
+components past the 16th through the 16th's descriptor. The shotgun
+window was min(4096, size/8) as before (310 and 71 bytes); the run above
+used the same rule. Reports and events under `conformance/probe/` are
+replaced by these runs; the earlier ones are in git history.
+
+| Fixture | Rsiz | Bytes | Sniper rejected (non-comment) | Bolter rejected (non-comment) | Shotgun rejected | Truncation rejected | Sniper survivors: header / packet / comment | Bolter survivors: header / packet / comment |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| p0_13 | 0x0001 | 2486 | 47/98 (48%) | 78/100 (78%) | 100/100 (100%) | 100/100 (100%) | 12/30 / 39/68 / 2/2 | 3/47 / 19/53 / - |
+| p1_07 | 0x0002 | 569 | 75/93 (81%) | 85/99 (86%) | 100/100 (100%) | 100/100 (100%) | 1/17 / 17/76 / 7/7 | 1/15 / 13/82 / 1/1 |
+
+Per-trial flips against the first run (scratch `flips.lua` over the two
+events files):
+
+- p0_13, 34 trials WARN to FAIL: a SIZ descriptor byte of a component
+  past the 16th used to trip the "differs from the 16th" c145 (an
+  unsupported-feature notice, not a detection). The same bytes now FAIL
+  as Profile 0 violations (c259, sub-sampling 254 or 65 is not 1, 2 or
+  4), which is the proven finding the file deserves.
+- p0_13, 4 trials accepted to FAIL: Profile 0 rules on components below
+  the 16th (sub-sampling) and on the tile grid (XTsiz byte) that nothing
+  checked before.
+- p0_13, 7 trials WARN to accepted, all sniper bit flips in the Ssiz byte
+  of a component past the 16th (precision or sign of one component).
+  Profile 0 sets no bit-depth bound below Table A.10's 38, so a stream
+  that declares component 252 as 9-bit is self-consistent: the packets
+  decode, the samples clamp to the new range. The old WARN was the
+  slot-15 artefact, not a real catch, so the sniper rate falls from 55%
+  to 48% while the count of proven findings rises. The only cross-check
+  that could catch a lone precision change is the reversible QCD
+  exponent against precision plus band gain (Annex E.1.1), the open
+  candidate in PLAN.md; these 7 trials are its evidence.
+- p1_07, 2 trials accepted to FAIL: XTsiz/YTsiz bytes that leave most of
+  the SIZ grid without a tile-part (the absent-tile rule).
+
 ## Honest summary
 
 - Shotgun (whole-window garbage) and truncation: detected on every file,

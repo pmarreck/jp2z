@@ -117,7 +117,9 @@ honestly. Agreed order:
       Both with RED tests. Sweep now: 0 FAIL; b2_mono the one WARN.
 - [ ] Candidate from the probe: reversible (5/3) QCD exponents versus
       precision + band gain (Annex E.1.1, Eq. E-4) — needs the clause text
-      to confirm it is normative before it becomes a FAIL.
+      to confirm it is normative before it becomes a FAIL. Evidence: the 7
+      p0_13 sniper survivors that flip one component's Ssiz (see
+      conformance/PROBE_COVERAGE.md, re-probe section).
 - [x] Profile checks from docs/T800_PROFILES.md (2026-09-16 ~8:05pm EDT):
       `src/decode/profiles.zig` classifies Rsiz into the Table A.10 and
       amendment families (broadcast ML 1..7, reversible only 0x0306/0x0307,
@@ -158,8 +160,14 @@ honestly. Agreed order:
       flipped to assert the 17th keeps its own precision). Remaining
       16-slot structure: the JP2 cdef ChannelMap (colour reorder is
       skipped past 16 channels; noted, not a decode refusal).
-- [ ] Runtime-only flake output (CLI + archive, no openjpeg); the oracle
-      tools keep their own output.
+- [x] Runtime-only flake output (2026-09-16 ~8:45pm EDT): packages.default
+      builds the CLI and the archive with no openjpeg in buildInputs and no
+      `-Dopenjpeg-*` flags (`ldd` on the built CLI: libc only); the test
+      check and the dev shell keep the oracle. The CLI gained `--about`
+      (name, version, platform, arch; CLI test).
+- [ ] Re-probe the other 25 fixtures after the profile checks so the
+      coverage table is one run again (p0_13 and p1_07 done; expect the
+      Profile 0/1 rows to gain header catches).
 
 ### Directive: validation coverage → 100% (Peter, 2026-09-06 EDT)
 

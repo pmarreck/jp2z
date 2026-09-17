@@ -54,17 +54,21 @@
           "-Dopenjpeg-lib=${openjpegLib}/lib"
         ];
       in {
+        # Runtime output: the C CLI and the static archive with its header.
+        # Both are pure Zig behind the C ABI and link no openjpeg, so the
+        # package neither depends on it nor passes its paths; the oracle
+        # stays confined to the test check and the dev shell (sweep-one,
+        # tile-hist, internal.openjpegDecode).
         packages.default = pkgs.stdenv.mkDerivation {
           inherit pname version;
           src = ./.;
           nativeBuildInputs = [ zigPkg ];
-          buildInputs = commonBuildInputs;
           dontConfigure = true;
           dontFixup = true;
           buildPhase = ''
             export HOME=$TMPDIR
             ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
-            zig build -Doptimize=ReleaseFast --prefix $out ${pkgs.lib.concatStringsSep " " zigBuildFlags}
+            zig build -Doptimize=ReleaseFast --prefix $out
           '';
           dontInstall = true;
         };
