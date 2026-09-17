@@ -82,7 +82,7 @@ pub const PrecinctSize = packed struct(u8) {
 };
 
 /// Quantization table (T.800 A.6.4/A.6.5): the default from QCD, or a
-/// per-component override from QCC (`comp_quant`). Precedence, highest
+/// per-component override from QCC (`CompDesc.quant`). Precedence, highest
 /// first: tile-part QCC > tile-part QCD > main QCC > main QCD — a
 /// tile-part QCD therefore clears every override inherited from the
 /// main header before the tile's own QCCs re-apply.
@@ -126,6 +126,29 @@ pub const CompCoding = struct {
     precinct_sizes: [33]PrecinctSize,
 };
 
+/// One SIZ component (T.800 A.5.1) plus the per-component overrides a
+/// COC (A.6.2), QCC (A.6.5) and RGN (A.6.3) may attach to it.
+pub const CompDesc = struct {
+    /// Precision (bit depth) from Ssiz low 7 bits + 1.
+    prec: u8 = 8,
+    /// Ssiz bit 7.
+    signed: bool = false,
+    /// XRsiz / YRsiz: the component grid is 1/dx × 1/dy of the reference
+    /// grid (B.2).
+    dx: u8 = 1,
+    dy: u8 = 1,
+    /// RGN ROI up-shift (implicit ROI): coded bit-planes = M_b + shift −
+    /// zero_bitplanes, and decoded magnitudes at or above 2^shift are
+    /// scaled back down by shift (H.2).
+    roishift: u8 = 0,
+    /// COC override: decomposition count, code-block size/style, wavelet,
+    /// precincts. Precedence: tile-part COC > tile-part COD > main COC >
+    /// main COD (a tile-part COD clears inherited overrides).
+    coding: ?CompCoding = null,
+    /// QCC override.
+    quant: ?QuantTable = null,
+};
+
 pub const CodingParams = struct {
     /// SIZ Rsiz as written (A.5.1 Table A.9 + amendments). Bit 15 = Part 2
     /// (T.801), bit 14 = HTJ2K (T.814): under those, base-standard reserved
@@ -167,28 +190,12 @@ pub const CodingParams = struct {
     precinct_sizes: [33]PrecinctSize = @splat(.{}),
     /// QCD table (the default for every component without a QCC).
     quant: QuantTable = .{},
-    /// QCC overrides by component (first 16 components; a QCC for a later
-    /// component is surfaced as unsupported).
-    comp_quant: [16]?QuantTable = @splat(null),
-    /// COC overrides by component (T.800 A.6.2): decomposition count,
-    /// code-block size/style, wavelet, precincts. Precedence: tile-part COC >
-    /// tile-part COD > main COC > main COD (a tile-part COD clears inherited
-    /// overrides). A COC for a component past the 16 slots is c145.
-    comp_coding: [16]?CompCoding = @splat(null),
-    /// RGN ROI up-shift by component (T.800 A.6.3, implicit ROI): coded
-    /// bit-planes = M_b + shift - zero_bitplanes, and decoded magnitudes at
-    /// or above 2^shift are scaled back down by shift (H.2).
-    comp_roishift: [16]u8 = @splat(0),
-    /// Per-component precision (bit depth) from SIZ Ssiz low 7 bits + 1.
-    /// Indexed by component; up to 16 captured (enough for our fixtures).
-    comp_prec: [16]u8 = @splat(8),
-    /// Per-component signedness (SIZ Ssiz bit 7) as a bitmask by component.
-    comp_signed: u16 = 0,
-    /// Per-component horizontal/vertical sub-sampling (SIZ XRsiz/YRsiz).
-    /// Component samples live on a grid 1/dx × 1/dy of the reference grid
-    /// (T.800 B.2). Default 1 (no sub-sampling). Index = component.
-    comp_dx: [16]u8 = @splat(1),
-    comp_dy: [16]u8 = @splat(1),
+    /// Per-component state, one entry per SIZ component (Csiz up to
+    /// 16384, T.800 Table A.10), heap-owned: parseSizBody allocates it,
+    /// ValidationReport.deinit (or `deinit`) frees it, and a tile takes
+    /// `clone` before applying its own COD/COC/QCD/QCC/RGN. A literal
+    /// CodingParams (tests) has no entries and reads defaults.
+    comps: []CompDesc = &.{},
     /// SIZ tile-grid geometry (for multi-tile, M6 cont.). Single-tile
     /// files have tile_w/h >= image and origins 0 (whole image = one tile).
     image_x0: u32 = 0, // XOsiz
@@ -204,11 +211,45 @@ pub const CodingParams = struct {
     pocs: [max_pocs]PocEntry = @splat(.{ .rs = 0, .cs = 0, .lye = 0, .re = 0, .ce = 0, .order = .lrcp }),
     num_pocs: u8 = 0,
 
+    /// Heap copy of the per-component state so a tile can apply its own
+    /// overrides without touching the main header's.
+    pub fn clone(self: CodingParams, allocator: Allocator) Allocator.Error!CodingParams {
+        var out = self;
+        out.comps = try allocator.dupe(CompDesc, self.comps);
+        return out;
+    }
+
+    pub fn deinit(self: CodingParams, allocator: Allocator) void {
+        if (self.comps.len > 0) allocator.free(self.comps);
+    }
+
+    /// Component descriptor, or null past the SIZ entries (a literal
+    /// CodingParams): callers fall back to the defaults.
+    pub fn descFor(self: *const CodingParams, c: u16) ?*const CompDesc {
+        return if (c < self.comps.len) &self.comps[c] else null;
+    }
+
+    pub fn precFor(self: *const CodingParams, c: u16) u8 {
+        return if (self.descFor(c)) |d| d.prec else 8;
+    }
+
+    pub fn signedFor(self: *const CodingParams, c: u16) bool {
+        return if (self.descFor(c)) |d| d.signed else false;
+    }
+
+    pub fn dxFor(self: *const CodingParams, c: u16) u8 {
+        return if (self.descFor(c)) |d| d.dx else 1;
+    }
+
+    pub fn dyFor(self: *const CodingParams, c: u16) u8 {
+        return if (self.descFor(c)) |d| d.dy else 1;
+    }
+
     /// Effective quantization table for component `c`: its QCC override
     /// when one exists, else the QCD default (T.800 A.6.5 precedence).
     pub fn quantFor(self: *const CodingParams, c: u16) *const QuantTable {
-        if (c < self.comp_quant.len) {
-            if (self.comp_quant[c]) |*t| return t;
+        if (self.descFor(c)) |d| {
+            if (d.quant) |*t| return t;
         }
         return &self.quant;
     }
@@ -216,8 +257,8 @@ pub const CodingParams = struct {
     /// Effective coding style for component `c`: its COC override when one
     /// exists, else the COD defaults.
     pub fn codingFor(self: *const CodingParams, c: u16) CompCoding {
-        if (c < self.comp_coding.len) {
-            if (self.comp_coding[c]) |cc| return cc;
+        if (self.descFor(c)) |d| {
+            if (d.coding) |cc| return cc;
         }
         return .{
             .num_decomp_levels = self.num_decomp_levels,
@@ -231,7 +272,7 @@ pub const CodingParams = struct {
 
     /// ROI up-shift of component `c` (0 without RGN).
     pub fn roishiftFor(self: *const CodingParams, c: u16) u8 {
-        return self.comp_roishift[@min(c, self.comp_roishift.len - 1)];
+        return if (self.descFor(c)) |d| d.roishift else 0;
     }
 
     /// Look up M_b for component `c` at a (resolution, band) pair. `band`
@@ -320,7 +361,7 @@ pub const PacketIterator = struct {
     /// decomposition count and precinct partition; SIZ its own sub-sampling).
     /// Components past the 16th read slot 15 — parseSizBody guarantees their
     /// descriptors repeat it, and COC/RGN for them are surfaced as c145.
-    geo: [16]CompGeo = @splat(.{}),
+    geo: []CompGeo = &.{},
     /// max over components of (decomp + 1): the resolution loop bound.
     max_resolutions: u8 = 0,
     /// RPCL steps each r by the MIN reference-grid stride over components.
@@ -367,9 +408,8 @@ pub const PacketIterator = struct {
     /// Tile-component rect of component `c` for a reference-grid tile
     /// rect (T.800 B-12): tcx0 = ceil(tx0/dx), tcx1 = ceil(tx1/dx).
     pub fn compRect(params: *const CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32, c: u16) struct { tcx0: u32, tcy0: u32, tcw: u32, tch: u32, dx: u32, dy: u32 } {
-        const ci: usize = @min(c, params.comp_dx.len - 1);
-        const dx: u32 = params.comp_dx[ci];
-        const dy: u32 = params.comp_dy[ci];
+        const dx: u32 = params.dxFor(c);
+        const dy: u32 = params.dyFor(c);
         const tcx0 = (tile_x0 + dx - 1) / dx;
         const tcy0 = (tile_y0 + dy - 1) / dy;
         const tcx1 = (tile_x0 + image_w + dx - 1) / dx;
@@ -378,7 +418,17 @@ pub const PacketIterator = struct {
     }
 
     fn geoFor(self: *const PacketIterator, c: u16) *const CompGeo {
+        if (self.geo.len == 0) return &default_geo;
         return &self.geo[@min(c, self.geo.len - 1)];
+    }
+
+    const default_geo: CompGeo = .{};
+
+    /// Frees the geometry this iterator owns (one created by `init`); an
+    /// iterator seeded by `initWithGeo` borrows and must not call this.
+    pub fn deinit(self: *PacketIterator, allocator: Allocator) void {
+        if (self.geo.len > 0) allocator.free(self.geo);
+        self.geo = &.{};
     }
 
     /// Precincts of (component, resolution); 0 beyond the component's resolutions.
@@ -414,9 +464,20 @@ pub const PacketIterator = struct {
         return subbands.precinctIndexAt(g.tcx0, g.tcy0, g.tcw, g.tch, g.num_decomp_levels, r, ppx, ppy, xc, yc);
     }
 
-    pub fn init(params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PacketIterator {
+    /// Allocates one CompGeo per SIZ component (Csiz up to 16384) and
+    /// seeds the cursor. The caller owns the geometry: `deinit`.
+    pub fn init(allocator: Allocator, params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) Allocator.Error!PacketIterator {
+        const geo = try allocator.alloc(CompGeo, params.num_components);
+        return initWithGeo(params, geo, tile_x0, tile_y0, image_w, image_h);
+    }
+
+    /// Seed a cursor over geometry owned elsewhere. A POC volume rebuild
+    /// or a replay reuses the tile's geometry: it depends on the coding
+    /// parameters and sub-sampling, never on the progression order.
+    pub fn initWithGeo(params: CodingParams, geo: []CompGeo, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PacketIterator {
         var iter: PacketIterator = .{
             .params = params,
+            .geo = geo,
             .tile_x0 = tile_x0,
             .tile_y0 = tile_y0,
             .image_w = image_w,
@@ -434,7 +495,7 @@ pub const PacketIterator = struct {
         var rpcl_sy: [33]u32 = @splat(std.math.maxInt(u32));
         var any_precincts = false;
         var max_res: u8 = 0;
-        const ncomp_geo: u16 = @intCast(@min(@as(usize, params.num_components), iter.geo.len));
+        const ncomp_geo: u16 = @intCast(@min(@as(usize, params.num_components), geo.len));
         var c: u16 = 0;
         while (c < ncomp_geo) : (c += 1) {
             const cc = params.codingFor(c);
@@ -742,9 +803,9 @@ pub const PocSequencer = struct {
     /// so the volumes don't re-emit them.
     passthrough_pulled: usize = 0,
 
-    pub fn init(params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) PocSequencer {
+    pub fn init(allocator: Allocator, params: CodingParams, tile_x0: u32, tile_y0: u32, image_w: u32, image_h: u32) Allocator.Error!PocSequencer {
         var seq: PocSequencer = .{
-            .inner = PacketIterator.init(params, tile_x0, tile_y0, image_w, image_h),
+            .inner = try PacketIterator.init(allocator, params, tile_x0, tile_y0, image_w, image_h),
         };
         const num_resolutions: u8 = seq.inner.max_resolutions;
         var acc: usize = 0;
@@ -771,6 +832,7 @@ pub const PocSequencer = struct {
     pub fn deinit(self: *PocSequencer, allocator: Allocator) void {
         if (self.include) |inc| allocator.free(inc);
         self.include = null;
+        self.inner.deinit(allocator);
     }
 
     /// Total distinct packets of the tile's full (l, r, c, p) box —
@@ -793,7 +855,7 @@ pub const PocSequencer = struct {
             if (self.passthrough_pulled > 0) {
                 // Late first POC: mark the passthrough-emitted prefix (the
                 // first N packets of the COD-order iteration) as included.
-                var replay = PacketIterator.init(self.inner.params, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
+                var replay = PacketIterator.initWithGeo(self.inner.params, self.inner.geo, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
                 var n: usize = 0;
                 while (n < self.passthrough_pulled) : (n += 1) {
                     const pi = replay.next() orelse break;
@@ -817,7 +879,7 @@ pub const PocSequencer = struct {
     fn rebuildInner(self: *PocSequencer) void {
         var p = self.inner.params;
         p.progression_order = self.volumes[self.cur].order;
-        self.inner = PacketIterator.init(p, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
+        self.inner = PacketIterator.initWithGeo(p, self.inner.geo, self.inner.tile_x0, self.inner.tile_y0, self.inner.image_w, self.inner.image_h);
     }
 
     /// Canonical layer-major packet index for the include set.
@@ -1138,12 +1200,12 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             if (d.nc != cp.num_components) {
                 try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 8, "ihdr component count (NC) disagrees with SIZ Csiz (T.800 I.5.3.1)");
             }
-            const n: usize = @min(@as(usize, cp.num_components), 16);
+            const n: usize = cp.num_components;
             if (d.bpc != 0xFF) {
                 var k: usize = 0;
                 while (k < n) : (k += 1) {
-                    const signed = (cp.comp_signed >> @intCast(k)) & 1 != 0;
-                    if ((d.bpc & 0x7F) + 1 != cp.comp_prec[k] or (d.bpc >> 7 != 0) != signed) {
+                    const signed = cp.signedFor(@intCast(k));
+                    if ((d.bpc & 0x7F) + 1 != cp.precFor(@intCast(k)) or (d.bpc >> 7 != 0) != signed) {
                         try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "ihdr bit depth (BPC) disagrees with SIZ Ssiz (T.800 I.5.3.1)");
                         break;
                     }
@@ -1154,8 +1216,8 @@ fn walkJp2(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                 } else {
                     var k: usize = 0;
                     while (k < n) : (k += 1) {
-                        const signed = (cp.comp_signed >> @intCast(k)) & 1 != 0;
-                        if ((bpcc[k] & 0x7F) + 1 != cp.comp_prec[k] or (bpcc[k] >> 7 != 0) != signed) {
+                        const signed = cp.signedFor(@intCast(k));
+                        if ((bpcc[k] & 0x7F) + 1 != cp.precFor(@intCast(k)) or (bpcc[k] >> 7 != 0) != signed) {
                             try emit(report, allocator, .fail, .jp2_invalid_codestream, d.off + 10, "bpcc bit depth disagrees with SIZ Ssiz (T.800 I.5.3.2)");
                             break;
                         }
@@ -1629,7 +1691,10 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
             // order relative to COD is free.
             @intFromEnum(Marker.coc) => if (report.coding_params) |*cp| {
                 const ok = try parseCocBody(report, allocator, cp, body, pos + 2);
-                if (!ok) report.coding_params = null;
+                if (!ok) {
+                    cp.deinit(allocator);
+                    report.coding_params = null;
+                }
             },
             @intFromEnum(Marker.rgn) => if (report.coding_params) |*cp| {
                 saw_rgn = true;
@@ -2188,7 +2253,8 @@ fn walkTileParts(
                         // subband (pass budgets, tier-1 bitplanes) and the
                         // dequant stepsizes both change. p1_04 carries one
                         // on 63 of its 64 tiles.
-                        var tile_params = params;
+                        var tile_params = try params.clone(allocator);
+                        defer tile_params.deinit(allocator);
                         var tile_ok = true;
                         // A first-tile-part COD is the tile's coding style
                         // (T.800 A.6.1) — progression, layers, MCT, decomposition,
@@ -2199,7 +2265,7 @@ fn walkTileParts(
                         if (tp_ov.cod) |span| {
                             // A tile-part COD outranks every main-header COC
                             // (A.6.2 precedence): clear inherited overrides first.
-                            tile_params.comp_coding = @splat(null);
+                            for (tile_params.comps) |*d| d.coding = null;
                             tile_ok = try parseCodInto(report, allocator, &tile_params, data[span.start..span.end], span.start);
                         }
                         for (tp_ov.coc.items) |span| {
@@ -2225,7 +2291,7 @@ fn walkTileParts(
                         if (tp_ov.has_qcd) {
                             // A tile-part QCD outranks every main-header QCC
                             // (A.6.5): clear inherited overrides first.
-                            tile_params.comp_quant = @splat(null);
+                            for (tile_params.comps) |*d| d.quant = null;
                             try parseQcdInto(report, allocator, &tile_params, data[tp_ov.qcd_start..tp_ov.qcd_end], tp_ov.qcd_start);
                         }
                         for (tp_ov.qcc.items) |q| {
@@ -2247,6 +2313,9 @@ fn walkTileParts(
                                 _ = tiles.remove(isot16);
                                 return e;
                             };
+                            // The walk owns the tile's component state now (it
+                            // outlives this tile-part): the clone is moved, not freed.
+                            tile_params.comps = &.{};
                         }
                     } else {
                         // COD/QCD/QCC are only honored in a tile's FIRST tile-part
@@ -2348,9 +2417,8 @@ fn walkTileParts(
                         var has_samples = false;
                         var c: u16 = 0;
                         while (c < p.num_components) : (c += 1) {
-                            const ci: usize = @min(c, 15);
-                            const dx = p.comp_dx[ci];
-                            const dy = p.comp_dy[ci];
+                            const dx = p.dxFor(c);
+                            const dy = p.dyFor(c);
                             const cw = (tr.x1 + dx - 1) / dx - (tr.x0 + dx - 1) / dx;
                             const ch = (tr.y1 + dy - 1) / dy - (tr.y0 + dy - 1) / dy;
                             if (cw > 0 and ch > 0) {
@@ -2875,11 +2943,7 @@ fn parseCocBody(
     // (edf_c2_1103421: openjpeg "Error reading COC marker").
     const expected: usize = cw + 1 + 5 + (if (scoc & 0x01 != 0) @as(usize, cc.num_decomp_levels) + 1 else 0);
     if (body.len != expected) try emit(report, allocator, .fail, .bad_marker_length, offset - 2, "Lcoc does not match Scoc and the decomposition-level count (T.800 A.6.2)");
-    if (c >= cp.comp_coding.len) {
-        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "COC for a component beyond the 16 jp2z stores");
-        return true;
-    }
-    cp.comp_coding[c] = cc;
+    if (c < cp.comps.len) cp.comps[c].coding = cc;
     return true;
 }
 
@@ -2912,11 +2976,7 @@ fn parseRgnBody(
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + cw + 1, "RGN SPrgn exceeds 37");
         return;
     }
-    if (c >= cp.comp_roishift.len) {
-        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "RGN for a component beyond the 16 jp2z stores");
-        return;
-    }
-    cp.comp_roishift[c] = shift;
+    if (c < cp.comps.len) cp.comps[c].roishift = shift;
 }
 
 /// Main-header COD: parse into the report's params; un-publish them when
@@ -2928,7 +2988,10 @@ fn parseCodBody(
     offset: usize,
 ) Allocator.Error!void {
     const ok = try parseCodInto(report, allocator, if (report.coding_params) |*cp| cp else null, body, offset);
-    if (!ok) report.coding_params = null;
+    if (!ok) {
+        if (report.coding_params) |cp| cp.deinit(allocator);
+        report.coding_params = null;
+    }
 }
 
 /// Parse a QCD (Quantization Default) marker body. T.800 A.6.4:
@@ -3059,7 +3122,7 @@ fn parseQuantTable(
 /// marker order, so it lives after the walk, not inside the parse.
 fn checkQuantCoverage(report: *ValidationReport, allocator: Allocator, cp: *const CodingParams) Allocator.Error!void {
     var c: u16 = 0;
-    const n: u16 = @intCast(@min(@as(usize, cp.num_components), cp.comp_quant.len));
+    const n: u16 = cp.num_components;
     var reported_offsets: [17]usize = undefined;
     var reported: usize = 0;
     while (c < n) : (c += 1) {
@@ -3088,7 +3151,7 @@ fn checkQuantCoverage(report: *ValidationReport, allocator: Allocator, cp: *cons
 
 /// QCD into `cp`'s default table. Main header: QCC overrides (by marker
 /// type, regardless of order) are left alone. Tile-part: the caller
-/// clears `comp_quant` first — a tile-part QCD outranks main-header QCCs.
+/// clears every `CompDesc.quant` first — a tile-part QCD outranks main-header QCCs.
 fn parseQcdInto(
     report: *ValidationReport,
     allocator: Allocator,
@@ -3120,13 +3183,9 @@ fn parseQccBody(
         try emit(report, allocator, .fail, .jp2_invalid_codestream, offset, "QCC names a component beyond Csiz");
         return;
     }
-    if (c >= cp.comp_quant.len) {
-        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, offset, "QCC for a component beyond the 16 jp2z stores");
-        return;
-    }
     var table: QuantTable = .{};
     try parseQuantTable(report, allocator, &table, body[cw..], offset + cw);
-    cp.comp_quant[c] = table;
+    if (c < cp.comps.len) cp.comps[c].quant = table;
 }
 
 /// Locate the SOD marker (FF 93) inside a tile-part. `tp_start`
@@ -3199,16 +3258,19 @@ const TileWalk = struct {
     /// Components past the 16th share slot 15's geometry (their SIZ
     /// descriptors repeat it; COC/RGN for them are c145), each with its own
     /// contiguous run: base(c) = base(15) + (c - 15)·slots[15].
+    const CompSlots = struct {
+        precincts_at_r: [33]u32 = @splat(0),
+        res_offset: [33]usize = @splat(0),
+        slots: usize = 0,
+        base: usize = 0,
+    };
     const SlotLayout = struct {
-        precincts_at_r: [16][33]u32 = @splat(@splat(0)),
-        res_offset: [16][33]usize = @splat(@splat(0)),
-        slots: [16]usize = @splat(0),
-        base: [16]usize = @splat(0),
+        /// One record per SIZ component, heap-owned by the TileWalk.
+        comps: []CompSlots,
 
         fn index(self: *const SlotLayout, c: u16, r: u8, sb: u8, p: u32) usize {
-            const cm: usize = @min(c, self.slots.len - 1);
-            const b: usize = if (c < self.base.len) self.base[c] else self.base[self.base.len - 1] + (@as(usize, c) - (self.base.len - 1)) * self.slots[self.slots.len - 1];
-            return b + self.res_offset[cm][r] + @as(usize, sb) * @as(usize, self.precincts_at_r[cm][r]) + @as(usize, p);
+            const cs = &self.comps[c];
+            return cs.base + cs.res_offset[r] + @as(usize, sb) * @as(usize, cs.precincts_at_r[r]) + @as(usize, p);
         }
     };
 
@@ -3225,32 +3287,32 @@ const TileWalk = struct {
         tile_y0: u32,
         tile_index: u32,
     ) Allocator.Error!TileWalk {
-        var layout: SlotLayout = .{};
-        const ngeo: u16 = @intCast(@min(@as(usize, params.num_components), layout.slots.len));
+        const layout_comps = try allocator.alloc(CompSlots, params.num_components);
+        errdefer allocator.free(layout_comps);
+        @memset(layout_comps, .{});
+        var layout: SlotLayout = .{ .comps = layout_comps };
         var running: usize = 0;
         {
             var c: u16 = 0;
-            while (c < ngeo) : (c += 1) {
+            while (c < params.num_components) : (c += 1) {
                 const cc = params.codingFor(c);
                 const rect = PacketIterator.compRect(&params, tile_x0, tile_y0, image_w, image_h, c);
                 var slots: usize = 0;
                 var r: u8 = 0;
                 while (r < cc.num_decomp_levels + 1) : (r += 1) {
-                    layout.res_offset[c][r] = slots;
+                    layout.comps[c].res_offset[r] = slots;
                     const ppx: u4 = @intCast(cc.precinct_sizes[r].x_exp);
                     const ppy: u4 = @intCast(cc.precinct_sizes[r].y_exp);
                     const grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, r, ppx, ppy);
-                    layout.precincts_at_r[c][r] = grid.width * grid.height;
-                    slots += @as(usize, subbands.subbandCount(r)) * @as(usize, layout.precincts_at_r[c][r]);
+                    layout.comps[c].precincts_at_r[r] = grid.width * grid.height;
+                    slots += @as(usize, subbands.subbandCount(r)) * @as(usize, layout.comps[c].precincts_at_r[r]);
                 }
-                layout.slots[c] = slots;
-                layout.base[c] = running;
+                layout.comps[c].slots = slots;
+                layout.comps[c].base = running;
                 running += slots;
             }
         }
-        // Components past the 16th: one more run of slot 15's size each.
-        var total_slots: usize = running;
-        if (params.num_components > ngeo) total_slots += (@as(usize, params.num_components) - ngeo) * layout.slots[layout.slots.len - 1];
+        const total_slots: usize = running;
         const states = try allocator.alloc(packet_header.SubbandState, total_slots);
         errdefer allocator.free(states);
 
@@ -3267,11 +3329,10 @@ const TileWalk = struct {
             while (c < params.num_components) : (c += 1) {
                 const cc = params.codingFor(c);
                 const rect = PacketIterator.compRect(&params, tile_x0, tile_y0, image_w, image_h, c);
-                const cm: usize = @min(c, layout.slots.len - 1);
                 var r: u8 = 0;
                 while (r < cc.num_decomp_levels + 1) : (r += 1) {
                     const sb_count = subbands.subbandCount(r);
-                    const pcount = layout.precincts_at_r[cm][r];
+                    const pcount = layout.comps[c].precincts_at_r[r];
                     const ppx: u4 = @intCast(cc.precinct_sizes[r].x_exp);
                     const ppy: u4 = @intCast(cc.precinct_sizes[r].y_exp);
                     const grid = subbands.numPrecincts(rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels, r, ppx, ppy);
@@ -3299,7 +3360,8 @@ const TileWalk = struct {
             }
         }
 
-        var iter = PocSequencer.init(params, tile_x0, tile_y0, image_w, image_h);
+        var iter = try PocSequencer.init(allocator, params, tile_x0, tile_y0, image_w, image_h);
+        errdefer iter.deinit(allocator);
         // Main-header POC entries are the tile's default progression
         // volumes (tile-part-header POCs get appended as parts arrive).
         try iter.appendVolumes(allocator, params.pocs[0..params.num_pocs]);
@@ -3324,6 +3386,8 @@ const TileWalk = struct {
         while (i < self.initialised) : (i += 1) self.states[i].deinit(allocator);
         allocator.free(self.states);
         self.iter.deinit(allocator);
+        allocator.free(self.layout.comps);
+        self.params.deinit(allocator);
     }
 };
 
@@ -3705,11 +3769,6 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
             return;
         }
     }
-    // Components past the 16th are read through slot 15: valid as long as
-    // their descriptor matches it (every consumer already clamps with
-    // @min(c, 15)). A differing descriptor is an unsupported-but-valid
-    // stream (c145), surfaced once after the loop.
-    var nonuniform_tail = false;
     var ci: usize = 0;
     while (ci < csiz) : (ci += 1) {
         // Each component descriptor is 3 bytes: Ssiz, XRsiz, YRsiz.
@@ -3722,31 +3781,29 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
             try emit(report, allocator, .fail, .jp2_invalid_siz, pos, null);
             return;
         }
-        const prec: u8 = (ssiz & 0x7F) + 1;
-        const signed = ssiz & 0x80 != 0;
         // Table A.10: component precision is 1..38 bits.
-        if (prec > 38) {
+        if ((ssiz & 0x7F) + 1 > 38) {
             try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "component precision exceeds 38 bits");
             return;
         }
-        if (ci < cp_local.comp_prec.len) {
-            cp_local.comp_prec[ci] = prec;
-            if (signed) cp_local.comp_signed |= (@as(u16, 1) << @intCast(ci));
-            cp_local.comp_dx[ci] = xrsiz;
-            cp_local.comp_dy[ci] = yrsiz;
-        } else {
-            const last = cp_local.comp_prec.len - 1;
-            const last_signed = (cp_local.comp_signed >> @intCast(last)) & 1 != 0;
-            if (prec != cp_local.comp_prec[last] or signed != last_signed or xrsiz != cp_local.comp_dx[last] or yrsiz != cp_local.comp_dy[last]) {
-                nonuniform_tail = true;
-            }
-        }
     }
-    if (nonuniform_tail) {
-        try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, pos, "components beyond the 16th carry descriptors that differ from the 16th's; jp2z reads them through the 16th");
+    // Every descriptor is valid: one CompDesc per component, heap-owned
+    // by the report (Csiz up to 16384 is 7 MB at most).
+    const comps = try allocator.alloc(CompDesc, csiz);
+    ci = 0;
+    while (ci < csiz) : (ci += 1) {
+        const ssiz = body[38 + ci * 3];
+        comps[ci] = .{
+            .prec = (ssiz & 0x7F) + 1,
+            .signed = ssiz & 0x80 != 0,
+            .dx = body[38 + ci * 3 + 1],
+            .dy = body[38 + ci * 3 + 2],
+        };
     }
+    cp_local.comps = comps;
     report.width = xsiz - xosiz;
     report.height = ysiz - yosiz;
+    if (report.coding_params) |old| old.deinit(allocator);
     report.coding_params = cp_local;
 }
 
@@ -3963,7 +4020,7 @@ test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, pass
 
     // (1) Both volumes known up front (a main-header POC).
     {
-        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        var seq = try PocSequencer.init(std.testing.allocator, params, 0, 0, 64, 64);
         defer seq.deinit(std.testing.allocator);
         try seq.appendVolumes(std.testing.allocator, &.{ vol_a, vol_b });
         for (expected) |e| {
@@ -3979,7 +4036,7 @@ test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, pass
     // shape (each tile-part header contributes one POC entry). The
     // sequencer must revive and produce the identical total sequence.
     {
-        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        var seq = try PocSequencer.init(std.testing.allocator, params, 0, 0, 64, 64);
         defer seq.deinit(std.testing.allocator);
         try seq.appendVolumes(std.testing.allocator, &.{vol_a});
         for (expected[0..4]) |e| {
@@ -3999,9 +4056,10 @@ test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, pass
 
     // (3) No volumes → bare passthrough, byte-identical to PacketIterator.
     {
-        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        var seq = try PocSequencer.init(std.testing.allocator, params, 0, 0, 64, 64);
         defer seq.deinit(std.testing.allocator);
-        var bare = PacketIterator.init(params, 0, 0, 64, 64);
+        var bare = try PacketIterator.init(std.testing.allocator, params, 0, 0, 64, 64);
+        defer bare.deinit(std.testing.allocator);
         var count: usize = 0;
         while (bare.next()) |b| : (count += 1) {
             const s = seq.next().?;
@@ -4015,7 +4073,7 @@ test "PocSequencer: volume sequencing, cross-volume dedup, mid-walk append, pass
     // the already-emitted prefix is replayed into the include set so the
     // new volume cannot re-emit those packets.
     {
-        var seq = PocSequencer.init(params, 0, 0, 64, 64);
+        var seq = try PocSequencer.init(std.testing.allocator, params, 0, 0, 64, 64);
         defer seq.deinit(std.testing.allocator);
         _ = seq.next().?; // l0 r0 c0 (COD LRCP order)
         _ = seq.next().?; // l0 r0 c1

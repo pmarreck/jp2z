@@ -593,3 +593,22 @@ tile rule was transcribed as "at least 1024"; the ISO p1_04 (128×128
 tiles) and p1_06 (3×3) fixtures are Profile 1, so the rule is read as an
 upper bound on the finest component. When a transcription and a
 conformance file disagree, the file wins and the reading is written down.
+
+## A value type that grows a heap slice needs an owner at every copy site (2026-09-16)
+
+Lifting the 16-component ceiling turned CodingParams' fixed arrays into
+one heap CompDesc slice. The first cut cloned the params per tile-part
+and freed the clone with a defer, which was right for every site except
+one: the TileWalk created on a tile's first tile-part stores the params
+by value and keeps reading the component slice on later tile-parts. The
+suite caught it as a panic in resolutionExtent (a garbage decomposition
+count), not as a leak, because the freed memory was reused. The fix is
+an ownership move: after the walk takes the clone, the tile-part's copy
+is emptied so its defer frees nothing, and TileWalk.deinit frees the
+params. The rule this leaves: when a struct that used to be copied by
+value gains an owned slice, list every place the value is copied and
+decide for each whether it aliases (short-lived, read-only) or owns
+(outlives the source, needs the clone moved in). std.testing.allocator's
+leak check proves the owns are balanced; only the suite's fixtures with
+multiple tile-parts (p1_04, f1_mono, d2_colr) prove the aliases are
+still alive when read.

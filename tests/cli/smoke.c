@@ -223,12 +223,14 @@ int main(void) {
      * "unsupported-valid", never "invalid". It must stay WARN and must never
      * independently escalate a strict verdict to FAIL. Every marker the ISO
      * fixtures carry is applied now (QCC, tile COD, COC, RGN), so the
-     * carrier is a crafted 4x4 stream whose SIZ declares 17 components with
-     * a 17th descriptor (12-bit) unlike the 16th: valid per A.5.1, read
-     * through slot 15 by jp2z, surfaced as c145. 17 empty packets, EOC. */
+     * carrier is a crafted 4x4 stream: SIZ Rsiz 0x4000 (the HTJ2K
+     * capability bit, T.814) on 17 components whose 17th descriptor is
+     * 12-bit. The Rsiz bit is recognised-but-unverified: c145. The
+     * component count and the odd descriptor are fully supported since
+     * the 16-slot ceiling went. 17 empty packets, EOC. */
     static const unsigned char rgn_mini[] = {
         0xFF, 0x4F,
-        0xFF, 0x51, 0x00, 0x59, 0x00, 0x00,
+        0xFF, 0x51, 0x00, 0x59, 0x40, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
@@ -248,7 +250,7 @@ int main(void) {
     };
     jp2z_findings_sink_t *rgs = jp2z_findings_sink_create();
     int rgsev = jp2z_deep_validate(rgn_mini, sizeof rgn_mini, 1, rgs);
-    ASSERT(rgsev >= 0 && rgsev < JP2Z_SEVERITY_FAIL, "17-component non-uniform SIZ mini stream (valid, unsupported tail): strict ACCEPTs");
+    ASSERT(rgsev >= 0 && rgsev < JP2Z_SEVERITY_FAIL, "17-component mini stream with the HTJ2K Rsiz bit (valid, capability unverified): strict ACCEPTs");
     {
         size_t n145 = 0;
         for (size_t i = 0; i < jp2z_findings_sink_count(rgs); i++) {
@@ -260,7 +262,7 @@ int main(void) {
                        "c145 unsupported-valid stays WARN, never FAIL, in strict mode");
             }
         }
-        ASSERT(n145 >= 1, "the non-uniform 17-component mini stream exercises c145 so the invariant is non-vacuous");
+        ASSERT(n145 >= 1, "the HTJ2K Rsiz bit exercises c145 so the invariant is non-vacuous");
     }
     jp2z_findings_sink_free(rgs);
 

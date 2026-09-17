@@ -138,7 +138,7 @@ pub fn checkMainHeader(report: *ValidationReport, allocator: Allocator, cp: *con
     const k = classify(cp.rsiz);
     const xsiz = cp.image_x0 + image_w;
     const ysiz = cp.image_y0 + image_h;
-    const ncomp: usize = @min(@as(usize, cp.num_components), 16);
+    const ncomp: usize = cp.num_components;
     const ext = tileExtent(cp, xsiz, ysiz);
     switch (k) {
         .none, .part2, .htj2k, .undefined => return true,
@@ -158,7 +158,7 @@ pub fn checkMainHeader(report: *ValidationReport, allocator: Allocator, cp: *con
                 if (!ext.single) {
                     var min_dx: u32 = std.math.maxInt(u32);
                     var c0: usize = 0;
-                    while (c0 < ncomp) : (c0 += 1) min_dx = @min(min_dx, cp.comp_dx[c0]);
+                    while (c0 < ncomp) : (c0 += 1) min_dx = @min(min_dx, cp.dxFor(@intCast(c0)));
                     if (cp.tile_w != cp.tile_h) try fail(report, allocator, k, pos, "tiles must be square unless one tile covers the image (Table A.45)", .{});
                     if (cp.tile_w / min_dx > 1024) try fail(report, allocator, k, pos, "tile exceeds 1024 samples in the finest component (Table A.45)", .{});
                 }
@@ -166,8 +166,8 @@ pub fn checkMainHeader(report: *ValidationReport, allocator: Allocator, cp: *con
             var c: usize = 0;
             while (c < ncomp) : (c += 1) {
                 const cc = cp.codingFor(@intCast(c));
-                const dx = cp.comp_dx[c];
-                const dy = cp.comp_dy[c];
+                const dx = cp.dxFor(@intCast(c));
+                const dy = cp.dyFor(@intCast(c));
                 if (cp.roishiftFor(@intCast(c)) > 37) try fail(report, allocator, k, pos, "component {d}: RGN shift {d} exceeds 37 (Table A.45)", .{ c, cp.roishiftFor(@intCast(c)) });
                 if (k == .profile0) {
                     if (!(dx == 1 or dx == 2 or dx == 4) or !(dy == 1 or dy == 2 or dy == 4)) try fail(report, allocator, k, pos, "component {d}: sub-sampling {d}x{d} is not 1, 2 or 4 (Table A.45)", .{ c, dx, dy });
@@ -215,8 +215,8 @@ pub fn checkMainHeader(report: *ValidationReport, allocator: Allocator, cp: *con
                 if (cp.num_components != 3) try fail(report, allocator, k, pos, "{d} components; the profile requires exactly 3", .{cp.num_components});
                 var c: usize = 0;
                 while (c < ncomp) : (c += 1) {
-                    if (cp.comp_dx[c] != 1 or cp.comp_dy[c] != 1) try fail(report, allocator, k, pos, "component {d}: sub-sampling must be 1x1", .{c});
-                    if (cp.comp_prec[c] != 12 or (cp.comp_signed >> @intCast(c)) & 1 != 0) try fail(report, allocator, k, pos, "component {d}: must be 12-bit unsigned", .{c});
+                    if (cp.dxFor(@intCast(c)) != 1 or cp.dyFor(@intCast(c)) != 1) try fail(report, allocator, k, pos, "component {d}: sub-sampling must be 1x1", .{c});
+                    if (cp.precFor(@intCast(c)) != 12 or cp.signedFor(@intCast(c))) try fail(report, allocator, k, pos, "component {d}: must be 12-bit unsigned", .{c});
                 }
             }
             if (cp.image_x0 != 0 or cp.image_y0 != 0 or cp.tile_x0 != 0 or cp.tile_y0 != 0) try fail(report, allocator, k, pos, "image and tile origin must be 0", .{});
@@ -263,10 +263,10 @@ pub fn checkMainHeader(report: *ValidationReport, allocator: Allocator, cp: *con
             var c: usize = 0;
             while (c < ncomp) : (c += 1) {
                 const cc = cp.codingFor(@intCast(c));
-                if (cp.comp_prec[c] < 8 or cp.comp_prec[c] > 16 or (cp.comp_signed >> @intCast(c)) & 1 != 0) try fail(report, allocator, k, pos, "component {d}: must be unsigned 8 to 16 bits", .{c});
-                if (cp.comp_dy[c] != 1) try fail(report, allocator, k, pos, "component {d}: YRsiz must be 1", .{c});
-                const want_dx: u32 = if (c == 0) 1 else cp.comp_dx[1];
-                if (cp.comp_dx[c] != want_dx or (cp.comp_dx[c] != 1 and cp.comp_dx[c] != 2)) try fail(report, allocator, k, pos, "component {d}: XRsiz must be 1 for all components, or 1 then 2 for the rest", .{c});
+                if (cp.precFor(@intCast(c)) < 8 or cp.precFor(@intCast(c)) > 16 or cp.signedFor(@intCast(c))) try fail(report, allocator, k, pos, "component {d}: must be unsigned 8 to 16 bits", .{c});
+                if (cp.dyFor(@intCast(c)) != 1) try fail(report, allocator, k, pos, "component {d}: YRsiz must be 1", .{c});
+                const want_dx: u32 = if (c == 0) 1 else cp.dxFor(1);
+                if (cp.dxFor(@intCast(c)) != want_dx or (cp.dxFor(@intCast(c)) != 1 and cp.dxFor(@intCast(c)) != 2)) try fail(report, allocator, k, pos, "component {d}: XRsiz must be 1 for all components, or 1 then 2 for the rest", .{c});
                 if (levels0 == null) levels0 = cc.num_decomp_levels else if (cc.num_decomp_levels != levels0.?) try fail(report, allocator, k, pos, "component {d}: decomposition levels differ from component 0", .{c});
                 if (cc.num_decomp_levels > max_levels) try fail(report, allocator, k, pos, "component {d}: {d} decomposition levels exceed {d} (Table A.51)", .{ c, cc.num_decomp_levels, max_levels });
             }

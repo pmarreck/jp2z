@@ -187,6 +187,7 @@ test "validate: synthetic codestream with 9/7 wavelet emits info jp2_uses_9x7_wa
 test "inspect: c1_mono.j2c CodingParams matches opj_dump-observed values" {
     const cp = (try jp2z.internal.inspect(std.testing.allocator, c1_mono_j2c)) orelse
         return error.TestUnexpectedResult;
+    defer cp.deinit(std.testing.allocator);
     try std.testing.expectEqual(jp2z.ProgressionOrder.lrcp, cp.progression_order);
     try std.testing.expectEqual(@as(u16, 10), cp.num_layers);
     try std.testing.expectEqual(@as(u16, 1), cp.num_components);
@@ -200,6 +201,7 @@ test "inspect: c1_mono.j2c CodingParams matches opj_dump-observed values" {
 test "inspect: d1_colr.j2c CodingParams (3 components, PCRL, MCT)" {
     const cp = (try jp2z.internal.inspect(std.testing.allocator, d1_colr_j2c)) orelse
         return error.TestUnexpectedResult;
+    defer cp.deinit(std.testing.allocator);
     try std.testing.expectEqual(jp2z.ProgressionOrder.pcrl, cp.progression_order);
     try std.testing.expectEqual(@as(u16, 4), cp.num_layers);
     try std.testing.expectEqual(@as(u16, 3), cp.num_components);
@@ -215,6 +217,7 @@ test "inspect: returns null for garbage input" {
 test "inspect: c1_mono.j2c uses default precincts (PPx=PPy=15 across all resolutions)" {
     const cp = (try jp2z.internal.inspect(std.testing.allocator, c1_mono_j2c)) orelse
         return error.TestUnexpectedResult;
+    defer cp.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u8, 0), cp.scod & 0x01); // default precincts
     var r: usize = 0;
     while (r <= cp.num_decomp_levels) : (r += 1) {
@@ -226,6 +229,7 @@ test "inspect: c1_mono.j2c uses default precincts (PPx=PPy=15 across all resolut
 test "inspect: d1_colr.j2c uses user-defined 64x64 precincts at every resolution" {
     const cp = (try jp2z.internal.inspect(std.testing.allocator, d1_colr_j2c)) orelse
         return error.TestUnexpectedResult;
+    defer cp.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u8, 1), cp.scod & 0x01); // user-defined precincts
     var r: usize = 0;
     while (r <= cp.num_decomp_levels) : (r += 1) {
@@ -251,7 +255,8 @@ test "packet iterator: c1_mono LRCP produces 60 packets in correct order" {
         .num_components = 1,
         .num_decomp_levels = 5, // → 6 resolution levels (0..5)
     };
-    var iter = jp2z.PacketIterator.init(params, 0, 0, 303, 179);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 0, 0, 303, 179);
+    defer iter.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 60), iter.total());
 
     var count: usize = 0;
@@ -289,7 +294,8 @@ test "packet iterator: narrow interior tile skips zero-precinct resolutions (b1_
         .num_components = 1,
         .num_decomp_levels = 5,
     };
-    var iter = jp2z.PacketIterator.init(params, 3097, 41, 3, 83);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 3097, 41, 3, 83);
+    defer iter.deinit(std.testing.allocator);
     // r0..r3 empty, r4 + r5 have 1 precinct each ⇒ 1 layer × 2 × 1 comp = 2.
     try std.testing.expectEqual(@as(usize, 2), iter.total());
     var count: usize = 0;
@@ -314,7 +320,8 @@ test "packet iterator: d1_colr PCRL produces 72 packets (1×3×6×4 = 72)" {
         .num_components = 3,
         .num_decomp_levels = 5,
     };
-    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 0, 0, 256, 149);
+    defer iter.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 72), iter.total());
 
     // Confirm first packet is (l=0,r=0,c=0,p=0) and 4th packet is
@@ -347,12 +354,13 @@ test "packet iterator: every progression order covers exactly the full Cartesian
     };
     const expected_total: usize = 2 * 2 * 3 * 1;
     inline for (.{ .lrcp, .rlcp, .rpcl, .pcrl, .cprl }) |po| {
-        var iter = jp2z.PacketIterator.init(.{
+        var iter = try jp2z.PacketIterator.init(std.testing.allocator, .{
             .progression_order = po,
             .num_layers = params.num_layers,
             .num_components = params.num_components,
             .num_decomp_levels = params.num_decomp_levels,
         }, 0, 0, 256, 256);
+        defer iter.deinit(std.testing.allocator);
         try std.testing.expectEqual(expected_total, iter.total());
         var count: usize = 0;
         // Bitset of seen (l,r,c,p) tuples — packs into a u32 for this small case.
@@ -387,7 +395,8 @@ test "packet iterator: d1_colr params (PCRL, 64×64 precincts) → 240 packets t
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 0, 0, 256, 149);
+    defer iter.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 240), iter.total());
 
     var count: usize = 0;
@@ -407,7 +416,8 @@ test "packet iterator: d1_colr params (PCRL) — first packet is (l=0,r=0,c=0)" 
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 0, 0, 256, 149);
+    defer iter.deinit(std.testing.allocator);
     // PCRL nesting (outer→inner): P, C, R, L. At (x=0, y=0), all 6
     // resolutions fire (all on boundary). Layer is innermost.
     const p0 = iter.next().?;
@@ -435,7 +445,8 @@ test "packet iterator: LRCP with d1_colr params (per-r variable precincts)" {
     while (r <= 5) : (r += 1) {
         params.precinct_sizes[r] = .{ .x_exp = 6, .y_exp = 6 };
     }
-    var iter = jp2z.PacketIterator.init(params, 0, 0, 256, 149);
+    var iter = try jp2z.PacketIterator.init(std.testing.allocator, params, 0, 0, 256, 149);
+    defer iter.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 240), iter.total());
 
     var count: usize = 0;
@@ -1923,13 +1934,14 @@ test "inspect: p0_10.j2k captures 4× component sub-sampling (multi-tile target)
     // component), 5/3 reversible + RCT. Oracle: opj_dump.
     const cp = (try jp2z.internal.inspect(std.testing.allocator, p0_10_j2k)) orelse
         return error.TestUnexpectedResult;
+    defer cp.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 3), cp.num_components);
     try std.testing.expectEqual(jp2z.WaveletFilter.reversible_5x3, cp.wavelet);
     try std.testing.expectEqual(true, cp.mct);
     var c: usize = 0;
     while (c < 3) : (c += 1) {
-        try std.testing.expectEqual(@as(u8, 4), cp.comp_dx[c]);
-        try std.testing.expectEqual(@as(u8, 4), cp.comp_dy[c]);
+        try std.testing.expectEqual(@as(u8, 4), cp.dxFor(@intCast(c)));
+        try std.testing.expectEqual(@as(u8, 4), cp.dyFor(@intCast(c)));
     }
     // tile geometry (reference grid): 2×2 tiles of 128×128
     try std.testing.expectEqual(@as(u32, 128), cp.tile_w);
@@ -2898,6 +2910,7 @@ test "oracle dump: jp2z decoded coefficients match openjpeg byte-perfectly for p
     var list = try jp2z.internal.extractCblkPlans(allocator, p1_06_j2k);
     defer list.deinit(allocator);
     const p = (try jp2z.internal.inspect(allocator, p1_06_j2k)) orelse return error.NoCodingParams;
+    defer p.deinit(allocator);
     const xsiz = p.image_x0 + 12;
     const ysiz = p.image_y0 + 12;
 
@@ -2947,7 +2960,9 @@ test "validate: QCD before COD yields the same per-subband M_b as COD before QCD
     const b = try buildPackedMiniStream(allocator, .{ .decomp = 1, .qcd_body = &qcd, .body = &.{ 0x00, 0x00 }, .qcd_before_cod = true });
     defer allocator.free(b);
     const pa = (try jp2z.internal.inspect(allocator, a)) orelse return error.TestUnexpectedResult;
+    defer pa.deinit(allocator);
     const pb = (try jp2z.internal.inspect(allocator, b)) orelse return error.TestUnexpectedResult;
+    defer pb.deinit(allocator);
     try std.testing.expectEqual(@as(u8, 9), pa.quant.mb[0]);
     try std.testing.expectEqual(@as(u8, 10), pa.quant.mb[1]);
     try std.testing.expectEqual(@as(u8, 11), pa.quant.mb[3]);
@@ -3024,7 +3039,7 @@ test "validate: 17 uniform components is valid (no jp2_invalid_siz), all packets
     try std.testing.expect(hasFinding(rep, .jp2_packets_walked_to_end));
 }
 
-test "validate: 17 components where the 17th differs from the 16th → unsupported (c145 WARN), not invalid" {
+test "validate: 17 components where the 17th differs from the 16th keep their own descriptors (no 16-slot ceiling)" {
     const allocator = std.testing.allocator;
     const body = [_]u8{0x00} ** 17;
     const stream = try buildPackedMiniStream(allocator, .{ .components = 17, .last_comp_prec = 12, .body = &body });
@@ -3032,8 +3047,12 @@ test "validate: 17 components where the 17th differs from the 16th → unsupport
     var rep = try jp2z.validate(allocator, stream);
     defer rep.deinit(allocator);
     try std.testing.expect(!hasFinding(rep, .jp2_invalid_siz));
-    try std.testing.expect(hasFinding(rep, .jp2_unsupported_marker_ignored));
-    try std.testing.expect(rep.overall != .fail);
+    try std.testing.expect(!hasFinding(rep, .jp2_unsupported_marker_ignored));
+    try std.testing.expect(rep.isOk());
+    const cp = rep.coding_params.?;
+    try std.testing.expectEqual(@as(usize, 17), cp.comps.len);
+    try std.testing.expectEqual(@as(u8, 8), cp.precFor(15));
+    try std.testing.expectEqual(@as(u8, 12), cp.precFor(16));
 }
 
 test "validate: p0_13 (257 components) is not jp2_invalid_siz and publishes coding params" {
@@ -3344,9 +3363,8 @@ fn expectT1Oracle(allocator: std.mem.Allocator, data: []const u8, dump: []const 
         for (list.plans) |plan| {
             if (plan.component != rec.component or plan.resolution != rec.resno or plan.band != rec.orient) continue;
             const tr = p.tileRect(xsiz, ysiz, plan.tile);
-            const ci: usize = @min(plan.component, 15);
-            const dx: u32 = p.comp_dx[ci];
-            const dy: u32 = p.comp_dy[ci];
+            const dx: u32 = p.dxFor(plan.component);
+            const dy: u32 = p.dyFor(plan.component);
             const tcx0 = (tr.x0 + dx - 1) / dx;
             const tcy0 = (tr.y0 + dy - 1) / dy;
             const decomp = p.codingFor(plan.component).num_decomp_levels;
@@ -4343,11 +4361,12 @@ test "cleanroom: p0_06 (COC mixes 9/7 and 5/3 across components) decodes and mat
     // them to the full canvas by nearest neighbour, so map each canvas pixel
     // back to the component's own sample.
     const cp = (try jp2z.internal.inspect(allocator, p0_06_j2k)) orelse return error.NoCodingParams;
+    defer cp.deinit(allocator);
     var max_abs: [4]i64 = @splat(0);
     var c: usize = 0;
     while (c < img.num_components) : (c += 1) {
-        const dx = cp.comp_dx[c];
-        const dy = cp.comp_dy[c];
+        const dx = cp.dxFor(@intCast(c));
+        const dy = cp.dyFor(@intCast(c));
         const cw = (img.width + dx - 1) / dx;
         var y: u32 = 0;
         while (y < img.height) : (y += 1) {
@@ -5071,4 +5090,31 @@ test "oracle wrapper: 257-component p0_13 and 2-component p1_07 decode to multic
     try std.testing.expectEqual(@as(u16, 2), o2.channels);
     try std.testing.expectEqual(jp2z.PixelLayout.multichannel, o2.layout);
     try std.testing.expectEqual(@as(usize, o2.width) * o2.height * 2, o2.pixels.len);
+}
+
+// Exceeding the oracle on component count: jp2z decodes the
+// 257-component p0_13 and the 2-component p1_07 itself and matches
+// openjpeg sample for sample, and a corrupted p0_13 is still rejected.
+// Before this, decode refused anything past 16 components
+// (error.TooManyComponents) and any channel count outside {1, 3, 4}.
+test "decode: p0_13 (257 components) and p1_07 (2 components) decode and match the oracle byte-for-byte; a corrupted p0_13 is rejected" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ p0_13_j2k, p1_07_j2k }) |fx| {
+        var img = try jp2z.decode(allocator, fx);
+        defer img.deinit(allocator);
+        var oracle = try jp2z.internal.openjpegDecode(allocator, fx);
+        defer oracle.deinit(allocator);
+        try std.testing.expectEqual(oracle.channels, img.channels);
+        try std.testing.expectEqual(oracle.width, img.width);
+        try std.testing.expectEqual(oracle.height, img.height);
+        try std.testing.expectEqual(oracle.bits_per_sample, img.bits_per_sample);
+        try std.testing.expectEqualSlices(u8, oracle.pixels, img.pixels);
+    }
+    // Flip a byte deep in p0_13's packet data: strict deep validation
+    // must reject it (the probe's must-detect region).
+    const bad = try patched(allocator, p0_13_j2k, p0_13_j2k.len / 2, &.{p0_13_j2k[p0_13_j2k.len / 2] ^ 0x5A});
+    defer allocator.free(bad);
+    var rep = try jp2z.deepValidate(allocator, bad, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!rep.isOk());
 }

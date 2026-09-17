@@ -143,11 +143,21 @@ honestly. Agreed order:
       names every count outside 1/3/4; the C ABI (uint16_t channels,
       JP2Z_LAYOUT_MULTICHANNEL) and the CLI (PAM/P7 for those counts)
       follow. RED: p0_13 (257) and p1_07 (2) through the oracle.
-- [ ] Lift jp2z's 16-component ceiling so p0_13 decodes and diffs
-      byte-for-byte against the oracle (exceed the oracle, not dodge it):
-      CodingParams per-component state to the heap with clone/deinit,
-      PacketIterator per-component tables to the heap, image.zig channel
-      count unbounded.
+- [x] 16-component ceiling lifted (2026-09-16 ~8:35pm EDT). CodingParams
+      carries one heap `CompDesc` per SIZ component (prec, signed, dx, dy,
+      RGN shift, COC, QCC) with clone/deinit; a tile's clone moves into its
+      TileWalk (the first cut freed it at tile-part end while the walk kept
+      reading it across tile-parts: garbage decomposition counts, caught
+      by the suite). PacketIterator geometry and the TileWalk slot layout
+      are heap slices sized by Csiz; POC rebuilds and replays borrow the
+      geometry. reconstruct and image.zig scratch arrays are heap slices;
+      decode shapes any channel count. RED→GREEN: p0_13 (257 components)
+      and p1_07 (2) decode through jp2z and match openjpeg byte-for-byte;
+      a mid-stream byte flip in p0_13 is rejected. The "components past
+      the 16th read through slot 15" c145 is gone (17-component test
+      flipped to assert the 17th keeps its own precision). Remaining
+      16-slot structure: the JP2 cdef ChannelMap (colour reorder is
+      skipped past 16 channels; noted, not a decode refusal).
 - [ ] Runtime-only flake output (CLI + archive, no openjpeg); the oracle
       tools keep their own output.
 

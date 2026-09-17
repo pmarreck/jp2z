@@ -35,7 +35,7 @@ pub fn decode(allocator: Allocator, data: []const u8) errors.DecodeError!types.I
     if (report.overall == .fail) return error.InvalidJp2Codestream;
     var img = reconstruct.decodeFromReport(allocator, data, &report) catch |e| return switch (e) {
         error.OutOfMemory => error.OutOfMemory,
-        error.TooManyComponents, error.UnsupportedTileCodingOverride, error.UnsupportedHtCodeBlocks, error.MctNonUniformSubsampling => error.NotImplemented,
+        error.UnsupportedTileCodingOverride, error.UnsupportedHtCodeBlocks, error.MctNonUniformSubsampling => error.NotImplemented,
         else => error.InvalidJp2Codestream,
     };
     defer img.deinit(allocator);
@@ -55,10 +55,10 @@ pub fn toImage(allocator: Allocator, img: *const reconstruct.Image, params: code
     // codestream components. The wrapper (openjpeg) accepted 1, 3 or 4.
     const has_cmap = report.cmap.len > 0 and report.palette != null;
     const channels: usize = if (has_cmap) report.cmap.len else ncomp;
-    const num_ch: u8 = switch (channels) {
-        1, 3, 4 => @intCast(channels),
-        else => return error.BackendError,
-    };
+    // Any count up to Csiz's ceiling (Table A.10) is an image; 2 = the
+    // p1_07 conformance file, 257 = p0_13.
+    if (channels == 0 or channels > 16384) return error.InvalidJp2Codestream;
+    const num_ch: u16 = @intCast(channels);
     const layout: types.PixelLayout = switch (num_ch) {
         1 => .grayscale,
         3 => .rgb,
@@ -68,8 +68,11 @@ pub fn toImage(allocator: Allocator, img: *const reconstruct.Image, params: code
 
     // Per-channel source component, palette column, and precision; all
     // channels must share one precision (the Image contract).
-    var src_comp: [4]usize = undefined;
-    var pal_col: [4]?u8 = .{ null, null, null, null };
+    const src_comp = try allocator.alloc(usize, channels);
+    defer allocator.free(src_comp);
+    const pal_col = try allocator.alloc(?u8, channels);
+    defer allocator.free(pal_col);
+    @memset(pal_col, null);
     var prec: u8 = 0;
     var k: usize = 0;
     while (k < channels) : (k += 1) {
@@ -95,18 +98,19 @@ pub fn toImage(allocator: Allocator, img: *const reconstruct.Image, params: code
     var min_dy: u32 = std.math.maxInt(u32);
     var c: usize = 0;
     while (c < ncomp) : (c += 1) {
-        const ci = @min(c, 15);
-        min_dx = @min(min_dx, params.comp_dx[ci]);
-        min_dy = @min(min_dy, params.comp_dy[ci]);
+        min_dx = @min(min_dx, params.dxFor(@intCast(c)));
+        min_dy = @min(min_dy, params.dyFor(@intCast(c)));
     }
     const width: u32 = ceilDiv(image_w, min_dx);
     const height: u32 = ceilDiv(image_h, min_dy);
-    var comp_w: [16]u32 = @splat(0);
-    var comp_h: [16]u32 = @splat(0);
+    const comp_w = try allocator.alloc(u32, ncomp);
+    defer allocator.free(comp_w);
+    const comp_h = try allocator.alloc(u32, ncomp);
+    defer allocator.free(comp_h);
     c = 0;
-    while (c < ncomp and c < 16) : (c += 1) {
-        const dx = params.comp_dx[c];
-        const dy = params.comp_dy[c];
+    while (c < ncomp) : (c += 1) {
+        const dx = params.dxFor(@intCast(c));
+        const dy = params.dyFor(@intCast(c));
         comp_w[c] = ceilDiv(xsiz, dx) - ceilDiv(params.image_x0, dx);
         comp_h[c] = ceilDiv(ysiz, dy) - ceilDiv(params.image_y0, dy);
     }
@@ -126,9 +130,9 @@ pub fn toImage(allocator: Allocator, img: *const reconstruct.Image, params: code
             k = 0;
             while (k < channels) : (k += 1) {
                 const cmp = src_comp[k];
-                const ci = @min(cmp, 15);
-                const dx = params.comp_dx[ci];
-                const dy = params.comp_dy[ci];
+                const ci = cmp;
+                const dx = params.dxFor(@intCast(ci));
+                const dy = params.dyFor(@intCast(ci));
                 const cx: u32 = @min((x * min_dx) / dx, comp_w[ci] - 1);
                 const cy: u32 = @min((y * min_dy) / dy, comp_h[ci] - 1);
                 var v: i64 = img.planes[cmp][@as(usize, cy) * comp_w[ci] + cx];

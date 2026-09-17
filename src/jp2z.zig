@@ -127,6 +127,7 @@ pub const ValidationReport = struct {
             allocator.free(p.entries);
         }
         if (self.cmap.len > 0) allocator.free(self.cmap);
+        if (self.coding_params) |cp| cp.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -228,7 +229,10 @@ pub const internal = struct {
     pub fn inspect(allocator: Allocator, data: []const u8) error{OutOfMemory}!?CodingParams {
         var report = try validate(allocator, data);
         defer report.deinit(allocator);
-        return report.coding_params;
+        // Move the params out: the caller owns them (`deinit`).
+        const cp = report.coding_params;
+        report.coding_params = null;
+        return cp;
     }
 
     /// Walk a codestream and extract one `CblkDecodePlan` per

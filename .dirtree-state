@@ -11,6 +11,7 @@ annotate=[
 	conformance/sweep.ndjson = Generated per-fixture sweep records (self-describing NDJSON, _meta header); committed as the deterministic regression baseline
 	docs/INTERFACE_CONTRACT.md = Frozen v1 public interface (Zig surface + C ABI + finding registry) consumers pin against; Einstein-gated
 	docs/T800_PROFILES.md = T.800 Rsiz table A.10 and profile restriction tables (A.45, cinema, broadcast, IMF) transcribed by Peter from the 2015 consolidated text; source for profile checks
+	src/decode/codestream.zig = J2K/JP2 walker: markers, tile-parts, packet iterator (heap per-component geometry), TileWalk; CodingParams with heap CompDesc per component (clone/deinit)
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/image.zig = Planar cleanroom output → public interleaved Image: canvas at finest sub-sampling, palette (pclr/cmap) application, clamp, u8/u16, colr colour space; the wrapper-free decode route
 	src/decode/profiles.zig = Rsiz profile classification (Table A.10 + amendment families) and per-profile restriction checks (Table A.45, cinema, broadcast, IMF) emitting 259 profile_violation; tile-part rules consumed by walkTileParts

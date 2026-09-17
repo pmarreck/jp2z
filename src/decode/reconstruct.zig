@@ -191,10 +191,6 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
     var out_w: u32 = image_w;
     var out_h: u32 = image_h;
     const ncomp = params.num_components;
-    // The per-tile scratch buffers below are fixed 16-slot arrays. The
-    // validator accepts any Csiz (reading components past the 16th through
-    // slot 15); the decoder refuses rather than index past the arrays.
-    if (ncomp > 16) return error.TooManyComponents;
 
     var list = try codestream.extractCblkPlans(allocator, data);
     defer list.deinit(allocator);
@@ -228,7 +224,7 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
     var done: u16 = 0;
     errdefer for (planes[0..done]) |p| allocator.free(p);
     var c: u16 = 0;
-    while (c < ncomp) : (c += 1) precs[c] = params.comp_prec[@min(c, 15)];
+    while (c < ncomp) : (c += 1) precs[c] = params.precFor(c);
 
     // C3 (T.800 Annex G): the inverse MCT mixes the first 3 components
     // sample-for-sample, so MCT REQUIRES uniform sub-sampling across them.
@@ -236,11 +232,11 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
     // lengths → inverseRct/inverseIct would read+write past the shorter
     // planes (silent heap corruption in ReleaseFast). Reject, don't corrupt.
     if (params.mct and ncomp >= 3) {
-        const dx0 = params.comp_dx[0];
-        const dy0 = params.comp_dy[0];
+        const dx0 = params.dxFor(0);
+        const dy0 = params.dyFor(0);
         var k: u16 = 1;
         while (k < 3) : (k += 1) {
-            if (params.comp_dx[@min(k, 15)] != dx0 or params.comp_dy[@min(k, 15)] != dy0)
+            if (params.dxFor(k) != dx0 or params.dyFor(k) != dy0)
                 return error.MctNonUniformSubsampling;
         }
     }
@@ -256,13 +252,15 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
         const ysiz = params.image_y0 + image_h;
 
         // Per-component sample-plane dimensions on the sub-sampled grid.
-        var comp_w: [16]u32 = @splat(0);
-        var comp_h: [16]u32 = @splat(0);
+        const comp_w = try allocator.alloc(u32, ncomp);
+        defer allocator.free(comp_w);
+        const comp_h = try allocator.alloc(u32, ncomp);
+        defer allocator.free(comp_h);
         c = 0;
         while (c < ncomp) : (c += 1) {
-            const ci = @min(c, 15);
-            const dx: u32 = params.comp_dx[ci];
-            const dy: u32 = params.comp_dy[ci];
+            const ci = c;
+            const dx: u32 = params.dxFor(@intCast(ci));
+            const dy: u32 = params.dyFor(@intCast(ci));
             comp_w[ci] = ceilDiv(xsiz, dx) - ceilDiv(params.image_x0, dx);
             comp_h[ci] = ceilDiv(ysiz, dy) - ceilDiv(params.image_y0, dy);
         }
@@ -270,7 +268,7 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
         // Allocate + zero every component plane up front.
         c = 0;
         while (c < ncomp) : (c += 1) {
-            const ci = @min(c, 15);
+            const ci = c;
             const plane = try allocator.alloc(i32, @as(usize, comp_w[ci]) * @as(usize, comp_h[ci]));
             @memset(plane, 0);
             planes[c] = plane;
@@ -287,9 +285,11 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
             const tr = params.tileRect(xsiz, ysiz, t);
 
             // Per-tile, per-component spatial buffers (freed at iter end).
-            var tbufs: [16][]i32 = undefined;
+            const tbufs = try allocator.alloc([]i32, ncomp);
+            defer allocator.free(tbufs);
             const TileDim = struct { w: u32, h: u32, ox: u32, oy: u32 };
-            var tdims: [16]TileDim = undefined;
+            const tdims = try allocator.alloc(TileDim, ncomp);
+            defer allocator.free(tdims);
             var tb_done: u16 = 0;
             defer {
                 var k: u16 = 0;
@@ -298,9 +298,9 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
 
             c = 0;
             while (c < ncomp) : (c += 1) {
-                const ci = @min(c, 15);
-                const dx: u32 = params.comp_dx[ci];
-                const dy: u32 = params.comp_dy[ci];
+                const ci = c;
+                const dx: u32 = params.dxFor(@intCast(ci));
+                const dy: u32 = params.dyFor(@intCast(ci));
                 const tcx0 = ceilDiv(tr.x0, dx);
                 const tcy0 = ceilDiv(tr.y0, dy);
                 const tcw = ceilDiv(tr.x1, dx) - tcx0;
@@ -320,8 +320,8 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
             if (params.mct and ncomp >= 3) inverseRct(tbufs[0], tbufs[1], tbufs[2]);
             c = 0;
             while (c < ncomp) : (c += 1) {
-                const ci = @min(c, 15);
-                const is_signed = (params.comp_signed >> @intCast(ci)) & 1 != 0;
+                const ci = c;
+                const is_signed = params.signedFor(@intCast(ci));
                 levelShift(tbufs[c], precs[c], is_signed);
                 const d = tdims[c];
                 const stride = comp_w[ci];
@@ -347,19 +347,21 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
         const xsiz = params.image_x0 + image_w;
         const ysiz = params.image_y0 + image_h;
 
-        var comp_w: [16]u32 = @splat(0);
-        var comp_h: [16]u32 = @splat(0);
+        const comp_w = try allocator.alloc(u32, ncomp);
+        defer allocator.free(comp_w);
+        const comp_h = try allocator.alloc(u32, ncomp);
+        defer allocator.free(comp_h);
         c = 0;
         while (c < ncomp) : (c += 1) {
-            const ci = @min(c, 15);
-            const dx: u32 = params.comp_dx[ci];
-            const dy: u32 = params.comp_dy[ci];
+            const ci = c;
+            const dx: u32 = params.dxFor(@intCast(ci));
+            const dy: u32 = params.dyFor(@intCast(ci));
             comp_w[ci] = ceilDiv(xsiz, dx) - ceilDiv(params.image_x0, dx);
             comp_h[ci] = ceilDiv(ysiz, dy) - ceilDiv(params.image_y0, dy);
         }
         c = 0;
         while (c < ncomp) : (c += 1) {
-            const ci = @min(c, 15);
+            const ci = c;
             const plane = try allocator.alloc(i32, @as(usize, comp_w[ci]) * @as(usize, comp_h[ci]));
             @memset(plane, 0);
             planes[c] = plane;
@@ -373,9 +375,11 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
         while (t < num_tiles) : (t += 1) {
             const tr = params.tileRect(xsiz, ysiz, t);
 
-            var tqbufs: [16][]i64 = undefined;
+            const tqbufs = try allocator.alloc([]i64, ncomp);
+            defer allocator.free(tqbufs);
             const TileDim = struct { w: u32, h: u32, ox: u32, oy: u32 };
-            var tdims: [16]TileDim = undefined;
+            const tdims = try allocator.alloc(TileDim, ncomp);
+            defer allocator.free(tdims);
             var tb_done: u16 = 0;
             defer {
                 var k: u16 = 0;
@@ -384,9 +388,9 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
 
             c = 0;
             while (c < ncomp) : (c += 1) {
-                const ci = @min(c, 15);
-                const dx: u32 = params.comp_dx[ci];
-                const dy: u32 = params.comp_dy[ci];
+                const ci = c;
+                const dx: u32 = params.dxFor(@intCast(ci));
+                const dy: u32 = params.dyFor(@intCast(ci));
                 const tcx0 = ceilDiv(tr.x0, dx);
                 const tcy0 = ceilDiv(tr.y0, dy);
                 const tcw = ceilDiv(tr.x1, dx) - tcx0;
@@ -424,9 +428,9 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
             // compositing straight into the component planes.
             c = 0;
             while (c < ncomp) : (c += 1) {
-                const ci = @min(c, 15);
+                const ci = c;
                 const prec = precs[c];
-                const is_signed = (params.comp_signed >> @intCast(ci)) & 1 != 0;
+                const is_signed = params.signedFor(@intCast(ci));
                 const dc: i32 = if (is_signed) 0 else (@as(i32, 1) << @intCast(prec - 1));
                 const lo: i32 = if (is_signed) -(@as(i32, 1) << @intCast(prec - 1)) else 0;
                 const hi: i32 = if (is_signed) (@as(i32, 1) << @intCast(prec - 1)) - 1 else (@as(i32, 1) << @intCast(prec)) - 1;
