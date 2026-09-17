@@ -8,10 +8,10 @@ Baseline: **accepted** · **SAFE: restoration verified**
 | --- | --- |
 | Input | p0\_13.j2k |
 | Bytes | 2486 |
-| Started | 2026-09-17T00:35:05Z |
+| Started | 2026-09-17T02:27:15Z |
 | Attempted / planned | 400 / 400 |
-| Conclusive outcomes | 378 |
-| Warnings and failures | 22 |
+| Conclusive outcomes | 374 |
+| Warnings and failures | 26 |
 | Not run | 0 |
 
 ## Mutation rejection
@@ -20,7 +20,7 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | Rejected/conclusive | Rate | 95% Wilson CI | Not run |
 | --- | ---: | ---: | ---: | ---: |
-| sniper | 39/92 | 42.4% | 32.8..52.6% | 0 |
+| sniper | 39/88 | 44.3% | 34.4..54.7% | 0 |
 | bolter | 64/86 | 74.4% | 64.3..82.5% | 0 |
 | shotgun | 100/100 | 100.0% | 96.3..100.0% | 0 |
 | truncation | 100/100 | 100.0% | 96.3..100.0% | 0 |
@@ -29,7 +29,7 @@ Rates and 95% Wilson intervals use conclusive trials only.
 
 | Mode | warning | error | crash | timeout | interrupted |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| sniper | 8 | 0 | 0 | 0 | 0 |
+| sniper | 12 | 0 | 0 | 0 | 0 |
 | bolter | 14 | 0 | 0 | 0 | 0 |
 | shotgun | 0 | 0 | 0 | 0 | 0 |
 | truncation | 0 | 0 | 0 | 0 | 0 |

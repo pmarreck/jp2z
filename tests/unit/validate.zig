@@ -5118,3 +5118,36 @@ test "decode: p0_13 (257 components) and p1_07 (2 components) decode and match t
     defer rep.deinit(allocator);
     try std.testing.expect(!rep.isOk());
 }
+
+// Reversible bit-plane budget (T.800 E-2 with E.2 Eq. E-10, informative):
+// a 5/3, no-quantization subband must offer Mb = G + eps_b - 1 >= R_I +
+// log2(gain_b) + RCT growth or full-range samples cannot be coded
+// losslessly. E.2 is informative and three ISO files (p0_10, file1, file9)
+// record eps_b above the E-10 equality, so only the inequality is
+// checked and a shortfall is WARN (finding 260), never FAIL. The rule's
+// boundary is pinned: a 12-bit Ssiz on an 8-bit p0_13 component is
+// reported, a 9-bit one still fits the budget and is not (no codestream
+// cross-check can see it). Controls: every vendored fixture is clean.
+test "reversible bit-plane budget: a 12-bit Ssiz on p0_13 is WARN 260, a 9-bit one fits and is silent; every vendored fixture is clean" {
+    const allocator = std.testing.allocator;
+    // Component 252's Ssiz byte: SIZ descriptors start at offset 42.
+    const off: usize = 42 + 252 * 3;
+    try std.testing.expectEqual(@as(u8, 0x07), p0_13_j2k[off]);
+    const twelve = try patched(allocator, p0_13_j2k, off, &.{0x0B});
+    defer allocator.free(twelve);
+    var rep = try jp2z.validate(allocator, twelve);
+    defer rep.deinit(allocator);
+    try std.testing.expect(hasFinding(rep, .reversible_exponent_mismatch));
+    for (rep.findings.items) |f| if (f.code == .reversible_exponent_mismatch) try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+    try std.testing.expect(rep.overall != .fail);
+    const nine = try patched(allocator, p0_13_j2k, off, &.{0x08});
+    defer allocator.free(nine);
+    var r9 = try jp2z.validate(allocator, nine);
+    defer r9.deinit(allocator);
+    try std.testing.expect(!hasFinding(r9, .reversible_exponent_mismatch));
+    for ([_][]const u8{ p0_13_j2k, p0_01_j2k, p0_02_j2k, p0_03_j2k, p0_04_j2k, p0_06_j2k, p0_09_j2k, p0_10_j2k, p1_01_j2k, p1_04_j2k, p1_06_j2k, p1_07_j2k, file1_jp2, file9_jp2, a1_mono_j2c, a5_mono_j2c, b1_mono_j2c, c1_mono_j2c, c2_mono_j2c, d1_colr_j2c, d2_colr_j2c, e1_colr_j2c_for_zero_len, f1_mono_j2c, g3_colr_j2c, g4_colr_j2c }) |fx| {
+        var r = try jp2z.validate(allocator, fx);
+        defer r.deinit(allocator);
+        try std.testing.expect(!hasFinding(r, .reversible_exponent_mismatch));
+    }
+}

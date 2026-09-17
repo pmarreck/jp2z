@@ -216,6 +216,7 @@ typedef enum {
     JP2Z_FINDING_JP2_TRAILING_BYTES          = 257,
     JP2Z_FINDING_SEGMENTATION_SYMBOL_MISMATCH = 258,
     JP2Z_FINDING_PROFILE_VIOLATION           = 259,
+    JP2Z_FINDING_REVERSIBLE_EXPONENT_MISMATCH = 260, /* WARN: reversible subband exponent != R_I + log2(gain) + RCT growth (T.800 E.2 Eq. E-10, informative) */
 } jp2z_finding_code_t;
 
 typedef struct {

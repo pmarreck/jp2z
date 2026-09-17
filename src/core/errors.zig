@@ -88,4 +88,5 @@ pub const FindingCode = enum(u32) {
     jp2_trailing_bytes       = 257,  // bytes after the last JP2 box that cannot form a box header (e.g. a CRLF appended in transit): a proven violation of the box structure (I.4), FAIL
     segmentation_symbol_mismatch = 258,  // cblksty SEGSYM (0x20): a cleanup pass ended without the 1010 segmentation symbol — the in-stream integrity hook JPEG 2000 offers; entropy data corrupted
     profile_violation        = 259,  // the codestream claims a profile in Rsiz (Table A.10) and breaks one of its restrictions (Table A.45, cinema / broadcast / IMF amendments); FAIL
+    reversible_exponent_mismatch = 260, // a reversible (5/3, no-quantization) subband exponent differs from R_I + log2(gain_b) + RCT growth, the encoder formula of T.800 E.2 Eq. E-10; E.2 is informative, so this is WARN (a lone Ssiz or exponent change looks exactly like this), never FAIL
 };

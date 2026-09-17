@@ -115,11 +115,19 @@ honestly. Agreed order:
       cap 3; f2_mono (SOP bit, trailing packets without SOP; Table A.13
       says "may") → SOP optional per packet, validated when present.
       Both with RED tests. Sweep now: 0 FAIL; b2_mono the one WARN.
-- [ ] Candidate from the probe: reversible (5/3) QCD exponents versus
-      precision + band gain (Annex E.1.1, Eq. E-4) — needs the clause text
-      to confirm it is normative before it becomes a FAIL. Evidence: the 7
-      p0_13 sniper survivors that flip one component's Ssiz (see
-      conformance/PROBE_COVERAGE.md, re-probe section).
+- [x] Reversible exponent candidate resolved (2026-09-16 ~10:35pm EDT).
+      Peter retrieved the T.800 (11/2015) clauses (docs/
+      T800_REVERSIBLE_QUANTIZATION_VERBATIM.md, docs/
+      T800_REVERSIBLE_EXPONENT_EVIDENCE.md): the exponent formula is Eq.
+      E-10 in the informative E.2, and ISO files p0_10/file1/file9 record
+      exponents above it, so the equality is neither normative nor
+      observed. Implemented the budget it implies, Mb = G + eps − 1 ≥ R_I
+      + log2(gain) + RCT growth, as WARN 260 reversible_exponent_mismatch
+      (main header and per-tile QCD/QCC), boundary pinned in the test
+      (12-bit Ssiz on p0_13 reported, 9-bit silent), every vendored
+      fixture and every openjpeg-data conformance codestream clean. A
+      precision change of one bit is undetectable by any codestream
+      cross-check; that residual is the format's, see LEARNINGS.md.
 - [x] Profile checks from docs/T800_PROFILES.md (2026-09-16 ~8:05pm EDT):
       `src/decode/profiles.zig` classifies Rsiz into the Table A.10 and
       amendment families (broadcast ML 1..7, reversible only 0x0306/0x0307,

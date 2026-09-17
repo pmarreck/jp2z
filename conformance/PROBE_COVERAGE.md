@@ -91,7 +91,7 @@ Shotgun windows are min(4096, size/8) bytes, floor 64.
 | p0_03 | 0x0001 | 12845 | 86/99 (87%) | 89/99 (90%) | 100/100 (100%) | 100/100 (100%) | 0/2 / 13/97 / 1/1 | 0/3 / 10/96 / 1/1 |
 | p0_04 | 0x0001 | 264635 | 92/100 (92%) | 94/100 (94%) | 100/100 (100%) | 100/100 (100%) | 0/1 / 8/99 / - | 0/0 / 6/100 / - |
 | p0_10 | 0x0001 | 14131 | 78/100 (78%) | 85/100 (85%) | 100/100 (100%) | 100/100 (100%) | 0/1 / 22/99 / - | 0/1 / 15/99 / - |
-| p0_13 | 0x0001 | 2486 | 47/98 (48%) | 78/100 (78%) | 100/100 (100%) | 100/100 (100%) | 12/30 / 39/68 / 2/2 | 3/47 / 19/53 / - |
+| p0_13 | 0x0001 | 2486 | 51/98 (52%) | 78/100 (78%) | 100/100 (100%) | 100/100 (100%) | 8/30 / 39/68 / 2/2 | 3/47 / 19/53 / - |
 | p0_06 | 0x0002 | 33826 | 92/100 (92%) | 92/100 (92%) | 100/100 (100%) | 100/100 (100%) | 0/0 / 8/100 / - | 0/2 / 8/98 / - |
 | p1_01 | 0x0002 | 4761 | 82/97 (85%) | 92/100 (92%) | 100/100 (100%) | 100/100 (100%) | 0/1 / 15/96 / 3/3 | 0/1 / 8/99 / - |
 | p1_04 | 0x0002 | 101844 | 28/41 (68%) | 26/39 (67%) | 43/100 (43%) | 100/100 (100%) | 2/3 / 11/38 / 59/59 | 2/4 / 11/35 / 61/61 |
@@ -111,11 +111,16 @@ Seventeen fixtures did not change a single outcome. The rest:
   accepted, all sniper flips in the Ssiz byte of one component past the
   16th (its precision or sign). Profile 0 sets no bit-depth bound below
   Table A.10's 38, so the stream stays self-consistent and decodes; the
-  old WARN was the slot-15 artefact. The sniper rate therefore falls
-  from 55% to 48% while the count of proven findings rises. The one
-  cross-check that could catch a lone precision change is the reversible
-  QCD exponent against precision plus band gain (Annex E.1.1), the open
-  candidate in PLAN.md; these 7 trials are its evidence.
+  old WARN was the slot-15 artefact. Peter then retrieved the T.800
+  clauses (docs/T800_REVERSIBLE_QUANTIZATION_VERBATIM.md): the exponent
+  formula E-10 is informative and ISO files p0_10/file1/file9 exceed it,
+  so the equality cannot be checked; the bit-plane budget it implies (Mb
+  ≥ R_I + log2(gain) + RCT growth) can, as WARN 260. A third run of
+  p0_13 at that validator (the row above, same seed) turns 4 of the 7
+  into WARN 260 (flips to 16-bit or 24-bit) and leaves 3 (flips to 4, 6
+  or 7 bits, which fit the budget). Those 3 are undetectable by any
+  codestream cross-check: an encoder fed 7-bit data under an 8-bit
+  declaration writes the same bytes. Sniper on p0_13 is 52%.
 - p1_07: 2 trials accepted to FAIL (XTsiz/YTsiz bytes leaving most of the
   SIZ grid without a tile-part: the absent-tile rule).
 - p0_09: 4 trials accepted to FAIL; p0_10: 1 (the same absent-tile and

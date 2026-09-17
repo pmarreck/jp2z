@@ -612,3 +612,41 @@ decide for each whether it aliases (short-lived, read-only) or owns
 leak check proves the owns are balanced; only the suite's fixtures with
 multiple tile-parts (p1_04, f1_mono, d2_colr) prove the aliases are
 still alive when read.
+
+## T.800 E-10 is informative, and three ISO files ignore it anyway (2026-09-16)
+
+The reversible-exponent candidate asked whether a 5/3 stream whose QCD
+exponent differs from R_I + log2(gain_b) is nonconforming. Peter pulled
+the clauses from the official T.800 (11/2015) PDF (docs/
+T800_REVERSIBLE_QUANTIZATION_VERBATIM.md). Two facts settle it. The
+formula eps_b = R_I + log2(gain_b) + zeta_c is Equation E-10 in clause
+E.2, whose heading says "(informative)"; the normative text only defines
+Mb = G + eps_b − 1 (E-2) and the nominal range R_b (E-4). And the corpus
+does not follow E-10 either: p0_10 records eps_b = R_I + gain + 3 with
+zero guard bits, file1 and file9 record R_I + gain + 2 with one guard bit.
+Both are ISO conformance files. So the equality is neither required nor
+observed, and cannot even be a WARN heuristic.
+
+What every conforming file does satisfy is the budget the equality
+implies: Mb ≥ R_I + log2(gain_b) + zeta_c, where zeta_c is the one extra
+bit the RCT gives its two chroma components (G.2.1). On the seven RCT
+files in the corpus that inequality holds with zero margin on the chroma
+bands, which is the sign that it is the constraint encoders actually
+honour (G = 2, eps = R_I + gain gives Mb = R_I + gain + 1, exactly the
+chroma need). A shortfall means the declared precision cannot be coded
+losslessly at full range; it is reported as WARN 260 with the arithmetic
+in the detail, never FAIL, because no normative sentence forbids it.
+
+The boundary is pinned in the test and is worth remembering: a 12-bit
+Ssiz on an 8-bit component of p0_13 breaks the budget and is reported; a
+9-bit one still fits (Mb 9 ≥ 9 + 0) and is silent. No codestream
+cross-check can see a precision change that small, because an encoder
+fed 7-bit data into an 8-bit declaration would produce the same bytes.
+That is the residual for the p0_13 sniper survivors, and it is a
+property of the format, not of jp2z.
+
+Method note: the clause text alone would have allowed a WARN on the
+equality. The corpus survey (a 20-line LuaJIT script over COD/QCD bytes,
+scratch qstyle.lua) is what showed the equality is violated by
+conformance files. Read the clause, then measure the corpus, before
+choosing a severity.

@@ -1614,6 +1614,7 @@ fn walkJ2k(report: *ValidationReport, allocator: Allocator, data: []const u8, ex
                     return;
                 }
                 if (report.coding_params) |*cp| try checkQuantCoverage(report, allocator, cp);
+                if (report.coding_params) |*cp| try checkReversibleBudget(report, allocator, cp, 0);
                 // The main header is complete: check it against the profile
                 // Rsiz claims (Table A.45 and the amendments). Rules that need
                 // facts outside the codestream (bitrate, throughput level)
@@ -2278,7 +2279,7 @@ fn walkTileParts(
                         if (extractor) |ex| {
                             if (tile_params.mct != params.mct) ex.tile_override_unsupported = true;
                             var k: u16 = 0;
-                            while (k < params.num_components and k < 16) : (k += 1) {
+                            while (k < params.num_components) : (k += 1) {
                                 const a = tile_params.codingFor(k);
                                 const b = params.codingFor(k);
                                 if (a.num_decomp_levels != b.num_decomp_levels or a.wavelet != b.wavelet) ex.tile_override_unsupported = true;
@@ -2301,6 +2302,9 @@ fn walkTileParts(
                         for (tp_ov.rgn.items) |span| {
                             try parseRgnBody(report, allocator, &tile_params, data[span.start..span.end], span.start);
                         }
+                        // The tile's own QCD/QCC (offset >= pos) against its
+                        // effective precision and wavelet.
+                        try checkReversibleBudget(report, allocator, &tile_params, pos);
                         if (!tile_ok) {
                             // Unwalkable tile geometry (findings already emitted):
                             // no walk for this tile, and no later part may build
@@ -3145,6 +3149,62 @@ fn checkQuantCoverage(report: *ValidationReport, allocator: Allocator, cp: *cons
             try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, t.offset, "quantization marker carries fewer subband entries than a Part-1 decomposition needs; Part-2 decompositions are not verified by jp2z");
         } else {
             try emit(report, allocator, .fail, .jp2_invalid_codestream, t.offset, "quantization marker carries fewer subband entries than a component's decomposition needs (T.800 A.6.4 Table A.28)");
+        }
+    }
+}
+
+/// Reversible bit-plane budget (T.800 E-2 with the encoder formula of E.2
+/// Eq. E-10): a 5/3, no-quantization subband offers Mb = G + eps_b - 1
+/// magnitude bit-planes, and full-range samples need R_I + log2(gain_b) +
+/// zeta_c of them (zeta_c = 1 on the two RCT chroma components, G.2.1).
+/// A shortfall means the declared precision cannot be coded losslessly.
+/// E.2 is informative and ISO conformance files (p0_10, file1, file9)
+/// record eps_b above the E-10 equality, so only the inequality is checked
+/// and only as WARN (finding 260), never FAIL. Tables at an offset below
+/// `min_offset` were checked with the main header and are skipped, so a
+/// tile re-check reports only its own QCD/QCC. One finding per table.
+fn checkReversibleBudget(report: *ValidationReport, allocator: Allocator, cp: *const CodingParams, min_offset: usize) Allocator.Error!void {
+    var reported_offsets: [17]usize = undefined;
+    var reported: usize = 0;
+    var c: u16 = 0;
+    while (c < cp.num_components) : (c += 1) {
+        const cc = cp.codingFor(c);
+        if (cc.wavelet != .reversible_5x3) continue;
+        const t = cp.quantFor(c);
+        if (!t.present or t.quant_style != 0 or t.offset < min_offset) continue;
+        var seen = false;
+        for (reported_offsets[0..reported]) |o| if (o == t.offset) {
+            seen = true;
+        };
+        if (seen) continue;
+        const zeta: u16 = if (cp.mct and (c == 1 or c == 2)) 1 else 0;
+        const r_i: u16 = cp.precFor(c);
+        var r: u8 = 0;
+        comp: while (r <= cc.num_decomp_levels) : (r += 1) {
+            const nb: u8 = if (r == 0) 1 else 3;
+            var b: u8 = 0;
+            while (b < nb) : (b += 1) {
+                const band: u8 = if (r == 0) 0 else b + 1;
+                const idx = CodingParams.subbandIndex(r, band);
+                if (idx >= t.entries) break :comp;
+                const gain: u16 = switch (band) {
+                    0 => 0,
+                    1, 2 => 1,
+                    else => 2,
+                };
+                const need = r_i + gain + zeta;
+                const mb: u16 = t.mb[idx];
+                if (mb < need) {
+                    if (reported < reported_offsets.len) {
+                        reported_offsets[reported] = t.offset;
+                        reported += 1;
+                    }
+                    var buf: [256]u8 = undefined;
+                    const detail = std.fmt.bufPrint(&buf, "component {d} resolution {d} band {d}: reversible bit-plane budget Mb = G + eps - 1 = {d} is below R_I + log2(gain) + RCT growth = {d}; the declared precision cannot be coded losslessly (T.800 E-2, E.2 Eq. E-10)", .{ c, r, band, mb, need }) catch "reversible bit-plane budget below the lossless requirement";
+                    try emit(report, allocator, .warn, .reversible_exponent_mismatch, t.offset, detail);
+                    break :comp;
+                }
+            }
         }
     }
 }
