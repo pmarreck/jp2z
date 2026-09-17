@@ -137,9 +137,17 @@ honestly. Agreed order:
       clean; 27-fixture CLI sweep shows no c259. Profile-1 tile rule read
       as square ≤1024 samples in the finest component (p1_04 128×128 and
       p1_06 3×3 tiles are Profile 1, so "at least 1024" cannot be it).
-- [ ] Oracle wrapper: u8 component cast (257 comps) and `unreachable`
-      on 2 channels; then lift jp2z's 16-component ceiling so p0_13
-      decodes (exceed the oracle, not dodge it).
+- [x] Oracle wrapper (2026-09-16 ~8:15pm EDT): the u8 component cast
+      (panic at 257) and the `unreachable` at 2 channels are gone. Image
+      channels are u16 (Csiz ≤ 16384) and a fourth layout, multichannel,
+      names every count outside 1/3/4; the C ABI (uint16_t channels,
+      JP2Z_LAYOUT_MULTICHANNEL) and the CLI (PAM/P7 for those counts)
+      follow. RED: p0_13 (257) and p1_07 (2) through the oracle.
+- [ ] Lift jp2z's 16-component ceiling so p0_13 decodes and diffs
+      byte-for-byte against the oracle (exceed the oracle, not dodge it):
+      CodingParams per-component state to the heap with clone/deinit,
+      PacketIterator per-component tables to the heap, image.zig channel
+      count unbounded.
 - [ ] Runtime-only flake output (CLI + archive, no openjpeg); the oracle
       tools keep their own output.
 
@@ -411,10 +419,8 @@ those fixtures, and OpenJPEG retirement is gated on it).
       EDT): 151 files, 0 panics, 0 files openjpeg rejects that jp2z
       accepts, 17 files jp2z FAILs that openjpeg decodes — JasPer rejects
       every one except the asan fuzz file, and each FAIL names its cause.
-- [ ] **Phase-1 openjpeg wrapper panics on valid inputs** (oracle-only
-      code, scheduled for retirement): 257 components → 16-bit output cast
-      overflow (openjpeg_wrapper.zig:208); 2-component image → colour-space
-      switch `unreachable` (:150). Guard both (error, not panic) or retire.
+- [x] **Phase-1 openjpeg wrapper panics on valid inputs** (fixed
+      2026-09-16 ~8:15pm EDT, see the oracle wrapper item above).
 - [x] **Tile-part COD overrides** (2026-09-06 ~12:30pm EDT). A.6.1: a
       first-tile-part COD is the tile's coding style (progression, layers,
       MCT, decomp, cblk, wavelet, precincts). parseCodBody → parseCodInto

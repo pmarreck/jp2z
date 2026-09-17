@@ -21,13 +21,17 @@ pub const PixelLayout = enum(u8) {
     grayscale,
     rgb,
     cmyk,
+    /// Any other channel count, interleaved, no colour semantics
+    /// (2 = grey + something, 257 = the p0_13 conformance file). The
+    /// count is `Image.channels`.
+    multichannel,
 };
 
 pub const Image = struct {
     pixels: []u8,
     width: u32,
     height: u32,
-    channels: u8,
+    channels: u16,
     bits_per_sample: u8,
     source_color_space: ColorSpace,
     layout: PixelLayout,
@@ -51,7 +55,7 @@ pub const Image = struct {
 pub const ImageMetadata = struct {
     width: u32,
     height: u32,
-    channels: u8,
+    channels: u16,
     bits_per_sample: u8,
     source_color_space: ColorSpace,
     layout: PixelLayout,

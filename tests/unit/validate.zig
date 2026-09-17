@@ -5053,3 +5053,22 @@ test "broadcast single-tile (Rsiz 0x0101): CPRL + TLM is clean; LRCP FAILs; no T
     defer r2.deinit(allocator);
     try std.testing.expect(profileFails(r2, "TLM"));
 }
+
+// The oracle wrapper packs whatever openjpeg decodes. Component counts
+// outside {1, 3, 4} used to panic (a u8 cast at 257 components, an
+// `unreachable` at 2): a valid conformance file must never crash the
+// oracle. Channels beyond the named layouts are `.multichannel`.
+test "oracle wrapper: 257-component p0_13 and 2-component p1_07 decode to multichannel images, no panic" {
+    const allocator = std.testing.allocator;
+    var o = try jp2z.internal.openjpegDecode(allocator, p0_13_j2k);
+    defer o.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 257), o.channels);
+    try std.testing.expectEqual(jp2z.PixelLayout.multichannel, o.layout);
+    try std.testing.expectEqual(@as(u8, 8), o.bits_per_sample);
+    try std.testing.expectEqual(@as(usize, o.width) * o.height * 257, o.pixels.len);
+    var o2 = try jp2z.internal.openjpegDecode(allocator, p1_07_j2k);
+    defer o2.deinit(allocator);
+    try std.testing.expectEqual(@as(u16, 2), o2.channels);
+    try std.testing.expectEqual(jp2z.PixelLayout.multichannel, o2.layout);
+    try std.testing.expectEqual(@as(usize, o2.width) * o2.height * 2, o2.pixels.len);
+}

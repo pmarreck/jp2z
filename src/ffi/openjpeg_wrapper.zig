@@ -116,8 +116,12 @@ pub fn decode(allocator: Allocator, data: []const u8) errors.DecodeError!types.I
     if (c.opj_decode(codec, stream, image) == 0) return error.BackendError;
     if (c.opj_end_decompress(codec, stream) == 0) return error.BackendError;
 
-    const num_comps: u8 = @intCast(image.numcomps);
-    if (num_comps == 0 or num_comps > 4) return error.BackendError;
+    // Csiz is at most 16384 (T.800 Table A.10); anything openjpeg reports
+    // beyond that is a backend fault, not a cast to panic on. Every count
+    // in range packs: 1/3/4 get their named layouts, the rest are
+    // multichannel (the 257-component p0_13, the 2-component p1_07).
+    if (image.numcomps == 0 or image.numcomps > 16384) return error.BackendError;
+    const num_comps: u16 = @intCast(image.numcomps);
 
     if (image.x1 <= image.x0 or image.y1 <= image.y0) return error.BackendError;
     var min_dx: u32 = std.math.maxInt(u32);
@@ -147,7 +151,7 @@ pub fn decode(allocator: Allocator, data: []const u8) errors.DecodeError!types.I
         1 => .grayscale,
         3 => .rgb,
         4 => .cmyk,
-        else => unreachable,
+        else => .multichannel,
     };
     const source_cs: types.ColorSpace = switch (image.color_space) {
         c.OPJ_CLRSPC_GRAY => .greyscale_jp2,

@@ -49,6 +49,7 @@ typedef enum {
     JP2Z_LAYOUT_GRAYSCALE = 0,
     JP2Z_LAYOUT_RGB       = 1,
     JP2Z_LAYOUT_CMYK      = 2,
+    JP2Z_LAYOUT_MULTICHANNEL = 3,  /* any other channel count, interleaved; see channels */
 } jp2z_pixel_layout_t;
 
 /* ── jp2z_image_t — decoded image handle ─────────────────────────── */
@@ -58,7 +59,7 @@ typedef struct {
     size_t                pixels_len;
     uint32_t              width;
     uint32_t              height;
-    uint8_t               channels;
+    uint16_t              channels;        /* up to 16384 (Csiz) */
     uint8_t               bits_per_sample;
     jp2z_color_space_t    source_color_space;
     jp2z_pixel_layout_t   layout;

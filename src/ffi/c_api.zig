@@ -47,7 +47,7 @@ const CImage = extern struct {
     pixels_len: usize,
     width: u32,
     height: u32,
-    channels: u8,
+    channels: u16,
     bits_per_sample: u8,
     source_color_space: c_int,
     layout: c_int,

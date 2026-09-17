@@ -62,7 +62,8 @@ pub fn toImage(allocator: Allocator, img: *const reconstruct.Image, params: code
     const layout: types.PixelLayout = switch (num_ch) {
         1 => .grayscale,
         3 => .rgb,
-        else => .cmyk,
+        4 => .cmyk,
+        else => .multichannel,
     };
 
     // Per-channel source component, palette column, and precision; all

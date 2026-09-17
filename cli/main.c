@@ -196,9 +196,11 @@ static int cmd_decode(const char *path) {
     } else if (img.channels == 3) {
         printf("P6\n%u %u\n255\n", img.width, img.height);
     } else {
-        fprintf(stderr, "jp2z: %d-channel output (CMYK?) not wired to CLI yet\n", img.channels);
-        jp2z_image_free(&img);
-        return 1;
+        /* Any other channel count: PAM (P7), whose DEPTH is unbounded.
+         * CMYK gets its tuple type; the rest carry no colour semantics. */
+        printf("P7\nWIDTH %u\nHEIGHT %u\nDEPTH %u\nMAXVAL 255\nTUPLTYPE %s\nENDHDR\n",
+               img.width, img.height, (unsigned)img.channels,
+               img.layout == JP2Z_LAYOUT_CMYK ? "CMYK" : "MULTICHANNEL");
     }
     fwrite(img.pixels, 1, img.pixels_len, stdout);
 
