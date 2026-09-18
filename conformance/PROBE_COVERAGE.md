@@ -187,16 +187,24 @@ jp2z devShell — zig 0.16.0, openjpeg 2.5.4 (Phase 1 backend)
 
 Totals over the 27 fixtures: 1103 accepted sniper and bolter trials, of
 which 266 inert (24%), 776 changed (70%), 4 wrapper refusals, 57
-unreplayable. So of the 4986 replayable single-bit and single-byte
-mutations (27 fixtures, up to 100 sniper and 100 bolter each, less the
-comment bytes the tables above exclude), 776 corrupt the decoded image
-without a finding: 16%. Every one of the 776 sits in packet data or in
-a header field the decoder honours without a cross-check (a quantization
-exponent, a code-block style bit), which is the checksum-less ceiling
-described under class 4 above. The labels also show jp2z's decode
-following openjpeg on every changed mutant (the `jp2z_decode` field is
-never `pristine` where the oracle changed), so a surviving corruption
-is at least rendered the same way by both.
+unreplayable. Against the 5245 non-comment sniper and bolter trials in
+the results table, the 776 that corrupt the decoded image without a
+finding are 14.8%. By region (scratch probe_regions.lua over the changed
+trials only): 758 in packet data, 13 in the main header, 4 in tile-part
+headers, 1 in a JP2 box. The 18 header bytes are 14 QCD step-size bytes
+(an exponent or mantissa the decoder honours; a change that shrinks a
+reversible budget is WARN 260, one that grows it or moves a 9/7 mantissa
+has no invariant), the Ssiz sign bit of one component (p0_02 component
+0, p0_13 component 55; a raw J2K carries nothing to cross-check it
+against) and one pclr palette entry in file9. Packet-data bytes are the
+checksum-less ceiling described under class 4 above.
+
+The agreement column cross-tabulates cleanly: all 776 oracle-changed
+mutants also change jp2z's own decode, all 266 inert ones leave it
+pristine, and the 4 wrapper refusals are mixed-precision streams both
+decoders' packed Image type declines. A surviving corruption is
+therefore rendered the same way by jp2z and openjpeg; none is silently
+normalised away by one and not the other.
 
 Two fixtures dominate the false negatives: c1_mono and c2_mono (103 and
 92 of 776), the ten-layer streams whose tiny per-layer contributions
