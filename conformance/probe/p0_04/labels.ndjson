@@ -1,0 +1,15 @@
+{"fixture":"p0_04.j2k","mode":"sniper","round":4,"offset":83745,"bit":2,"label":"changed","diff_samples":9035,"max_abs":6,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":33,"offset":225881,"bit":7,"label":"changed","diff_samples":178,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":36,"offset":258720,"bit":6,"label":"changed","diff_samples":4369,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":42,"offset":11951,"bit":4,"label":"changed","diff_samples":1055,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":50,"offset":88985,"bit":6,"label":"changed","diff_samples":2434,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":64,"offset":254393,"bit":5,"label":"changed","diff_samples":103,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":90,"offset":84626,"bit":0,"label":"changed","diff_samples":916,"max_abs":4,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"sniper","round":93,"offset":201526,"bit":0,"label":"changed","diff_samples":611,"max_abs":3,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":30,"offset":659,"bit":null,"label":"changed","diff_samples":20060,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":38,"offset":10481,"bit":null,"label":"changed","diff_samples":4691,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":48,"offset":225249,"bit":null,"label":"changed","diff_samples":51,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":51,"offset":197266,"bit":null,"label":"changed","diff_samples":116,"max_abs":3,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":58,"offset":1308,"bit":null,"label":"changed","diff_samples":40431,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","mode":"bolter","round":69,"offset":192962,"bit":null,"label":"changed","diff_samples":1970,"max_abs":9,"jp2z_decode":"changed"}
+{"fixture":"p0_04.j2k","summary":true,"accepted":14,"inert":0,"changed":14,"wrapper_refuses":0,"unreplayable":0}

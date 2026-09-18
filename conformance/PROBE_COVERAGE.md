@@ -134,6 +134,76 @@ Seventeen fixtures did not change a single outcome. The rest:
   hidden in the rate. pterm_test also has 1 trial FAIL to WARN and p0_03
   1, both still rejections.
 
+## Survivor labels from the oracle (2026-09-18)
+
+An accepted trial is a probe the validator did not reject. Whether that
+is a false negative was, until now, a judgement by region. `./probe-label`
+(tools/probe_label.zig) replaces the judgement with an independent label:
+each accepted sniper or bolter trial is replayed exactly (the events file
+records mode, offset and bit) and the mutant is decoded by openjpeg, an
+implementation jp2z's author did not write. A mutant that decodes to the
+pristine pixels is **inert** (the byte carried no image information: a
+comment, an unused field, a redundant encoding). One that decodes to
+different pixels is **changed**: the corruption reached the image and
+jp2z said nothing, a true false negative. **Wrapper refuses** counts
+mutants the packed Image contract will not shape (mixed precision across
+components); opj_decompress decodes them, so that column is a limit of
+the Image type, not a detection. Shotgun and truncation trials carry
+random windows the events do not record and cannot be replayed; the 57
+unreplayable trials are p1_04's comment-window shotgun survivors and stay
+labelled by region. Labels sit beside each report in
+`conformance/probe/<fixture>/labels.ndjson`.
+
+jp2z devShell — zig 0.16.0, openjpeg 2.5.4 (Phase 1 backend)
+| Fixture | Accepted (sniper+bolter) | Inert | Changed (false negatives) | Wrapper refuses | Unreplayable (shotgun) |
+|---|---:|---:|---:|---:|---:|
+| a1_mono | 4 | 0 | 4 | 0 | 0 |
+| a5_mono | 8 | 1 | 7 | 0 | 0 |
+| b1_mono | 15 | 1 | 14 | 0 | 0 |
+| balloon_eciRGB_icc | 10 | 3 | 7 | 0 | 0 |
+| c1_mono | 104 | 1 | 103 | 0 | 0 |
+| c2_mono | 92 | 0 | 92 | 0 | 0 |
+| d1_colr | 12 | 0 | 12 | 0 | 0 |
+| d2_colr | 54 | 3 | 51 | 0 | 0 |
+| e1_colr | 61 | 2 | 59 | 0 | 0 |
+| f1_mono | 26 | 0 | 26 | 0 | 0 |
+| file1 | 6 | 1 | 5 | 0 | 0 |
+| file9 | 2 | 0 | 2 | 0 | 0 |
+| g3_colr | 32 | 2 | 30 | 0 | 0 |
+| g4_colr | 34 | 4 | 30 | 0 | 0 |
+| p0_01 | 16 | 1 | 15 | 0 | 0 |
+| p0_02 | 18 | 2 | 16 | 0 | 0 |
+| p0_03 | 25 | 5 | 20 | 0 | 0 |
+| p0_04 | 14 | 0 | 14 | 0 | 0 |
+| p0_06 | 16 | 1 | 15 | 0 | 0 |
+| p0_09 | 113 | 45 | 68 | 0 | 0 |
+| p0_10 | 37 | 0 | 37 | 0 | 0 |
+| p0_13 | 71 | 27 | 40 | 4 | 0 |
+| p1_01 | 26 | 8 | 18 | 0 | 0 |
+| p1_04 | 146 | 120 | 26 | 0 | 57 |
+| p1_06 | 11 | 7 | 4 | 0 | 0 |
+| p1_07 | 40 | 16 | 24 | 0 | 0 |
+| pterm_test | 53 | 16 | 37 | 0 | 0 |
+
+Totals over the 27 fixtures: 1103 accepted sniper and bolter trials, of
+which 266 inert (24%), 776 changed (70%), 4 wrapper refusals, 57
+unreplayable. So of the 4986 replayable single-bit and single-byte
+mutations (27 fixtures, up to 100 sniper and 100 bolter each, less the
+comment bytes the tables above exclude), 776 corrupt the decoded image
+without a finding: 16%. Every one of the 776 sits in packet data or in
+a header field the decoder honours without a cross-check (a quantization
+exponent, a code-block style bit), which is the checksum-less ceiling
+described under class 4 above. The labels also show jp2z's decode
+following openjpeg on every changed mutant (the `jp2z_decode` field is
+never `pristine` where the oracle changed), so a surviving corruption
+is at least rendered the same way by both.
+
+Two fixtures dominate the false negatives: c1_mono and c2_mono (103 and
+92 of 776), the ten-layer streams whose tiny per-layer contributions
+leave most bytes free of any budget invariant. p0_09 and p1_04 carry the
+most inert bytes (45 and 120), which is where their earlier low raw
+rates came from.
+
 ## Honest summary
 
 - Shotgun (whole-window garbage) and truncation: detected on every file,

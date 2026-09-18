@@ -13,6 +13,7 @@ annotate=[
 	docs/T800_PROFILES.md = T.800 Rsiz table A.10 and profile restriction tables (A.45, cinema, broadcast, IMF) transcribed by Peter from the 2015 consolidated text; source for profile checks
 	docs/T800_REVERSIBLE_EXPONENT_EVIDENCE.md = Summary of the reversible-exponent clause search: E-10 is informative, so an exponent/precision mismatch cannot be a proven FAIL
 	docs/T800_REVERSIBLE_QUANTIZATION_VERBATIM.md = Peter's verbatim T.800 (11/2015) extracts: Annex E (E-2, E-4, E.1.2, informative E.2 with E-10), Tables A.28-A.30, Table A.11
+	probe-label = Driver: builds jp2z-probe-label and labels every fixture's probe survivors into conformance/probe/<fixture>/labels.ndjson, printing the Markdown table
 	src/decode/codestream.zig = J2K/JP2 walker: markers, tile-parts, packet iterator (heap per-component geometry), TileWalk; CodingParams with heap CompDesc per component (clone/deinit)
 	src/decode/dwt.zig = Inverse 5/3 DWT (reversible lifting, 1D + 2D Mallat); cleanroom vs openjpeg idwt53
 	src/decode/image.zig = Planar cleanroom output → public interleaved Image: canvas at finest sub-sampling, palette (pclr/cmap) application, clamp, u8/u16, colr colour space; the wrapper-free decode route
@@ -42,6 +43,7 @@ annotate=[
 	tests/unit/fixtures/oracles/p1_01.t1.bin = openjpeg T1 coefficient dump for p1_01 (COC/RGN per-component overrides); byte-perfect tier-1 oracle
 	tests/unit/fixtures/oracles/p1_06.t1.bin = openjpeg T1 coefficient dump for p1_06 (16 tiles, passes ending mid-plane); pins the per-coefficient reconstruction half-bit
 	tests/unit/fixtures/oracles/p1_07.t1.bin = openjpeg T1 coefficient dump for p1_07 (COC/RGN per-component overrides); byte-perfect tier-1 oracle
+	tools/probe_label.zig = Probe-survivor labeller: replays accepted sniper/bolter trials, decodes the mutant through the openjpeg oracle, labels inert / changed (true false negative) / wrapper_refuses
 	tools/sweep_one.zig = Conformance-sweep worker: decode+classify ONE fixture/process (decodeCleanroom); prefers committed planar .pix oracle (SWEEP_PIX) else in-process openjpeg wrapper; input via SWEEP_FIXTURE; one JSON record to stderr
 	tools/tile_hist.zig = Dev diagnostic (zig build tile-hist): per-tile max_abs vs openjpeg for one fixture; with JP2Z_DUMP_T1 also a per-cblk tier-1 coefficient diff (attributes divergence to T1 vs dequant/DWT)
 ]

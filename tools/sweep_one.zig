@@ -65,9 +65,9 @@ pub fn main() !void {
     var any_subsampled = false;
     if (cp) |p| {
         var i: usize = 0;
-        while (i < cc and i < 16) : (i += 1) {
-            if ((p.comp_signed >> @intCast(i)) & 1 != 0) any_signed = true;
-            if (p.comp_dx[i] != 1 or p.comp_dy[i] != 1) any_subsampled = true;
+        while (i < cc) : (i += 1) {
+            if (p.signedFor(@intCast(i))) any_signed = true;
+            if (p.dxFor(@intCast(i)) != 1 or p.dyFor(@intCast(i)) != 1) any_subsampled = true;
         }
     }
 

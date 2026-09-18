@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# ./probe-label — label every accepted corruption-probe trial by what the
+# openjpeg oracle decodes (tools/probe_label.zig): inert (pristine pixels),
+# changed (a true false negative), wrapper_refuses (the packed Image needs
+# one precision for every channel; openjpeg itself decodes such a mutant). Reads conformance/probe/<fixture>/
+# events.ndjson, writes labels.ndjson beside it, prints a Markdown table.
+# NEVER `set -e`: the labeller exits non-zero on a fixture the oracle cannot
+# decode pristine, which is a result, not an abort. `set -u` alone.
+set -u
+cd "$(dirname "$0")" || exit 1
+if [ -z "${OPENJPEG_INCLUDE:-}" ]; then
+	exec nix develop -c "$0" "$@"
+fi
+echo "==> building probe labeller" >&2
+zig build probe-label -Doptimize=ReleaseSafe "-Dopenjpeg-include=$OPENJPEG_INCLUDE" "-Dopenjpeg-lib=$OPENJPEG_LIB" || { echo "    FAIL: could not build jp2z-probe-label" >&2; exit 1; }
+printf '| Fixture | Accepted (sniper+bolter) | Inert | Changed (false negatives) | Wrapper refuses | Unreplayable (shotgun) |\n|---|---:|---:|---:|---:|---:|\n'
+fails=0
+for fixture in $(fd -e j2k -e jp2 -e j2c -e jpx . tests/unit/fixtures | sort); do
+	name=$(basename "$fixture"); name="${name%.*}"
+	dir="conformance/probe/$name"
+	[ -f "$dir/events.ndjson" ] || continue
+	errfile="${TMPDIR:-/tmp}/jp2z-probe-label-$$-$name.err"
+	PROBE_FIXTURE="$PWD/$fixture" PROBE_EVENTS="$PWD/$dir/events.ndjson" zig-out/bin/jp2z-probe-label > "$dir/labels.ndjson" 2> "$errfile"
+	rc=$?
+	# Keep the labeller's stderr beside the labels only when it said something.
+	[ -s "$errfile" ] && cp "$errfile" "$dir/labels.err"
+	if [ "$rc" -ne 0 ]; then fails=$((fails+1)); printf '| %s | labeller exit %s | | | | |\n' "$name" "$rc"; continue; fi
+	tail -1 "$dir/labels.ndjson" | jq -r --arg n "$name" '"| \($n) | \(.accepted - .unreplayable) | \(.inert) | \(.changed) | \(.wrapper_refuses) | \(.unreplayable) |"'
+done
+exit "$fails"

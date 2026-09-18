@@ -1,0 +1,11 @@
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":2,"offset":476079,"bit":5,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":6,"offset":1826102,"bit":7,"label":"changed","diff_samples":10280,"max_abs":19,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":21,"offset":1561480,"bit":2,"label":"changed","diff_samples":759,"max_abs":6,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":24,"offset":159018,"bit":3,"label":"changed","diff_samples":1487,"max_abs":7,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":26,"offset":1370628,"bit":3,"label":"changed","diff_samples":1374,"max_abs":7,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":40,"offset":1616971,"bit":4,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":78,"offset":1104428,"bit":3,"label":"changed","diff_samples":344,"max_abs":8,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"sniper","round":88,"offset":683014,"bit":1,"label":"changed","diff_samples":9599,"max_abs":20,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"bolter","round":27,"offset":243665,"bit":null,"label":"changed","diff_samples":2468,"max_abs":5,"jp2z_decode":"changed"}
+{"fixture":"balloon_eciRGB_icc.jp2","mode":"bolter","round":72,"offset":5086,"bit":null,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"balloon_eciRGB_icc.jp2","summary":true,"accepted":10,"inert":3,"changed":7,"wrapper_refuses":0,"unreplayable":0}

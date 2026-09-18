@@ -14,11 +14,11 @@ machine-independent** — a `jj diff` after re-running is the regression net.
 
 | status | count | meaning |
 |--------|------:|---------|
-| PASS | 32 | byte-exact vs oracle |
+| PASS | 33 | byte-exact vs oracle |
 | NEAR | 4 | max_abs ≤ 1 (lossy 9/7 integer tolerance) |
 | FAIL | 0 | decoded but diverges (max_abs > 1) |
 | skip:* | 20 | decoded; oracle not directly comparable (sub-sampled/signed/dim) |
-| ERROR | 1 | decodeCleanroom returned an error (unsupported profile) |
+| ERROR | 0 | decodeCleanroom returned an error (unsupported profile) |
 | IO_ERROR | 0 | could not read the fixture |
 | CRASH | 0 | panic / non-zero exit (no record) |
 | TIMEOUT | 0 | exceeded 60s |
@@ -35,7 +35,6 @@ diverge from the oracle. Largest divergence first.
 
 | fixture | status | detail |
 |---------|--------|--------|
-| p0_13.j2k | ERROR | TooManyComponents |
 
 ## Per-fixture detail (all 57, by status then name)
 
@@ -61,7 +60,6 @@ diverge from the oracle. Largest divergence first.
 | subsampling_2.jp2 | DECODED | skip:dim-mismatch | 640 | 512 | 3 | 0 |
 | zoo1.jp2 | DECODED | skip:dim-mismatch | 3906 | 2602 | 3 | 0 |
 | zoo2.jp2 | DECODED | skip:dim-mismatch | 1953 | 1301 | 3 | 0 |
-| p0_13.j2k | ERROR | TooManyComponents |  |  |  | 0 |
 | p0_04.j2k | NEAR | oracle:pix | 640 | 480 | 3 | 1 |
 | p1_02.j2k | NEAR |  | 640 | 480 | 3 | 1 |
 | p1_04.j2k | NEAR |  | 1024 | 1024 | 1 | 1 |
@@ -95,6 +93,7 @@ diverge from the oracle. Largest divergence first.
 | p0_10.j2k | PASS | oracle:pix | 64 | 64 | 3 | 0 |
 | p0_11.j2k | PASS |  | 128 | 1 | 1 | 0 |
 | p0_12.j2k | PASS |  | 3 | 5 | 1 | 0 |
+| p0_13.j2k | PASS |  | 1 | 1 | 257 | 0 |
 | p0_14.j2k | PASS |  | 49 | 49 | 3 | 0 |
 | p0_16.j2k | PASS |  | 128 | 128 | 1 | 0 |
 | p1_06.j2k | PASS |  | 12 | 12 | 3 | 0 |

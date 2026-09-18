@@ -109,3 +109,13 @@ check_pterm warns on the same four blocks) → PTERM cap 2 → 3, corpus-
 calibrated like the non-PTERM 12; f2_mono.j2c (Scod SOP bit, trailing
 empty packets without SOP) → SOP is optional per packet (Table A.13
 "may"), still validated when present. Controls and floors unchanged.
+
+2026-09-18: the labeling boundary above is closed for the corruption-probe
+survivors. `./probe-label` (tools/probe_label.zig) replays every accepted
+sniper and bolter trial from `conformance/probe/<fixture>/events.ndjson`
+and decodes the mutant through the openjpeg oracle: a mutant that decodes
+to the pristine pixels is `inert` (the byte carried no image information),
+one that decodes to different pixels is `changed` (a true false negative),
+and one the packed Image contract refuses (mixed precision) is
+`wrapper_refuses`. Labels sit beside each report in `labels.ndjson`; the
+table and its reading are in `conformance/PROBE_COVERAGE.md`.

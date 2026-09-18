@@ -1,0 +1,12 @@
+{"fixture":"p1_06.j2k","mode":"sniper","round":7,"offset":140,"bit":4,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":23,"offset":135,"bit":6,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":39,"offset":1033,"bit":4,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":41,"offset":585,"bit":0,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":50,"offset":2434,"bit":1,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":72,"offset":132,"bit":4,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"sniper","round":79,"offset":72,"bit":2,"label":"changed","diff_samples":24,"max_abs":32,"jp2z_decode":"changed"}
+{"fixture":"p1_06.j2k","mode":"bolter","round":1,"offset":78,"bit":null,"label":"changed","diff_samples":36,"max_abs":58,"jp2z_decode":"changed"}
+{"fixture":"p1_06.j2k","mode":"bolter","round":48,"offset":75,"bit":null,"label":"changed","diff_samples":16,"max_abs":4,"jp2z_decode":"changed"}
+{"fixture":"p1_06.j2k","mode":"bolter","round":90,"offset":109,"bit":null,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p1_06.j2k","mode":"bolter","round":93,"offset":1523,"bit":null,"label":"changed","diff_samples":3,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"p1_06.j2k","summary":true,"accepted":11,"inert":7,"changed":4,"wrapper_refuses":0,"unreplayable":0}

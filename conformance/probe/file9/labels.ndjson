@@ -1,0 +1,3 @@
+{"fixture":"file9.jp2","mode":"sniper","round":75,"offset":152260,"bit":3,"label":"changed","diff_samples":31,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"file9.jp2","mode":"bolter","round":14,"offset":811,"bit":null,"label":"changed","diff_samples":2011,"max_abs":161,"jp2z_decode":"changed"}
+{"fixture":"file9.jp2","summary":true,"accepted":2,"inert":0,"changed":2,"wrapper_refuses":0,"unreplayable":0}

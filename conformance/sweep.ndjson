@@ -41,7 +41,7 @@
 {"fixture":"p0_10.j2k","status":"PASS","detail":"oracle:pix","w":64,"h":64,"comps":3,"max_abs":0}
 {"fixture":"p0_11.j2k","status":"PASS","detail":"","w":128,"h":1,"comps":1,"max_abs":0}
 {"fixture":"p0_12.j2k","status":"PASS","detail":"","w":3,"h":5,"comps":1,"max_abs":0}
-{"fixture":"p0_13.j2k","status":"ERROR","detail":"TooManyComponents","w":null,"h":null,"comps":null,"max_abs":0}
+{"fixture":"p0_13.j2k","status":"PASS","detail":"","w":1,"h":1,"comps":257,"max_abs":0}
 {"fixture":"p0_14.j2k","status":"PASS","detail":"","w":49,"h":49,"comps":3,"max_abs":0}
 {"fixture":"p0_15.j2k","status":"DECODED","detail":"skip:signed","w":256,"h":256,"comps":1,"max_abs":0}
 {"fixture":"p0_16.j2k","status":"PASS","detail":"","w":128,"h":128,"comps":1,"max_abs":0}

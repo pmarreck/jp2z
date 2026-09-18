@@ -1,0 +1,17 @@
+{"fixture":"p0_06.j2k","mode":"sniper","round":4,"offset":430,"bit":6,"label":"changed","diff_samples":84553,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":14,"offset":6815,"bit":6,"label":"changed","diff_samples":39738,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":35,"offset":15193,"bit":3,"label":"changed","diff_samples":775,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":43,"offset":27844,"bit":7,"label":"changed","diff_samples":269,"max_abs":5,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":55,"offset":1334,"bit":6,"label":"changed","diff_samples":43968,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":60,"offset":13370,"bit":0,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":73,"offset":6459,"bit":2,"label":"changed","diff_samples":74587,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"sniper","round":87,"offset":15787,"bit":4,"label":"changed","diff_samples":3254,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":24,"offset":1600,"bit":null,"label":"changed","diff_samples":69451,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":33,"offset":1334,"bit":null,"label":"changed","diff_samples":45397,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":48,"offset":16138,"bit":null,"label":"changed","diff_samples":19538,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":69,"offset":443,"bit":null,"label":"changed","diff_samples":63676,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":74,"offset":8017,"bit":null,"label":"changed","diff_samples":18428,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":91,"offset":3965,"bit":null,"label":"changed","diff_samples":2336,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":95,"offset":11135,"bit":null,"label":"changed","diff_samples":338,"max_abs":4,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","mode":"bolter","round":97,"offset":15790,"bit":null,"label":"changed","diff_samples":3097,"max_abs":255,"jp2z_decode":"changed"}
+{"fixture":"p0_06.j2k","summary":true,"accepted":16,"inert":1,"changed":15,"wrapper_refuses":0,"unreplayable":0}

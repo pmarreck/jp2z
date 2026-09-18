@@ -1,0 +1,7 @@
+{"fixture":"file1.jp2","mode":"sniper","round":11,"offset":10538,"bit":2,"label":"changed","diff_samples":13676,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"file1.jp2","mode":"sniper","round":62,"offset":107802,"bit":4,"label":"changed","diff_samples":219,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"file1.jp2","mode":"sniper","round":95,"offset":310639,"bit":3,"label":"changed","diff_samples":3425,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"file1.jp2","mode":"bolter","round":19,"offset":1090,"bit":null,"label":"inert","diff_samples":0,"max_abs":0,"jp2z_decode":"pristine"}
+{"fixture":"file1.jp2","mode":"bolter","round":24,"offset":557612,"bit":null,"label":"changed","diff_samples":2065,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"file1.jp2","mode":"bolter","round":41,"offset":241553,"bit":null,"label":"changed","diff_samples":5664,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"file1.jp2","summary":true,"accepted":6,"inert":1,"changed":5,"wrapper_refuses":0,"unreplayable":0}

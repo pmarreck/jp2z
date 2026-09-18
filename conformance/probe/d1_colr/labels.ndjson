@@ -1,0 +1,13 @@
+{"fixture":"d1_colr.j2c","mode":"sniper","round":11,"offset":56161,"bit":2,"label":"changed","diff_samples":8514,"max_abs":111,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"sniper","round":16,"offset":19048,"bit":7,"label":"changed","diff_samples":180,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"sniper","round":27,"offset":43927,"bit":5,"label":"changed","diff_samples":201,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"sniper","round":61,"offset":54009,"bit":3,"label":"changed","diff_samples":175,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":11,"offset":41952,"bit":null,"label":"changed","diff_samples":122,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":15,"offset":34616,"bit":null,"label":"changed","diff_samples":645,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":27,"offset":51517,"bit":null,"label":"changed","diff_samples":86,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":42,"offset":22594,"bit":null,"label":"changed","diff_samples":1449,"max_abs":2,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":58,"offset":45478,"bit":null,"label":"changed","diff_samples":149,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":61,"offset":53309,"bit":null,"label":"changed","diff_samples":512,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":93,"offset":43419,"bit":null,"label":"changed","diff_samples":354,"max_abs":1,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","mode":"bolter","round":96,"offset":281,"bit":null,"label":"changed","diff_samples":55989,"max_abs":3,"jp2z_decode":"changed"}
+{"fixture":"d1_colr.j2c","summary":true,"accepted":12,"inert":0,"changed":12,"wrapper_refuses":0,"unreplayable":0}

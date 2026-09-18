@@ -137,6 +137,25 @@ pub fn build(b: *std.Build) void {
     const hist_install = b.addInstallArtifact(tile_hist, .{});
     b.step("tile-hist", "Build the per-tile diff histogram tool (input: SWEEP_FIXTURE=<abs-path>)").dependOn(&hist_install.step);
 
+    // ── Probe-survivor labeller (zig build probe-label) ─────────────
+    // Replays each accepted corruption-probe trial and labels it by what
+    // the openjpeg oracle decodes (inert / changed / oracle_rejects), so
+    // undetected mutations are counted as false negatives only when the
+    // corruption reached the image. Dev-only, links openjpeg.
+    const label_mod = b.createModule(.{
+        .root_source_file = b.path("tools/probe_label.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    label_mod.addImport("jp2z", jp2z_mod);
+    label_mod.addIncludePath(.{ .cwd_relative = openjpeg_include });
+    label_mod.addLibraryPath(.{ .cwd_relative = openjpeg_lib });
+    label_mod.linkSystemLibrary("openjp2", .{});
+    const probe_label = b.addExecutable(.{ .name = "jp2z-probe-label", .root_module = label_mod });
+    const label_install = b.addInstallArtifact(probe_label, .{});
+    b.step("probe-label", "Build the probe-survivor labeller (input: PROBE_FIXTURE=<abs>, PROBE_EVENTS=<abs>)").dependOn(&label_install.step);
+
     // ── Tests ──────────────────────────────────────────────────────
     const test_step = b.step("test", "Run unit + CLI tests");
 

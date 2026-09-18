@@ -175,9 +175,8 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
     if (std.c.getenv("JP2Z_DUMP_CB") != null) {
         for (list.plans) |plan| {
             const tr = p.tileRect(xsiz, ysiz, plan.tile);
-            const ci: usize = @min(plan.component, 15);
-            const dxc: u32 = p.comp_dx[ci];
-            const dyc: u32 = p.comp_dy[ci];
+            const dxc: u32 = p.dxFor(plan.component);
+            const dyc: u32 = p.dyFor(plan.component);
             const bo = jp2z.internal.bandOrigin((tr.x0 + dxc - 1) / dxc, (tr.y0 + dyc - 1) / dyc, p.codingFor(plan.component).num_decomp_levels, plan.resolution, plan.band);
             std.debug.print("oursCB t={d} c={d} r={d} b={d} p={d} x0={d} y0={d} passes={d} bytes={d}\n", .{ plan.tile, plan.component, plan.resolution, plan.band, plan.precinct, bo.x0 + plan.sb_x0, bo.y0 + plan.sb_y0, plan.total_passes, plan.data.len });
         }
@@ -204,9 +203,8 @@ fn t1Diff(a: std.mem.Allocator, io: std.Io, data: []const u8, dump_path: []const
             const tr = p.tileRect(xsiz, ysiz, plan.tile);
             // Tile-component origin on the component's sub-sampled grid, with
             // the component's own decomposition count (COC).
-            const ci: usize = @min(plan.component, 15);
-            const dxc: u32 = p.comp_dx[ci];
-            const dyc: u32 = p.comp_dy[ci];
+            const dxc: u32 = p.dxFor(plan.component);
+            const dyc: u32 = p.dyFor(plan.component);
             const bo = jp2z.internal.bandOrigin((tr.x0 + dxc - 1) / dxc, (tr.y0 + dyc - 1) / dyc, p.codingFor(plan.component).num_decomp_levels, plan.resolution, plan.band);
             const abs_x0 = bo.x0 + plan.sb_x0;
             const abs_y0 = bo.y0 + plan.sb_y0;

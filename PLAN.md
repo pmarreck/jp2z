@@ -35,11 +35,12 @@ Sole blocker on validate's JP2 cutover (jp2z → jpegz → tiffz → validate).
       (re-pin + propagate to tiffz) and validate (FYI, re-pin when the
       chain reaches them); both sessions notified; source notes archived
       to inbox/processed/. (2026-08-13 ~4:40pm EDT)
-- [ ] Decode-correctness follow-up (NOT a validation blocker): balloon's
-      differential grade vs openjpeg is FAIL max_abs=9 even post-fix — the
-      cleanroom decode has a residual gap on this feature combo (custom
-      precincts / 8 layers / SEGSYM / RPCL). Distinct from the sweep's
-      existing 12 FAILs only in that balloon isn't in the sweep corpus.
+- [x] Decode-correctness follow-up, balloon (closed 2026-09-18 ~1:00pm
+      EDT): tile-hist now reports 0 of 12 tiles above max_abs 1, the 9/7
+      tolerance class; the gap closed with the per-component wavelet and
+      packet-iterator fixes of 2026-09-06..16. Regression guard: the
+      decode suite pins balloon within 1 of the wrapper
+      (tests/unit/decode.zig, expectMatchesWrapper(balloon_jp2, 1)).
 
 ### Carried threads (do not drop)
 
@@ -484,7 +485,10 @@ those fixtures, and OpenJPEG retirement is gated on it).
       past the 16th read through slot 15 and must repeat its descriptor
       (else c145 unsupported, never invalid). decodeCleanroom refuses >16
       with error.TooManyComponents instead of indexing past its arrays.
-- [ ] Remaining sweep FAILs, attributed by tile-hist / T1 diff:
+- [x] Remaining sweep FAILs (closed 2026-09-18 ~1:00pm EDT): the sweep at
+      77dbeaa + tool fixes reads PASS 33, NEAR 4, FAIL 0, ERROR 0 over all
+      57 conformance codestreams (p0_13 joined the byte-exact set with the
+      ceiling lift). conformance/SCORECARD.md is the regression net.
 - [x] **Residual catchable-corruption audit** (2026-09-06 ~1:30pm EDT).
       Severity policy made explicit and applied: an UNDECODABLE value is
       FAIL (progression order > 4, MCT > 1, wavelet id > 1, quantization
@@ -518,9 +522,16 @@ those fixtures, and OpenJPEG retirement is gated on it).
       The production strict-validation Zig module is clean, but the Phase-1
       decoder and bundled CLI still use OpenJPEG. Consumers must not select
       those artifacts when validating until the pure-Zig decoder cutover.
-- [ ] Add specification-grounded labels for entropy mutations so undetected
-      probes can be counted as true false negatives rather than merely lower
-      mutation sensitivity.
+- [x] Specification-grounded labels for undetected probes (2026-09-18
+      ~1:15pm EDT): `./probe-label` (tools/probe_label.zig, `zig build
+      probe-label`) replays every accepted sniper/bolter trial and decodes
+      the mutant through the openjpeg oracle, labelling it inert (pristine
+      pixels), changed (a true false negative) or wrapper_refuses (mixed
+      precision, a packed-Image limit; opj_decompress decodes it). Labels
+      in conformance/probe/<fixture>/labels.ndjson, table and reading in
+      conformance/PROBE_COVERAGE.md. Shotgun survivors (57, all p1_04
+      comment windows) are not replayable from the events and stay
+      labelled by region.
 
 > **WIND-DOWN STATE (fleet migration to Thelio, 2026-07-06).** All work GREEN +
 > pushed: `yolo@origin = 2c0e8728`, 224/224 tests, Garnix 6/6, working copy clean
@@ -593,7 +604,8 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       RED via C FFI (smoke.c e1 embed), PocSequencer/parsePocBody/boundary unit
       locks, c145 classifier tests updated (POC out of the ignored set; malformed
       POC → c4/c142).
-- [ ] **e1_colr tile-7 rendering residual (±2, NOT a validity issue).** Sweep
+- [x] **e1_colr tile-7 rendering residual — closed 2026-09-18: the sweep
+      grades e1_colr PASS, byte-exact (max_abs 0), so the ±2 is gone.** Sweep
       max_abs 252 → 2: remaining diffs are ALL in tile 7 (bottom-right, 19×48,
       both-clipped), ±1/±2 both signs, ~63% of samples — a least-significant
       refinement deviation in cblk decode, PRE-EXISTING (masked by tile 1's 252
@@ -631,10 +643,11 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       cblksty=0x10 verified) must ACCEPT via strict FFI. Future: a corrupt-PTERM
       whole-file mutant (over_read ∈ {3,4}) as an e2e detection proof — needs
       byte-level crafting since packet lengths must stay consistent.
-- [ ] **Integration:** Validate deep-validates via stock OpenJPEG, not jp2z
-      (Einstein's critical fact). Switch `validate/src/core/jpeg2000_validator.zig`
-      to `jp2z_deep_validate` once false positives are cleared — jp2z's stricter
-      c251/c252 checks are the product differentiator.
+- [x] **Integration** (closed 2026-09-18): validate already deep-validates
+      JPEG 2000 through jp2z, imported as a Zig module via tiffz.jpegz
+      (validate/build.zig: "strict JP2 validation is pure-Zig jp2z";
+      `jpeg2000_validator.zig` no longer exists there). jpegz pins jp2z at
+      77dbeaa and its agent tracks the pin (jpegz/PLAN.md, 2026-09-18).
 - [x] **Marker-field ranges + crash-class hardening** (2026-08-01). COD
       decomp>32 / cblk-exp>8 were warn-then-assign — downstream geometry sizes
       [33] arrays and computes `exp+2` in u8, so hostile values PANICKED
@@ -749,11 +762,12 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       **b1_mono AND b3_mono both byte-EXACT** (max_abs 195/202 → 0); sweep **PASS 19→21**, no
       PASS→FAIL drift. Added a focused MFIC metamorphic test (iterator emits exactly total()
       packets, none in an empty resolution) + the b1 byte-exact differential test. 229 tests.
-- [ ] **Next: p1_04 >8-bit** (tiffz gap), 9/7 multi-tile `p1_*` (needs cas/origin for the 9/7
-      path like the 5/3 path has), p0_13. TDD vs openjpeg.
-- [ ] **Minor (Thelio)**: benign `warning(link): unexpected LLD stderr` in the fast
-      dev-loop build (`zig build test` in the devShell); `nix build`/`./test` are clean.
-      Likely a new-machine LLD version quirk — investigate/silence for clean dev output.
+- [x] **p1_04 >8-bit, 9/7 multi-tile `p1_*`, p0_13** (closed 2026-09-18):
+      sweep p1_04 NEAR (max_abs 1, 12-bit), p1_02/p1_05 NEAR, p1_06 PASS
+      byte-exact, p0_13 PASS byte-exact.
+- [x] **Minor (Thelio)**: the `warning(link): unexpected LLD stderr` in the fast
+      dev-loop build no longer appears (2026-09-18, `zig build test` in the devShell
+      with zig 0.16.0 prints no link warning). Closed as not reproducible.
 - [x] **Reviewer catch — reject user-precinct PPx/PPy=0 at r>0** (2026-06-30, commit
       ba313895). jp2z-reviewer's audit of the multi-tile commit found a reachable crash
       on the shipped validate() path (u6 underflow in TileWalk.init). `parseCodBody` now
@@ -770,9 +784,9 @@ over-read checks (c251/c252) are the genuine stricter-than-OpenJPEG differentiat
       through, never mis-grades. **p0_10 DECODED→PASS byte-exact** (sub-sampled 4× + 2×2
       multi-tile 5/3); a1/c1/d1/p0_04/p0_09 keep identical verdicts (now tagged `oracle:pix`).
       Sweep **PASS 21→22**, skip 21→20, no regressions.
-- [ ] **>8-bit depth — p1_04** (max_abs 3782, the tiffz/pathology gap) and
-      **p0_13** ERROR=NoCodingParams (header-parse gap) — both lower priority
-      than the tile cluster but tracked.
+- [x] **>8-bit depth — p1_04** and **p0_13** (closed 2026-09-18): p1_04 NEAR
+      max_abs 1 (was 3782); p0_13 PASS byte-exact (was NoCodingParams, then
+      TooManyComponents).
 
 ## Phase 1 — openjpeg wrapper (working v1)
 
@@ -838,8 +852,10 @@ oracle tests.
           sample period) so consumers can show per-component metadata
         - Once M3-M6 land: cblk-level integrity (segment termination
           marker presence / MQ-coder predictable-termination violations)
-- [ ] PPM / PPT marker support (packed packet headers in main /
-      tile-part header rather than inline) — separate slice
+- [x] PPM / PPT marker support (closed 2026-09-18): the walker applies PPM
+      and PPT (c256 packed_headers_mismatch on the reject side, 2026-09-06)
+      and the sweep decodes g3_colr (PPM), g4_colr (PPT) and p1_06 (PPT per
+      tile-part) byte-exact.
 
 ### M3 — tier-1 EBCOT
 - [x] MQ arithmetic coder (T.800 Annex C) — 47-entry state table,
@@ -996,10 +1012,13 @@ the 9/7 float tolerance), so it is exact even on the lossy path.
 
 ## Phase 3 — jpegz integration
 
-- [ ] In jpegz: replace `pub const jpeg2000` body with thin re-export shim to jp2z
-- [ ] In jpegz: delete `src/ffi/openjpeg_wrapper.zig`
-- [ ] In jpegz: remove openjpeg from `flake.nix`
-- [ ] jpegz becomes "JPEG-family decoder with no third-party decoder at runtime — pure Zig, no exceptions"
+- [x] The four jpegz items (re-export shim over jp2z, delete jpegz's
+      openjpeg_wrapper.zig, drop openjpeg from its flake, "no third-party
+      decoder at runtime") are jpegz's to do and were handed to its active
+      agent on 2026-09-18 ~1:05pm EDT (jpegz/inbox/2026-09-18-from-
+      jp2z@thelio-jp2z-decode-is-pure-zig-…frontmatter.md). jp2z's side is
+      complete: decode and deepValidate are pure Zig, the runtime package
+      has no openjpeg, jpegz pins 77dbeaa. Track completion in jpegz/PLAN.md.
 
 ## Completed
 - Multi-tile decode (5/3): p0_10.j2k BYTE-PERFECT — TNsot>1 persistent
