@@ -183,6 +183,14 @@ honestly. Agreed order:
       scorecard section added; PROBE_COVERAGE.md, probe-label and the
       labeller mark the v1 dense window as legacy shotgun. Remaining: (c)
       below.
+- [ ] DECISION FOR PETER (raised 2026-09-30 ~2:45am EDT, emailed): validate's
+      work order asks jp2z to downgrade the A.4.2 TPsot >= TNsot FAIL to a
+      WARN because OpenJPEG decodes those streams (190/190 JPX images of a
+      private oracle PDF, plus a second PDF, print OpenJPEG's "Non conformant
+      codestream TPsot==TNsot"). This is the class Peter ruled FAIL on
+      2026-09-12; held, no code changed, validate told the decision is
+      Peter's. Options: keep the ruling and classify at the validate/jpegz
+      layer from the typed finding; or carve out this class as WARN in jp2z.
 - [ ] Mutation vocabulary migration, probe rerun (Peter, 2026-09-29; global memory
       "Corruption mutation vocabulary uses sniper bolter shotgun and nuke"):
       shotgun now = 8..16 distinct bit flips in a fully contained 32-byte
