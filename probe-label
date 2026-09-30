@@ -13,7 +13,7 @@ if [ -z "${OPENJPEG_INCLUDE:-}" ]; then
 fi
 echo "==> building probe labeller" >&2
 zig build probe-label -Doptimize=ReleaseSafe "-Dopenjpeg-include=$OPENJPEG_INCLUDE" "-Dopenjpeg-lib=$OPENJPEG_LIB" || { echo "    FAIL: could not build jp2z-probe-label" >&2; exit 1; }
-printf '| Fixture | Accepted (sniper+bolter) | Inert | Changed (false negatives) | Wrapper refuses | Unreplayable (shotgun) |\n|---|---:|---:|---:|---:|---:|\n'
+printf '| Fixture | Accepted (sniper+bolter) | Inert | Changed (false negatives) | Wrapper refuses | Unreplayable (legacy shotgun, dense window) |\n|---|---:|---:|---:|---:|---:|\n'
 fails=0
 for fixture in $(fd -e j2k -e jp2 -e j2c -e jpx . tests/unit/fixtures | sort); do
 	name=$(basename "$fixture"); name="${name%.*}"

@@ -7,7 +7,15 @@ Validator command: `jp2z validate --strict {file}` with `--exit-map
 2=warning`; a pristine copy must exit 0 first (all 27 fixtures do).
 Per fixture: 100 rounds each of sniper (one bit), bolter (one byte XOR
 0xFF), shotgun (a random window of min(4096, size/8) bytes, floor 64) and
-truncation. Reports, per-trial events and run logs live under
+truncation. Vocabulary note (2026-09-29): the fleet has since redefined
+"shotgun" as 8..16 distinct bit flips in a 32-byte window and named the
+dense overwrite "nuke". Every "shotgun" figure in this file was produced
+by corruption-probe v1's dense pseudorandom overwrite of a min(4096,
+size/8)-byte window (floor 64), so read it as legacy-shotgun with that
+window; it is not comparable with a sparse-shotgun rate. The artifacts
+under conformance/probe/ are immutable and keep their v1 labels; a rerun
+under the new operators waits for corruption_probe's tested v2 and will
+be recorded with its version and parameters. Reports, per-trial events and run logs live under
 `conformance/probe/<fixture>/`; the region breakdown below comes from the
 events and the file's own marker map (scratch `probe_regions.lua`,
 reproducible from the events file).

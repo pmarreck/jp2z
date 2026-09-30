@@ -119,3 +119,30 @@ one that decodes to different pixels is `changed` (a true false negative),
 and one the packed Image contract refuses (mixed precision) is
 `wrapper_refuses`. Labels sit beside each report in `labels.ndjson`; the
 table and its reading are in `conformance/PROBE_COVERAGE.md`.
+
+2026-09-29: the fleet mutation vocabulary changed (Peter; global memory
+"Corruption mutation vocabulary uses sniper bolter shotgun and nuke").
+This matrix's third class was a 1024-byte zero-fill it had called
+"shotgun"; it keeps that exact operator under the label
+legacy-shotgun/zero-fill (1024 bytes) and its floor is unchanged. Two
+classes were added as entropy probes at the same quarter-point offset:
+shotgun (8..16 distinct bit positions in a fully contained 32-byte
+window, each XOR 1, drawn without replacement from a ChaCha stream seeded
+by BLAKE3 of "jp2z-mutation-matrix/shotgun/<fixture>") and nuke (a
+1024-byte deterministic pseudorandom overwrite, redrawn if it equals the
+original; the fleet default is 4096 bytes and this matrix records 1024
+because its smallest entropy bodies are shorter). Measured at the commit
+that added them, strict detection by family and class in the order
+sniper, bolter, legacy zero-fill, shotgun, nuke:
+
+| family | controls | sniper | bolter | legacy zero-fill 1024 B | shotgun 8..16 bits / 32 B | nuke 1024 B |
+|---|---:|---:|---:|---:|---:|---:|
+| codestream | 23 | 15 | 16 | 21 | 19 | 22 |
+| jp2 | 3 | 3 | 3 | 3 | 3 | 3 |
+
+The sparse shotgun and nuke floors are these measured counts. They are
+new columns, never a comparison with the zero-fill column: the operators
+differ in size, fill and pattern. The known-invalid structural classes
+stay sniper, bolter and the 1024-byte zero-fill from SOC. Crashes are
+not a category here (the matrix runs in-process; a panic fails the
+suite); the sparse-flip crash hypothesis is for the probe, not this gate.

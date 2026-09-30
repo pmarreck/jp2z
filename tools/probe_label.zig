@@ -18,9 +18,10 @@
 //!                   jp2z.decode; opj_decompress decodes it (verified on
 //!                   p0_13 with one component at 7 bits, 2026-09-18), so
 //!                   this is a limit of the Image type, not a detection
-//! Shotgun and truncation trials carry random windows the events do not
-//! record, so only sniper and bolter are replayable; those two modes are
-//! also the ones with survivors.
+//! Shotgun (in the v1 events a dense pseudorandom window, the operator
+//! the fleet renamed nuke on 2026-09-29) and truncation trials carry
+//! random bytes the events do not record, so only sniper and bolter are
+//! replayable; those two modes are also the ones with survivors.
 //!
 //! Input via env (0.16 has no argsAlloc): PROBE_FIXTURE=<abs path>,
 //! PROBE_EVENTS=<abs path to events.ndjson>. Output: one JSON line per

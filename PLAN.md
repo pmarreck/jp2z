@@ -174,6 +174,31 @@ honestly. Agreed order:
       `-Dopenjpeg-*` flags (`ldd` on the built CLI: libc only); the test
       check and the dev shell keep the oracle. The CLI gained `--about`
       (name, version, platform, arch; CLI test).
+- [x] Mutation vocabulary migration, in-core and labels (2026-09-29
+      ~10:20pm EDT): tests/mutation_matrix.zig keeps the 1024-byte zero-fill
+      as legacy-shotgun/zero-fill (floor unchanged) and adds sparse shotgun
+      (8..16 distinct bits / 32-byte window, BLAKE3-seeded ChaCha, replay by
+      label) and nuke (1024-byte pseudorandom overwrite, size recorded) as
+      entropy probes with measured floors 19/22 (codestream) and 3/3 (jp2);
+      scorecard section added; PROBE_COVERAGE.md, probe-label and the
+      labeller mark the v1 dense window as legacy shotgun. Remaining: (c)
+      below.
+- [ ] Mutation vocabulary migration, probe rerun (Peter, 2026-09-29; global memory
+      "Corruption mutation vocabulary uses sniper bolter shotgun and nuke"):
+      shotgun now = 8..16 distinct bit flips in a fully contained 32-byte
+      window; the former dense overwrite is nuke. jp2z work: (a) in-core
+      tests/mutation_matrix.zig calls a 1024-byte zero-fill "shotgun";
+      rename it nuke with its size recorded and add a true sparse shotgun
+      operator over the seeded stream with distinct bit positions, keeping
+      the per-family floors separate per mode (TDD, floors re-measured, no
+      comparison of new sparse rates to the old dense column); (b) label
+      the existing probe reports, PROBE_COVERAGE.md tables, probe-label
+      column and MUTATION_SCORECARD.md as legacy-shotgun/nuke with the
+      actual window (min(4096, size/8), floor 64) — artifacts immutable;
+      (c) re-run corruption-probe only after corruption_probe ships its
+      tested v2, recording version and parameters; keep crashes counted
+      separately from rejections (the sparse-flip crash hypothesis is
+      unproven).
 - [x] Re-probe of all 27 fixtures at 449eb1d (2026-09-16 ~9:05pm EDT):
       one-run table in conformance/PROBE_COVERAGE.md; 17 fixtures with no
       flipped trial, every flip on the other 10 explained (Profile 0
