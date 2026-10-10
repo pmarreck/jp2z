@@ -205,14 +205,37 @@ honestly. Agreed order:
       now FAILs 146 at the marker (OpenJPEG agrees: "illegal tile offset";
       0 false positives over 57 conformance files; 151 nonregression files
       differential, verdicts agree). No pin or API change.
+- [x] (2026-10-10 ~3:30pm EDT) validate handoff (inbox, "False positive
+      class: uniform TNsot = actual-1 tile-part undercount (2113 embedded
+      streams), plus code-block under-read cap"). Class 1, every tile
+      carrying one more tile-part than TNsot declares, is the A.4.2 class
+      ruled FAIL on 2026-09-12 and raised and withdrawn by validate on
+      2026-09-30: no severity change; the typed finding is 141 with detail
+      "exceeds the declared TNsot" at SOT+11 (a dedicated code is possible
+      later through the Einstein finding registry if a consumer wants to
+      classify without string matching). Class 2, the entropy_under_read
+      (252) threshold: a spec-written MQ encoder (tests/unit/mq_encoder.zig)
+      and 8000 seeded round-trips show both terminations T.800 defines
+      (FLUSH, D.4.2 predictable) leave 0 unconsumed bytes, so the allowance
+      of 2 (now `underReadCap`, equal to OpenJPEG's PTERM criterion) stays;
+      the 252 detail now carries the max tail, the cap and cblksty; a
+      hand-built single-coefficient fixture decodes identically in jp2z and
+      OpenJPEG and a classifier over appended bytes {0, 3, 4, 8} bites.
+      Census: 0/57 conformance, 29/226 nonregression report 252; the 3 with
+      a 3-byte tail (issue206_image-000, issue559-eci-090/091) are
+      TPsot==TNsot producers, the same pairing validate saw. Record:
+      docs/mktp-research/jpeg2000.md 4.5 + census artifact. Replied.
 - [ ] MKTP follow-ups needing T.800 text before a severity is chosen (each
       red-first once the clause is in hand): ihdr first in jp2h (I.5.3.1) and
       at least one colr box (I.5.3.3, Table I.4; the unit-test JP2 helpers
       emit colr-less jp2h and must change first); MCT = 1 with fewer than 3
       or geometrically mismatched components (G.2; decode already refuses);
       COD/COC/QCD/QCC/RGN in a tile-part header other than the first (Table
-      A.1 placement; WARN 145 today). Ask BDFN for the extracts by the Annex E
-      route.
+      A.1 placement; WARN 145 today). B.10.7 and D.4.1-D.4.2: whether
+      bytes past the coder's termination inside a code-block contribution
+      are a violation (252 keeps strict FAIL / lenient WARN with cap 2
+      meanwhile; witnesses in docs/mktp-research/jpeg2000.md 4.5). Ask BDFN
+      for the extracts by the Annex E route.
 - [ ] Mutation vocabulary migration, probe rerun (Peter, 2026-09-29; global memory
       "Corruption mutation vocabulary uses sniper bolter shotgun and nuke"):
       shotgun now = 8..16 distinct bit flips in a fully contained 32-byte

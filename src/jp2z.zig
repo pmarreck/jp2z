@@ -277,6 +277,11 @@ pub const internal = struct {
         @import("decode/codestream.zig").debug_trace_key = key;
     }
 
+    /// The MQ arithmetic decoder (T.800 Annex C), exposed so tests can
+    /// round-trip it against a spec-written encoder and measure what it
+    /// leaves unconsumed.
+    pub const mq = @import("decode/mq_coder.zig");
+
     pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
 
     /// The wrapper-free decode route: cleanroom reconstruction shaped into

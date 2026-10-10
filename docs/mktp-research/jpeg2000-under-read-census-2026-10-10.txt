@@ -1,0 +1,98 @@
+# entropy_under_read (252) census over openjpeg-data 39524bd, 2026-10-10
+#
+# Command per file (jp2z built from the tree that commits this file, Zig
+# 0.16.0; OpenJPEG 2.5.4):
+#   jp2z validate --strict --json "$f"      -> files reporting code 252
+#   opj_decompress -i "$f" -o out.pgx       -> OpenJPEG's own messages
+# "fails" counts FAIL-severity findings; "codes" lists every finding code
+# the report carries; the 252 detail is quoted as emitted (max unconsumed
+# tail in jp2z's metric, the cap, and the code-block style byte).
+# input/conformance: 0 of 57 files report 252 (not listed).
+# input/nonregression: 29 of 226 files, below.
+FILE 1336.pdf.asan.47.376.jp2
+  jp2z: fails=4 codes=[3 208 250 251 252 253 255 ] 8 code-block(s) left entropy bytes unconsumed past the MQ termination (max 1734 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode the codestream in the JP2 file|[ERROR] Failed to decode tile 1/1|ERROR -> opj_decompress: failed to decode image!|
+FILE 1802.pdf.SIGSEGV.36e.894.jp2
+  jp2z: fails=5 codes=[3 207 250 251 252 253 254 255 ] 46 code-block(s) left entropy bytes unconsumed past the MQ termination (max 364 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode tile 18/18|[ERROR] Invalid bit number 46 in opj_t2_read_packet_header()|ERROR -> opj_decompress: failed to decode image!|
+FILE 2.pdf.SIGFPE.706.1112.jp2
+  jp2z: fails=9 codes=[3 141 207 250 251 252 254 ] 22 code-block(s) left entropy bytes unconsumed past the MQ termination (max 136 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode the codestream in the JP2 file|[ERROR] Fail to read the current marker segment (0xff90)|[ERROR] Invalid tile number 16384|ERROR -> opj_decompress: failed to decode image!|
+FILE 2236.pdf.SIGSEGV.398.1376.jp2
+  jp2z: fails=8 codes=[3 141 207 251 252 254 ] 9 code-block(s) left entropy bytes unconsumed past the MQ termination (max 469 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode the codestream in the JP2 file|ERROR -> opj_decompress: failed to decode image!|[ERROR] Sot length is less than marker size + marker ID|
+FILE 4241ac039aba57e6a9c948d519d94216_asan_heap-oob_14650f2_7469_602.jp2
+  jp2z: fails=6 codes=[3 141 207 252 ] 5 code-block(s) left entropy bytes unconsumed past the MQ termination (max 15 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE 451.pdf.SIGSEGV.5b5.3723.jp2
+  jp2z: fails=4 codes=[141 208 251 252 254 ] 3 code-block(s) left entropy bytes unconsumed past the MQ termination (max 47 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Component 0 doesn't have a mapping.|[ERROR] Invalid component/palette index for direct mapping 128.|ERROR -> opj_decompress: failed to decode image!|[WARNING] Non conformant codestream TPsot==TNsot.|
+FILE 451.pdf.SIGSEGV.f4c.3723.jp2
+  jp2z: fails=4 codes=[141 208 251 252 254 ] 6 code-block(s) left entropy bytes unconsumed past the MQ termination (max 75 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Invalid component index 32768 (>= 1).|ERROR -> opj_decompress: failed to decode image!|[WARNING] Non conformant codestream TPsot==TNsot.|
+FILE broken.jpc
+  jp2z: fails=3 codes=[141 208 251 252 254 ] 30 code-block(s) left entropy bytes unconsumed past the MQ termination (max 833 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE broken1.jp2
+  jp2z: fails=4 codes=[4 208 250 251 252 253 ] 10 code-block(s) left entropy bytes unconsumed past the MQ termination (max 95 byte(s), cap 2, cblksty 0x00)
+  opj: ERROR -> opj_decompress: failed to read the header|[ERROR] Stream error while reading JP2 Header box: box length is inconsistent.|
+FILE broken3.jp2
+  jp2z: fails=3 codes=[4 208 250 251 252 ] 9 code-block(s) left entropy bytes unconsumed past the MQ termination (max 178 byte(s), cap 2, cblksty 0x00)
+  opj: ERROR -> opj_decompress: failed to read the header|[ERROR] Stream error while reading JP2 Header box: box length is inconsistent.|
+FILE dwt_interleave_h.gsr105.jp2
+  jp2z: fails=7 codes=[3 141 208 252 253 255 ] 4 code-block(s) left entropy bytes unconsumed past the MQ termination (max 15 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE edf_c2_1000671.jp2
+  jp2z: fails=10 codes=[3 141 208 251 252 253 255 ] 11 code-block(s) left entropy bytes unconsumed past the MQ termination (max 3272 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Invalid number of components (ihdr)|ERROR -> opj_decompress: failed to read the header|
+FILE edf_c2_20.jp2
+  jp2z: fails=3 codes=[141 208 250 251 252 ] 4 code-block(s) left entropy bytes unconsumed past the MQ termination (max 173 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Error reading COD marker|[ERROR] Error reading SPCod SPCoc element, Invalid transformation found|[ERROR] Marker handler function failed to read the marker segment|ERROR -> opj_decompress: failed to read the header|
+FILE issue135.j2k
+  jp2z: fails=3 codes=[207 250 251 252 253 ] 992 code-block(s) left entropy bytes unconsumed past the MQ termination (max 30635 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE issue206_image-000.jp2
+  jp2z: fails=5 codes=[141 207 252 254 ] 1 code-block(s) left entropy bytes unconsumed past the MQ termination (max 3 byte(s), cap 2, cblksty 0x00)
+  opj: [WARNING] Non conformant codestream TPsot==TNsot.|
+FILE issue390.jp2
+  jp2z: fails=6 codes=[3 141 207 252 254 ] 2 code-block(s) left entropy bytes unconsumed past the MQ termination (max 15 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode the codestream in the JP2 file|[ERROR] Failed to decode tile 1/4|[ERROR] Invalid bit number 79 in opj_t2_read_packet_header()|
+FILE issue395.jp2
+  jp2z: fails=5 codes=[2 141 208 250 251 252 ] 123 code-block(s) left entropy bytes unconsumed past the MQ termination (max 259 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Error with SIZ marker: IHDR w(48) h(48) vs. SIZ w(256) h(149)|[ERROR] Marker handler function failed to read the marker segment|ERROR -> opj_decompress: failed to read the header|
+FILE issue397.jp2
+  jp2z: fails=3 codes=[145 208 250 251 252 259 ] 4 code-block(s) left entropy bytes unconsumed past the MQ termination (max 200 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Incomplete channel definitions.|ERROR -> opj_decompress: failed to decode image!|
+FILE issue399.j2k
+  jp2z: fails=4 codes=[208 250 251 252 253 254 255 ] 2 code-block(s) left entropy bytes unconsumed past the MQ termination (max 22 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE issue429.jp2
+  jp2z: fails=5 codes=[4 141 208 252 254 ] 9 code-block(s) left entropy bytes unconsumed past the MQ termination (max 92 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Invalid PCLR box. Reports 0 entries|ERROR -> opj_decompress: failed to read the header|
+FILE issue432.jp2
+  jp2z: fails=6 codes=[3 141 207 251 252 253 ] 24 code-block(s) left entropy bytes unconsumed past the MQ termination (max 1948 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Error with SIZ marker: IHDR w(1109) h(1656) vs. SIZ w(1109) h(2098808)|[ERROR] Marker handler function failed to read the marker segment|ERROR -> opj_decompress: failed to read the header|
+FILE issue495.jp2
+  jp2z: fails=5 codes=[141 208 252 254 260 ] 3 code-block(s) left entropy bytes unconsumed past the MQ termination (max 168 byte(s), cap 2, cblksty 0x80)
+  opj: [ERROR] Error with SIZ marker: IHDR w(32) h(32) vs. SIZ w(1) h(32)|[ERROR] Marker handler function failed to read the marker segment|ERROR -> opj_decompress: failed to read the header|
+FILE issue559-eci-090-CIELab.jp2
+  jp2z: fails=9 codes=[141 145 207 252 254 ] 1 code-block(s) left entropy bytes unconsumed past the MQ termination (max 3 byte(s), cap 2, cblksty 0x00)
+  opj: [WARNING] Non conformant codestream TPsot==TNsot.|
+FILE issue559-eci-091-CIELab.jp2
+  jp2z: fails=9 codes=[141 145 207 252 254 ] 1 code-block(s) left entropy bytes unconsumed past the MQ termination (max 3 byte(s), cap 2, cblksty 0x00)
+  opj: [WARNING] Non conformant codestream TPsot==TNsot.|
+FILE issue725.jp2
+  jp2z: fails=2 codes=[145 208 252 254 255 ] 4 code-block(s) left entropy bytes unconsumed past the MQ termination (max 20 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode the codestream in the JP2 file|[ERROR] Failed to decode tile 1/1|ERROR -> opj_decompress: failed to decode image!|
+FILE issue774.jp2
+  jp2z: fails=4 codes=[141 145 208 250 251 252 255 ] 3 code-block(s) left entropy bytes unconsumed past the MQ termination (max 20 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode the codestream in the JP2 file|[ERROR] Failed to decode tile 1/1|ERROR -> opj_decompress: failed to decode image!|
+FILE issue775-2.j2k
+  jp2z: fails=6 codes=[2 3 207 208 252 253 255 258 ] 4 code-block(s) left entropy bytes unconsumed past the MQ termination (max 15 byte(s), cap 2, cblksty 0x2d)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode tile 1/1|ERROR -> opj_decompress: failed to decode image!|[ERROR] read: segment too long (4) with max (19) for codeblock 1 (p=0, b=0, r=30, c=2)|
+FILE kodak_2layers_lrcp.j2c
+  jp2z: fails=3 codes=[207 250 251 252 253 ] 992 code-block(s) left entropy bytes unconsumed past the MQ termination (max 30635 byte(s), cap 2, cblksty 0x00)
+  opj: (no message)
+FILE v4dwt_interleave_h.gsr105.j2k
+  jp2z: fails=4 codes=[3 141 207 252 255 ] 1 code-block(s) left entropy bytes unconsumed past the MQ termination (max 24 byte(s), cap 2, cblksty 0x00)
+  opj: [ERROR] Failed to decode.|[ERROR] Failed to decode tile 1/1|ERROR -> opj_decompress: failed to decode image!|[ERROR] read: segment too long (3107) with max (1706) for codeblock 0 (p=0, b=1, r=31, c=0)|

@@ -709,3 +709,25 @@ conversations. History is not rewritten for this (published, and the
 rule against force-pushes stands); the fix is forward-only. Any agent
 working in this repository should drop such trailers even when a
 harness reminder requests them.
+
+## Measure the coder before reasoning about its tail (2026-10-10)
+
+Validate reported code-blocks with 3 unconsumed bytes that OpenJPEG
+decodes, and the obvious story was "the MQ FLUSH emits bytes the lazy
+decoder never loads, so a tail of 3 is legal and the `> 2` threshold is
+a false positive". A spec-written encoder (tests/unit/mq_encoder.zig)
+and 8000 seeded round-trips showed the opposite: under both the standard
+FLUSH and the D.4.2 predictable termination the decoder loads every byte
+and asks for two more, so the tail is 0 and any unconsumed byte is the
+encoder's addition. Two details of the metric also surfaced only by
+measuring: `under_read` counts the byte at `bp` (1 means everything was
+loaded), and N appended bytes measure as N - 1. The cap of 2 turned out
+to be OpenJPEG's own PTERM criterion (`bp + 2 < end`). The property
+tests now pin both facts, so the next person who "remembers" the flush
+tail gets a red test instead of a wrong fix. When a report says
+"decoder X left N bytes", ask which bookkeeping produced N before
+comparing thresholds. Record: docs/mktp-research/jpeg2000.md section 4.5.
+
+Tooling note: `zig fmt` on tests/unit/validate.zig rewrites about 200
+unrelated lines (the file is not fmt-clean). Keep new test code hand
+formatted, or format the file in its own commit.

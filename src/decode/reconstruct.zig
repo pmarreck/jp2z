@@ -658,6 +658,23 @@ fn overReadCap(cblksty: u8) u32 {
     // cbsty 0x34) sit at 2. Strict finding here, not openjpeg's warning-only.
     return if (cblksty & 0x10 != 0) 3 else 12;
 }
+/// Unconsumed bytes a code-block segment may leave past the decoder's final
+/// position before deepValidate reports entropy_under_read. Neither
+/// termination T.800 defines leaves any: on genuine coder output jp2z's
+/// decoder loads every byte and asks for one past the end, both for the
+/// standard FLUSH (Annex C, SETBITS + two BYTEOUTs) and for the predictable
+/// termination of D.4.2 (round-trip property tests against a spec-written
+/// encoder, tests/unit/validate.zig, 4000 seeded streams each, tail 0). Real
+/// encoders still keep a byte or two past their termination
+/// (balloon_eciRGB_icc: max 1 over 4336 code-blocks) and no clause in hand
+/// forbids that, so 2 are allowed; more is a length/data inconsistency
+/// (strict FAIL, lenient WARN). A 2026-10-10 field report of one producer's
+/// JPX streams leaving 3 per code-block, which OpenJPEG decodes, is recorded
+/// in docs/mktp-research/jpeg2000.md (4.5) pending the D.4.2 / B.10.7 text.
+/// complexity: O(1)
+fn underReadCap() u32 {
+    return 2;
+}
 test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
     const PTERM: u8 = 0x10; // T.800 SPcod cblksty bit 4 — predictable termination
     // Under PTERM every terminated pass ends with a full flush, so the tail is
@@ -794,6 +811,7 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     // can go straight to the cblk instead of re-instrumenting the walk.
     var first_over: ?cblk_plan.CblkDecodePlan = null;
     var first_under: ?cblk_plan.CblkDecodePlan = null;
+    var max_under: u32 = 0;
     var first_passbudget: ?cblk_plan.CblkDecodePlan = null;
     var first_zbp: ?cblk_plan.CblkDecodePlan = null;
     var surplus_count: u32 = 0;
@@ -852,12 +870,9 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
             segsym_count += 1;
             if (first_segsym == null) first_segsym = plan;
         }
-        // NOTE: under_read (declared-but-unconsumed bytes) is symmetric and could
-        // in principle false-positive up to the same ~4 lookahead, but no valid
-        // fixture trips it today (b1/p0_04 under_read=0); revisit with the same
-        // register-derived cap if one ever does.
-        if (cblk.under_read > 2) {
+        if (cblk.under_read > underReadCap()) {
             under_count += 1;
+            max_under = @max(max_under, cblk.under_read);
             if (first_under == null) first_under = plan;
         }
     }
@@ -891,7 +906,7 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     }
     if (under_count > 0) {
         const p = first_under.?;
-        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed (byte-budget mismatch) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ under_count, p.tile, p.component, p.resolution, p.band, p.precinct });
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed past the MQ termination (max {d} byte(s), cap {d}, cblksty 0x{x:0>2}) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ under_count, max_under, underReadCap(), p.cblksty, p.tile, p.component, p.resolution, p.band, p.precinct });
         try appendFinding(&report, allocator, sev, .entropy_under_read, p.src_offset, detail);
     }
 

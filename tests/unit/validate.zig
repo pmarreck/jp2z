@@ -1517,6 +1517,279 @@ test "deepValidate: clean a1_mono has no entropy over-read finding (no false pos
     try std.testing.expect(!hasFinding(rep, .entropy_under_read));
 }
 
+// ── MQ termination and the unconsumed-tail allowance ─────────────────
+//
+// validate's 2026-10-10 report: every JPX stream of one producer failed
+// strict validation on the entropy_under_read threshold while OpenJPEG
+// decoded it, leaving 3 unconsumed bytes per code-block. Before touching the
+// threshold, the two terminations T.800 Annex C and D.4.2 define are
+// exercised with a spec-written encoder (tests/unit/mq_encoder.zig): the
+// standard FLUSH (SETBITS + two BYTEOUTs) and the predictable termination
+// used under cblksty PTERM. Both tests below pin what jp2z's decoder leaves
+// unconsumed on genuine coder output, so the allowance in
+// reconstruct.underReadCap rests on the coder, not on a corpus.
+const mq_enc = @import("mq_encoder.zig");
+
+/// Mirror of reconstruct.underReadCap: unconsumed bytes beyond this many are
+/// reported as entropy_under_read. Neither termination leaves any (pinned
+/// below); the allowance covers encoders that keep a byte or two past their
+/// own termination, which real files do (balloon_eciRGB_icc: max 1).
+const mq_under_read_cap: u32 = 2;
+
+fn decoderContexts() [19]jp2z.internal.mq.Context {
+    var ctxs = [_]jp2z.internal.mq.Context{.{}} ** 19;
+    ctxs[0] = .{ .state = 4, .mps = 0 };
+    ctxs[17] = .{ .state = 3, .mps = 0 };
+    ctxs[18] = .{ .state = 46, .mps = 0 };
+    return ctxs;
+}
+
+const Decision = struct { cx: u8, d: u1 };
+const Termination = enum { flush, predictable };
+
+/// Encode `decisions` with the test encoder and the chosen termination;
+/// caller owns the returned bytes.
+fn encodeDecisions(allocator: std.mem.Allocator, decisions: []const Decision, term: Termination) ![]u8 {
+    var ectx = mq_enc.initEbcotContexts();
+    var enc = mq_enc.Encoder.init(allocator);
+    defer enc.deinit();
+    for (decisions) |d| try enc.encode(&ectx[d.cx], d.d);
+    return switch (term) {
+        .flush => enc.flush(),
+        .predictable => enc.flushPredictable(),
+    };
+}
+
+/// Decode `decisions` from `bytes` with jp2z's decoder, asserting every
+/// decision round-trips; returns the decoder for tail/over-read inspection.
+fn decodeDecisions(bytes: []const u8, decisions: []const Decision) !jp2z.internal.mq.Decoder {
+    var dctx = decoderContexts();
+    var dec = jp2z.internal.mq.Decoder.initDec(bytes);
+    for (decisions) |d| try std.testing.expectEqual(d.d, dec.decode(&dctx[d.cx]));
+    return dec;
+}
+
+/// `segment length - decoder.bp`, the quantity cblk_dispatch/ebcot report
+/// as `under_read` (the byte at `bp` has been loaded, so 1 means every byte
+/// was loaded and 0 means the decoder also asked for one past the end).
+fn unconsumedTail(dec: jp2z.internal.mq.Decoder, len: usize) u32 {
+    return if (dec.bp < len) @intCast(len - dec.bp) else 0;
+}
+
+const TailStats = struct { max_tail: u32, max_over: u32, hist: [8]u32 };
+
+/// Round-trip 4000 seeded random decision streams through the test encoder
+/// and jp2z's decoder; every decision must survive. Returns the largest
+/// unconsumed tail and the largest past-end synthesis count observed.
+fn roundTripStats(allocator: std.mem.Allocator, term: Termination) !TailStats {
+    var prng = std.Random.DefaultPrng.init(0x4d51_464c_5553_4821);
+    const rnd = prng.random();
+    const lps_rates = [_]f32{ 0.0, 0.02, 0.1, 0.3, 0.5 };
+    var st: TailStats = .{ .max_tail = 0, .max_over = 0, .hist = [_]u32{0} ** 8 };
+    var round: usize = 0;
+    while (round < 4000) : (round += 1) {
+        const n: usize = 1 + rnd.uintLessThan(usize, 500);
+        const rate = lps_rates[rnd.uintLessThan(usize, lps_rates.len)];
+        const decisions = try allocator.alloc(Decision, n);
+        defer allocator.free(decisions);
+        // Decisions are drawn relative to the encoder's live MPS so `rate` is
+        // the LPS rate: all-MPS streams compress to a few bytes, 0.5 streams
+        // barely compress, and both ends of the coder are exercised.
+        var ectx = mq_enc.initEbcotContexts();
+        var enc = mq_enc.Encoder.init(allocator);
+        defer enc.deinit();
+        for (decisions) |*di| {
+            const cx: u8 = rnd.uintLessThan(u8, 19);
+            const d: u1 = if (rnd.float(f32) < rate) ~ectx[cx].mps else ectx[cx].mps;
+            di.* = .{ .cx = cx, .d = d };
+            try enc.encode(&ectx[cx], d);
+        }
+        const bytes = switch (term) {
+            .flush => try enc.flush(),
+            .predictable => try enc.flushPredictable(),
+        };
+        defer allocator.free(bytes);
+        const dec = try decodeDecisions(bytes, decisions);
+        const tail = unconsumedTail(dec, bytes.len);
+        st.hist[@min(tail, 7)] += 1;
+        st.max_tail = @max(st.max_tail, tail);
+        st.max_over = @max(st.max_over, dec.end_of_stream_count);
+    }
+    return st;
+}
+
+test "MQ round-trip, standard FLUSH: decode(encode(x)) == x over seeded random streams; the decoder loads every byte (tail 0) and synthesizes at most 2 past the end" {
+    const st = try roundTripStats(std.testing.allocator, .flush);
+    try std.testing.expectEqual(@as(u32, 0), st.max_tail);
+    try std.testing.expect(st.max_over <= 2);
+}
+
+test "MQ round-trip, predictable termination (D.4.2, PTERM): decode(encode(x)) == x; the decoder loads every byte (tail 0)" {
+    const st = try roundTripStats(std.testing.allocator, .predictable);
+    try std.testing.expectEqual(@as(u32, 0), st.max_tail);
+    try std.testing.expect(st.max_over <= 2);
+}
+
+/// The 13 (context, decision) pairs the cleanup pass of a 4×4 LL code-block
+/// with a single positive coefficient at (0,0) decodes (T.800 D.3.4:
+/// run-length mode on column 0 with run length 0, normal mode for the rest of
+/// column 0 and all of column 1, run-length zeros on columns 2 and 3).
+/// Context indices follow jp2z's order: ZC 0..8, SC 9..13, MR 14..16, RL 17,
+/// UNIFORM 18.
+const single_coeff_cleanup = [_]Decision{
+    .{ .cx = 17, .d = 1 }, // RL: column 0 holds a significant coefficient
+    .{ .cx = 18, .d = 0 }, .{ .cx = 18, .d = 0 }, // UNIFORM: run length 0
+    .{ .cx = 9, .d = 0 }, // SC0: positive
+    .{ .cx = 3, .d = 0 }, // (1,0): one vertical neighbour
+    .{ .cx = 0, .d = 0 }, .{ .cx = 0, .d = 0 }, // (2,0), (3,0)
+    .{ .cx = 5, .d = 0 }, // (0,1): one horizontal neighbour
+    .{ .cx = 1, .d = 0 }, // (1,1): one diagonal neighbour
+    .{ .cx = 0, .d = 0 }, .{ .cx = 0, .d = 0 }, // (2,1), (3,1)
+    .{ .cx = 17, .d = 0 }, .{ .cx = 17, .d = 0 }, // RL: columns 2 and 3 stay empty
+};
+
+/// MSB-first packet-header bit packer with the B.10.1 stuffing rule: a byte
+/// following 0xFF carries 7 bits, and a header ending in 0xFF gets one more
+/// byte.
+const BitPacker = struct {
+    out: std.ArrayList(u8) = .empty,
+    acc: u8 = 0,
+    nbits: u8 = 0,
+    limit: u8 = 8,
+
+    fn putBit(self: *BitPacker, allocator: std.mem.Allocator, bit: u1) !void {
+        self.acc = (self.acc << 1) | bit;
+        self.nbits += 1;
+        if (self.nbits == self.limit) {
+            try self.out.append(allocator, self.acc);
+            self.limit = if (self.acc == 0xFF) 7 else 8;
+            self.acc = 0;
+            self.nbits = 0;
+        }
+    }
+    fn putBits(self: *BitPacker, allocator: std.mem.Allocator, value: u32, count: u6) !void {
+        var i = count;
+        while (i > 0) {
+            i -= 1;
+            try self.putBit(allocator, @intCast((value >> @intCast(i)) & 1));
+        }
+    }
+    fn finish(self: *BitPacker, allocator: std.mem.Allocator) ![]u8 {
+        while (self.nbits != 0) try self.putBit(allocator, 0);
+        if (self.limit == 7) try self.out.append(allocator, 0x00); // trailing 0xFF needs a stuffed byte
+        return self.out.toOwnedSlice(allocator);
+    }
+};
+
+/// Packet header (T.800 B.10) for the mini stream's single code-block: one
+/// layer, inclusion in layer 0, `zero_bitplanes`, one coding pass, Lblock
+/// raised by `lblock_extra`, and a `len`-byte contribution.
+fn singleCblkPacketHeader(allocator: std.mem.Allocator, zero_bitplanes: u8, lblock_extra: u8, len: u32) ![]u8 {
+    var p: BitPacker = .{};
+    errdefer p.out.deinit(allocator);
+    try p.putBit(allocator, 1); // non-empty packet
+    try p.putBit(allocator, 1); // inclusion tag tree: value 0 < threshold 1
+    var z: u8 = 0;
+    while (z < zero_bitplanes) : (z += 1) try p.putBit(allocator, 0);
+    try p.putBit(allocator, 1); // zero-bitplane tag tree terminator
+    try p.putBit(allocator, 0); // one coding pass
+    var e: u8 = 0;
+    while (e < lblock_extra) : (e += 1) try p.putBit(allocator, 1);
+    try p.putBit(allocator, 0); // Lblock comma code terminator
+    try p.putBits(allocator, len, @intCast(3 + lblock_extra)); // Lblock + floor(log2(1)) bits
+    return p.finish(allocator);
+}
+
+/// Smallest Lblock increase whose length field holds `len` for one pass.
+fn lblockExtraFor(len: usize) u8 {
+    var bits: u8 = 3;
+    while ((@as(usize, 1) << @intCast(bits)) <= len) bits += 1;
+    return bits - 3;
+}
+
+/// Mini codestream whose only code-block is the single-coefficient cleanup
+/// pass above (standard FLUSH), with `extra_zero_bytes` appended to and
+/// declared in the contribution. Zero bitplanes 8 against M_b = 9 leaves one
+/// bit-plane, so the coefficient decodes to +1 and pixel (0,0) to 129 after
+/// the DC shift.
+fn singleCoeffStream(allocator: std.mem.Allocator, extra_zero_bytes: usize) ![]u8 {
+    const data = try encodeDecisions(allocator, &single_coeff_cleanup, .flush);
+    defer allocator.free(data);
+    const len = data.len + extra_zero_bytes;
+    const hdr = try singleCblkPacketHeader(allocator, 8, lblockExtraFor(len), @intCast(len));
+    defer allocator.free(hdr);
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(allocator);
+    try body.appendSlice(allocator, hdr);
+    try body.appendSlice(allocator, data);
+    try body.appendNTimes(allocator, 0x00, extra_zero_bytes);
+    return buildPackedMiniStream(allocator, .{ .body = body.items });
+}
+
+test "deepValidate: a code-block that is exactly its MQ FLUSH output → no entropy finding; it decodes to the single-coefficient image and OpenJPEG agrees" {
+    const allocator = std.testing.allocator;
+    const stream = try singleCoeffStream(allocator, 0);
+    defer allocator.free(stream);
+
+    var rep = try jp2z.internal.deepValidate(allocator, stream, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .entropy_under_read));
+    try std.testing.expect(!hasFinding(rep, .entropy_over_read));
+    try std.testing.expect(rep.overall != .fail);
+
+    var img = try jp2z.internal.decodeToImage(allocator, stream);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 4), img.width);
+    try std.testing.expectEqual(@as(u32, 4), img.height);
+    try std.testing.expectEqual(@as(u16, 1), img.channels);
+    try std.testing.expectEqual(@as(u8, 129), img.pixels[0]);
+    for (img.pixels[1..]) |px| try std.testing.expectEqual(@as(u8, 128), px);
+
+    var oracle = try jp2z.internal.openjpegDecode(allocator, stream);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, oracle.pixels, img.pixels);
+}
+
+test "deepValidate: bytes appended past the MQ FLUSH output are classified against the allowance (0 and 3 pass, 4 and 8 are entropy_under_read: strict FAIL / lenient WARN, detail naming the count and the cap)" {
+    const allocator = std.testing.allocator;
+    // The decoder loads two bytes past the FLUSH output before it stops
+    // (pinned above: tail 0 with over-read), and `under_read` counts the byte
+    // at `bp`, so N appended bytes measure as a tail of N - 1. OpenJPEG’s
+    // PTERM check (opj_mqc_check_pterm, `bp + 2 < end`) draws the same line
+    // as the cap of 2, but only under PTERM; jp2z applies it to every segment.
+    const cases = [_]struct { extra: usize, flagged: bool }{
+        .{ .extra = 0, .flagged = false },
+        .{ .extra = 3, .flagged = false }, // tail 2: at the allowance
+        .{ .extra = 4, .flagged = true }, // tail 3: one past it
+        .{ .extra = 8, .flagged = true }, // validate’s proposed malformed fixture (tail 7)
+    };
+    for (cases) |c| {
+        const stream = try singleCoeffStream(allocator, c.extra);
+        defer allocator.free(stream);
+        var strict = try jp2z.internal.deepValidate(allocator, stream, true);
+        defer strict.deinit(allocator);
+        var lenient = try jp2z.internal.deepValidate(allocator, stream, false);
+        defer lenient.deinit(allocator);
+        if (!c.flagged) {
+            try std.testing.expect(!hasFinding(strict, .entropy_under_read));
+            try std.testing.expect(strict.overall != .fail);
+            continue;
+        }
+        const needle = try std.fmt.allocPrint(allocator, "max {d} byte(s), cap {d}", .{ c.extra - 1, mq_under_read_cap });
+        defer allocator.free(needle);
+        try std.testing.expectEqual(jp2z.Severity.fail, strict.overall);
+        try std.testing.expect(failDetailContains(strict, .entropy_under_read, needle));
+        var saw_warn = false;
+        for (lenient.findings.items) |f| {
+            if (f.code == .entropy_under_read) {
+                try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
+                saw_warn = true;
+            }
+        }
+        try std.testing.expect(saw_warn);
+    }
+}
+
 test "decodePlan over_read: degenerate entropy data over-reads its segments" {
     const allocator = std.testing.allocator;
     var list = try jp2z.internal.extractCblkPlans(allocator, a1_mono_j2c);
