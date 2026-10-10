@@ -3784,6 +3784,17 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
         return;
     }
 
+    // T.800 B.3: the first tile contains the image origin, so the tile grid
+    // satisfies XTOsiz <= XOsiz < XTOsiz + XTsiz (and the same in Y). The
+    // left half is checked above; a grid whose first tile ends at or before
+    // the origin declares phantom tiles that carry no samples and gives tile
+    // 0 an empty rect (OpenJPEG 2.5.4 refuses it: "illegal tile offset").
+    // u64: both sums can exceed u32 for legal values.
+    if (@as(u64, xtosiz) + xtsiz <= xosiz or @as(u64, ytosiz) + ytsiz <= yosiz) {
+        try emit(report, allocator, .fail, .jp2_invalid_siz, pos, "tile grid does not reach the image origin: XTOsiz + XTsiz must exceed XOsiz and YTOsiz + YTsiz must exceed YOsiz (T.800 B.3)");
+        return;
+    }
+
     // Seed CodingParams with the SIZ-derived fields. Remaining fields default
     // until parseCodBody overwrites them. width/height/coding_params are only
     // published after the per-component descriptors validate (C1), so a bad

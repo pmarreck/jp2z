@@ -1819,6 +1819,81 @@ test "validate: malformed SIZ geometry → jp2_invalid_siz finding, never a cras
     try std.testing.expectEqual(@as(u16, 17), rep17.coding_params.?.num_components);
 }
 
+test "validate: SIZ tile grid must reach the image origin (XTOsiz+XTsiz > XOsiz, T.800 B.3) → jp2_invalid_siz; the boundary is accepted" {
+    // T.800 B.3 constrains the tile grid so that the first tile contains the
+    // image origin: XTOsiz <= XOsiz < XTOsiz + XTsiz (and likewise in Y). A
+    // grid whose first tile ends at or before the origin declares phantom
+    // tiles with no samples and tile 0 has an empty rect. OpenJPEG 2.5.4
+    // refuses such a SIZ ("illegal tile offset"); before this test jp2z
+    // accepted the marker and only tripped on downstream symptoms. The set
+    // below is a classifier over both axes and both sides of the boundary.
+    const allocator = std.testing.allocator;
+    const soc = [_]u8{ 0xFF, 0x4F };
+    const eoc = [_]u8{ 0xFF, 0xD9 };
+    // 4x4 image at origin (2,2): Xsiz=6, Ysiz=6, XOsiz=2, YOsiz=2, tile grid
+    // origin (0,0). XTsiz/YTsiz are patched per case at SIZ body offsets
+    // 20..23 / 24..27 (marker-relative 22..25 / 26..29, stream 24..27 / 28..31).
+    const siz = [_]u8{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x06,
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+        0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    };
+    const base = soc ++ siz ++ eoc;
+    const Case = struct { xtsiz: u8, ytsiz: u8, illegal: bool };
+    const cases = [_]Case{
+        .{ .xtsiz = 3, .ytsiz = 3, .illegal = false }, // boundary: 0 + 3 > 2 on both axes
+        .{ .xtsiz = 2, .ytsiz = 3, .illegal = true }, // X: 0 + 2 == 2, first tile ends AT the origin
+        .{ .xtsiz = 3, .ytsiz = 2, .illegal = true }, // Y: same, other axis
+        .{ .xtsiz = 1, .ytsiz = 1, .illegal = true }, // both axes short of the origin
+        .{ .xtsiz = 6, .ytsiz = 6, .illegal = false }, // one tile covering everything
+    };
+    for (cases) |c| {
+        var stream = base;
+        stream[27] = c.xtsiz;
+        stream[31] = c.ytsiz;
+        var rep = try jp2z.validate(allocator, &stream);
+        defer rep.deinit(allocator);
+        try std.testing.expectEqual(c.illegal, hasFinding(rep, .jp2_invalid_siz));
+        if (c.illegal) {
+            try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+            // The finding names the clause so a consumer can trace it.
+            var named = false;
+            for (rep.findings.items) |f| {
+                if (f.code == .jp2_invalid_siz) {
+                    if (f.detail) |d| named = named or std.mem.indexOf(u8, d, "B.3") != null;
+                }
+            }
+            try std.testing.expect(named);
+            // An unwalkable grid publishes no coding params (same contract as
+            // the other jp2_invalid_siz geometry failures).
+            try std.testing.expect(rep.coding_params == null);
+        } else {
+            try std.testing.expect(rep.coding_params != null);
+        }
+    }
+    // Real codestream: c1_mono (303x179, one 303x179 tile at (0,0)) with
+    // XOsiz patched to 100 and XTsiz to 50 (stream offsets 16 and 24). This is
+    // the mutant opj_decompress 2.5.4 rejects at the SIZ marker; jp2z must
+    // name the same violation rather than only its downstream symptoms.
+    const mutant = try patched(allocator, c1_mono_j2c, 16, &.{ 0x00, 0x00, 0x00, 0x64 });
+    defer allocator.free(mutant);
+    mutant[24] = 0x00;
+    mutant[25] = 0x00;
+    mutant[26] = 0x00;
+    mutant[27] = 0x32;
+    var rep_mut = try jp2z.validate(allocator, mutant);
+    defer rep_mut.deinit(allocator);
+    try std.testing.expect(hasFinding(rep_mut, .jp2_invalid_siz));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep_mut.overall);
+    // The pristine file still carries no SIZ finding.
+    var rep_ok = try jp2z.validate(allocator, c1_mono_j2c);
+    defer rep_ok.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep_ok, .jp2_invalid_siz));
+}
+
 test "validate: user-precinct PPx/PPy=0 at r>0 → jp2_invalid_codestream, never a crash (reviewer)" {
     // A strict validator must FLAG a non-conformant COD precinct exponent of 0 at
     // any resolution above the lowest (T.800 requires PP>=1 for r>0 — the HF
