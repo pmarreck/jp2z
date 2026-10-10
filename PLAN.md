@@ -196,6 +196,23 @@ honestly. Agreed order:
       2026-09-12; held, no code changed, validate told the decision is
       Peter's. Options: keep the ruling and classify at the validate/jpegz
       layer from the typed finding; or carve out this class as WARN in jp2z.
+- [x] (2026-10-09 11:55 PM EDT) MKTP milestone (fleet push authorized
+      2026-10-09 23:23 through 2026-10-10 07:23 EDT): invariant inventory of
+      J2K/J2C and JP2 against T.800 in docs/mktp-research/jpeg2000.md with
+      every experiment indexed (sweep, in-core matrix, probe, labels); one
+      concrete gap found and fixed red-first: a SIZ tile grid whose first
+      tile ends at or before the image origin (B.3, XTOsiz + XTsiz > XOsiz)
+      now FAILs 146 at the marker (OpenJPEG agrees: "illegal tile offset";
+      0 false positives over 57 conformance files; 151 nonregression files
+      differential, verdicts agree). No pin or API change.
+- [ ] MKTP follow-ups needing T.800 text before a severity is chosen (each
+      red-first once the clause is in hand): ihdr first in jp2h (I.5.3.1) and
+      at least one colr box (I.5.3.3, Table I.4; the unit-test JP2 helpers
+      emit colr-less jp2h and must change first); MCT = 1 with fewer than 3
+      or geometrically mismatched components (G.2; decode already refuses);
+      COD/COC/QCD/QCC/RGN in a tile-part header other than the first (Table
+      A.1 placement; WARN 145 today). Ask BDFN for the extracts by the Annex E
+      route.
 - [ ] Mutation vocabulary migration, probe rerun (Peter, 2026-09-29; global memory
       "Corruption mutation vocabulary uses sniper bolter shotgun and nuke"):
       shotgun now = 8..16 distinct bit flips in a fully contained 32-byte

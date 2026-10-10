@@ -665,3 +665,34 @@ literally), SMB (access denied), and the local /mnt/win mount (this
 machine's own Windows partition, no Users tree). The ITU PDF is
 copyrighted and stays out of the repo; the verbatim extracts Peter
 transcribed live under docs/.
+
+## A pair of inequalities is two checks, not one (2026-10-09)
+
+T.800 B.3 pins the tile grid to the image origin with a pair:
+XTOsiz ≤ XOsiz < XTOsiz + XTsiz (and the same in Y). parseSizBody had
+enforced the left half since the first hostile-input pass and never the
+right half, so a SIZ whose first tile ends at or before the origin was
+accepted, and the walk then failed on symptoms (phantom tiles with no
+tile-part, zero-bit-plane overflows, byte-budget errors) that pointed
+everywhere except the marker. OpenJPEG rejects the same SIZ at the
+marker ("illegal tile offset") and ships a regression file for it
+(issue427-illegal-tile-offset.jp2, which jp2z already failed on the
+left-hand half; its XTOsiz is 4294967292).
+
+Two things made the gap visible. First, an inventory that lists every
+constraint of a table next to the code that enforces it, instead of
+reading the code for what it does check; the missing row stood out
+because the table had it and the guard did not. Second, mutants built
+from the constraint itself (both axes, both sides of the boundary, the
+equality case) rather than random flips; the 2026-09-16 probe never hit
+this because a random XTsiz flip on a (0,0)-origin fixture cannot
+violate it (XOsiz is 0 in every probe fixture). A test over a set that
+includes the boundary is the cheap version of the same discipline.
+
+Also recorded so it is not re-derived: an origin-moving mutation on a
+real codestream (XOsiz 100 on c1_mono with a legal grid) changes the
+packet geometry the data was encoded for, so jp2z's 251/252 on that
+"legal" control is the mutation's confound, not a false positive of the
+rule. Use a synthetic stream for the accept side of a geometry test.
+The research record for this and the rest of the inventory is
+docs/mktp-research/jpeg2000.md.
