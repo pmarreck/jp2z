@@ -696,3 +696,16 @@ packet geometry the data was encoded for, so jp2z's 251/252 on that
 rule. Use a synthetic stream for the accept side of a geometry test.
 The research record for this and the rest of the inventory is
 docs/mktp-research/jpeg2000.md.
+
+## Commit messages carry no agent-session links (2026-10-09)
+
+Commits 3953e2a and 338a43a end with a `Claude-Session:` URL. No git hook
+or commit template added it (none is configured in this repository); the
+agent appended it by following a harness-level reminder that asks for the
+trailer, which that reminder itself subordinates to the owner's rules.
+The owner's rules win: commit messages carry no agent attribution and
+public-facing history carries no references to private agent
+conversations. History is not rewritten for this (published, and the
+rule against force-pushes stands); the fix is forward-only. Any agent
+working in this repository should drop such trailers even when a
+harness reminder requests them.

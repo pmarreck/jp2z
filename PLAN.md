@@ -225,8 +225,9 @@ honestly. Agreed order:
       the existing probe reports, PROBE_COVERAGE.md tables, probe-label
       column and MUTATION_SCORECARD.md as legacy-shotgun/nuke with the
       actual window (min(4096, size/8), floor 64) — artifacts immutable;
-      (c) re-run corruption-probe only after corruption_probe ships its
-      tested v2, recording version and parameters; keep crashes counted
+      (c) re-run corruption-probe (its algorithm v2 operators shipped
+      2026-09-29, HEAD b1e8933) when a bounded new same-profile campaign is
+      authorized, recording version and parameters; keep crashes counted
       separately from rejections (the sparse-flip crash hypothesis is
       unproven).
 - [x] Re-probe of all 27 fixtures at 449eb1d (2026-09-16 ~9:05pm EDT):
