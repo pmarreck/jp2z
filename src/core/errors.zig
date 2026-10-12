@@ -80,7 +80,7 @@ pub const FindingCode = enum(u32) {
     // ── Tier-2 / packet integrity (250..299) ─────────────────────
     jp2_packets_under_read   = 250,  // walker stopped before tp_body.len — possible per-cblk decode bug
     entropy_over_read        = 251,  // MQ/RAW decoder synthesized >2 past-end 0xFF — truncated entropy data
-    entropy_under_read       = 252,  // cblk left more than underReadCap (2) bytes unconsumed past its MQ/RAW termination — length/data inconsistency; detail carries the max tail, the cap and cblksty
+    entropy_under_read       = 252,  // cblk carries bytes past its MQ/RAW termination. Without PTERM: WARN in both modes above a corpus floor of 3 (T.800 D.4.2 permits the surplus, so never FAIL; no conforming encoder leaves more than 3 and corrupted data leaves 15+, so it is the corruption heuristic). Under PTERM (cblksty 0x10): strict FAIL / lenient WARN on any tail (the procedure is mandatory and fixes the length). Detail names the max tail, cblksty, the first code-block's offset and the tolerance of other decoders
     coding_pass_overflow     = 253,  // cblk total_passes exceeds 3*numbps-2: WARN when decodable by convention (passes below plane 0 ignored), FAIL when numbps > 31
     jp2_packets_walked_to_end = 254,  // walker consumed every tile-part body byte (renumbered 209→254 per Einstein: 209 collided with jpegz jfif_metadata_present)
     zero_bitplane_overflow   = 255,  // cblk zero-bitplane tag tree consumed the whole bit-depth (zbp>=M_b → numbps=0) yet carries coding passes — impossible; distinct root cause from 253
@@ -89,4 +89,6 @@ pub const FindingCode = enum(u32) {
     segmentation_symbol_mismatch = 258,  // cblksty SEGSYM (0x20): a cleanup pass ended without the 1010 segmentation symbol — the in-stream integrity hook JPEG 2000 offers; entropy data corrupted
     profile_violation        = 259,  // the codestream claims a profile in Rsiz (Table A.10) and breaks one of its restrictions (Table A.45, cinema / broadcast / IMF amendments); FAIL
     reversible_exponent_mismatch = 260, // a reversible (5/3, no-quantization) subband exponent differs from R_I + log2(gain_b) + RCT growth, the encoder formula of T.800 E.2 Eq. E-10; E.2 is informative, so this is WARN (a lone Ssiz or exponent change looks exactly like this), never FAIL
+    /// A packet contribution or a terminated codeword segment ends in 0xFF: T.800 B.10.7 ("must not end in a 0xFF"), D.4.2 ("shall not be sent"), D.6 ("shall not be an 0xFF value"). Proven from one byte; strict FAIL / lenient WARN.
+    cblk_contribution_ends_ff = 261,
 };

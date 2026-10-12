@@ -1530,11 +1530,6 @@ test "deepValidate: clean a1_mono has no entropy over-read finding (no false pos
 // reconstruct.underReadCap rests on the coder, not on a corpus.
 const mq_enc = @import("mq_encoder.zig");
 
-/// Mirror of reconstruct.underReadCap: unconsumed bytes beyond this many are
-/// reported as entropy_under_read. Neither termination leaves any (pinned
-/// below); the allowance covers encoders that keep a byte or two past their
-/// own termination, which real files do (balloon_eciRGB_icc: max 1).
-const mq_under_read_cap: u32 = 2;
 
 fn decoderContexts() [19]jp2z.internal.mq.Context {
     var ctxs = [_]jp2z.internal.mq.Context{.{}} ** 19;
@@ -1708,22 +1703,57 @@ fn lblockExtraFor(len: usize) u8 {
 }
 
 /// Mini codestream whose only code-block is the single-coefficient cleanup
-/// pass above (standard FLUSH), with `extra_zero_bytes` appended to and
-/// declared in the contribution. Zero bitplanes 8 against M_b = 9 leaves one
-/// bit-plane, so the coefficient decodes to +1 and pixel (0,0) to 129 after
-/// the DC shift.
-fn singleCoeffStream(allocator: std.mem.Allocator, extra_zero_bytes: usize) ![]u8 {
-    const data = try encodeDecisions(allocator, &single_coeff_cleanup, .flush);
+/// pass above, terminated as `term`, declared with `cblksty` in COD, and
+/// with `extra` appended to and declared in the contribution. Zero
+/// bitplanes 8 against M_b = 9 leaves one bit-plane, so the coefficient
+/// decodes to +1 and pixel (0,0) to 129 after the DC shift.
+fn singleCoeffStreamEx(allocator: std.mem.Allocator, term: Termination, cblksty: u8, extra: []const u8) ![]u8 {
+    const data = try encodeDecisions(allocator, &single_coeff_cleanup, term);
     defer allocator.free(data);
-    const len = data.len + extra_zero_bytes;
+    const len = data.len + extra.len;
     const hdr = try singleCblkPacketHeader(allocator, 8, lblockExtraFor(len), @intCast(len));
     defer allocator.free(hdr);
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(allocator);
     try body.appendSlice(allocator, hdr);
     try body.appendSlice(allocator, data);
-    try body.appendNTimes(allocator, 0x00, extra_zero_bytes);
-    return buildPackedMiniStream(allocator, .{ .body = body.items });
+    try body.appendSlice(allocator, extra);
+    return buildPackedMiniStream(allocator, .{ .body = body.items, .cblksty = cblksty });
+}
+
+/// Standard FLUSH, cblksty 0, `extra_zero_bytes` zero bytes appended.
+fn singleCoeffStream(allocator: std.mem.Allocator, extra_zero_bytes: usize) ![]u8 {
+    const zeros = try allocator.alloc(u8, extra_zero_bytes);
+    defer allocator.free(zeros);
+    @memset(zeros, 0);
+    return singleCoeffStreamEx(allocator, .flush, 0, zeros);
+}
+
+/// Every single-coefficient fixture decodes to the same 4x4 image, and
+/// OpenJPEG must agree on the pixels.
+fn expectSingleCoeffImage(allocator: std.mem.Allocator, stream: []const u8) !void {
+    var img = try jp2z.internal.decodeToImage(allocator, stream);
+    defer img.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 4), img.width);
+    try std.testing.expectEqual(@as(u32, 4), img.height);
+    try std.testing.expectEqual(@as(u16, 1), img.channels);
+    try std.testing.expectEqual(@as(u8, 129), img.pixels[0]);
+    for (img.pixels[1..]) |px| try std.testing.expectEqual(@as(u8, 128), px);
+    var oracle = try jp2z.internal.openjpegDecode(allocator, stream);
+    defer oracle.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, oracle.pixels, img.pixels);
+}
+
+fn findingSeverity(rep: jp2z.ValidationReport, code: jp2z.FindingCode) ?jp2z.Severity {
+    for (rep.findings.items) |f| if (f.code == code) return f.severity;
+    return null;
+}
+
+fn findingDetailContains(rep: jp2z.ValidationReport, code: jp2z.FindingCode, needle: []const u8) bool {
+    for (rep.findings.items) |f| {
+        if (f.code == code and std.mem.indexOf(u8, f.detail orelse "", needle) != null) return true;
+    }
+    return false;
 }
 
 test "deepValidate: a code-block that is exactly its MQ FLUSH output → no entropy finding; it decodes to the single-coefficient image and OpenJPEG agrees" {
@@ -1735,36 +1765,84 @@ test "deepValidate: a code-block that is exactly its MQ FLUSH output → no entr
     defer rep.deinit(allocator);
     try std.testing.expect(!hasFinding(rep, .entropy_under_read));
     try std.testing.expect(!hasFinding(rep, .entropy_over_read));
+    try std.testing.expect(!hasFinding(rep, .cblk_contribution_ends_ff));
     try std.testing.expect(rep.overall != .fail);
-
-    var img = try jp2z.internal.decodeToImage(allocator, stream);
-    defer img.deinit(allocator);
-    try std.testing.expectEqual(@as(u32, 4), img.width);
-    try std.testing.expectEqual(@as(u32, 4), img.height);
-    try std.testing.expectEqual(@as(u16, 1), img.channels);
-    try std.testing.expectEqual(@as(u8, 129), img.pixels[0]);
-    for (img.pixels[1..]) |px| try std.testing.expectEqual(@as(u8, 128), px);
-
-    var oracle = try jp2z.internal.openjpegDecode(allocator, stream);
-    defer oracle.deinit(allocator);
-    try std.testing.expectEqualSlices(u8, oracle.pixels, img.pixels);
+    try expectSingleCoeffImage(allocator, stream);
 }
 
-test "deepValidate: bytes appended past the MQ FLUSH output are classified against the allowance (0 and 3 pass, 4 and 8 are entropy_under_read: strict FAIL / lenient WARN, detail naming the count and the cap)" {
+test "deepValidate: a PTERM code-block (cblksty 0x10) that is exactly its predictable-termination output (T.800 D.4.2) → no entropy finding; it decodes to the single-coefficient image and OpenJPEG agrees" {
+    const allocator = std.testing.allocator;
+    const stream = try singleCoeffStreamEx(allocator, .predictable, 0x10, &.{});
+    defer allocator.free(stream);
+
+    var rep = try jp2z.internal.deepValidate(allocator, stream, true);
+    defer rep.deinit(allocator);
+    try std.testing.expect(!hasFinding(rep, .entropy_under_read));
+    try std.testing.expect(!hasFinding(rep, .entropy_over_read));
+    try std.testing.expect(rep.overall != .fail);
+    try expectSingleCoeffImage(allocator, stream);
+}
+
+test "deepValidate: surplus bytes after a non-PTERM termination are conforming (T.800 D.4.2) but no known encoder leaves more than 3: 252 is WARN in both modes above the corpus floor, never FAIL, and names the offset and the tolerance of other decoders" {
     const allocator = std.testing.allocator;
     // The decoder loads two bytes past the FLUSH output before it stops
     // (pinned above: tail 0 with over-read), and `under_read` counts the byte
-    // at `bp`, so N appended bytes measure as a tail of N - 1. OpenJPEG’s
-    // PTERM check (opj_mqc_check_pterm, `bp + 2 < end`) draws the same line
-    // as the cap of 2, but only under PTERM; jp2z applies it to every segment.
-    const cases = [_]struct { extra: usize, flagged: bool }{
-        .{ .extra = 0, .flagged = false },
-        .{ .extra = 3, .flagged = false }, // tail 2: at the allowance
-        .{ .extra = 4, .flagged = true }, // tail 3: one past it
-        .{ .extra = 8, .flagged = true }, // validate’s proposed malformed fixture (tail 7)
+    // at `bp`, so N appended bytes measure as a tail of N - 1.
+    const cases = [_]struct { extra: usize, reported: bool }{
+        .{ .extra = 0, .reported = false },
+        .{ .extra = 3, .reported = false }, // tail 2
+        .{ .extra = 4, .reported = false }, // tail 3: the largest tail a conforming producer leaves (issue206, issue559, validate's 241 streams); at the floor, quiet
+        .{ .extra = 5, .reported = true }, // tail 4: past every known producer
+        .{ .extra = 8, .reported = true }, // tail 7
     };
     for (cases) |c| {
         const stream = try singleCoeffStream(allocator, c.extra);
+        defer allocator.free(stream);
+        var strict = try jp2z.internal.deepValidate(allocator, stream, true);
+        defer strict.deinit(allocator);
+        var lenient = try jp2z.internal.deepValidate(allocator, stream, false);
+        defer lenient.deinit(allocator);
+        try std.testing.expect(strict.overall != .fail);
+        try std.testing.expect(lenient.overall != .fail);
+        if (!c.reported) {
+            try std.testing.expect(!hasFinding(strict, .entropy_under_read));
+            try std.testing.expect(!hasFinding(lenient, .entropy_under_read));
+            continue;
+        }
+        const needle = try std.fmt.allocPrint(allocator, "max {d} byte(s)", .{c.extra - 1});
+        defer allocator.free(needle);
+        try std.testing.expectEqual(jp2z.Severity.warn, strict.overall);
+        try std.testing.expectEqual(jp2z.Severity.warn, lenient.overall);
+        try std.testing.expectEqual(jp2z.Severity.warn, findingSeverity(strict, .entropy_under_read).?);
+        try std.testing.expectEqual(jp2z.Severity.warn, findingSeverity(lenient, .entropy_under_read).?);
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, needle));
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, "cblksty 0x00"));
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, "D.4.2"));
+        // Messaging rule (BDFN, 2026-10-12): say what is wrong, where it
+        // starts, and that other decoders tolerate it while jp2z cannot.
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, "byte offset"));
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, "other decoders"));
+        try std.testing.expect(findingDetailContains(strict, .entropy_under_read, "corrupt"));
+    }
+}
+
+test "deepValidate: surplus bytes after a PTERM termination (cblksty 0x10) are a proven violation (T.800 D.4.2: the procedure shall be used and fixes the length): 252 strict FAIL / lenient WARN on any measurable tail" {
+    const allocator = std.testing.allocator;
+    // Same N - 1 metric as above: one appended byte hides inside the two
+    // the decoder loads past the termination, so the smallest provable
+    // surplus is two bytes (tail 1).
+    const cases = [_]struct { extra: usize, flagged: bool }{
+        .{ .extra = 0, .flagged = false },
+        .{ .extra = 1, .flagged = false },
+        .{ .extra = 2, .flagged = true }, // tail 1
+        .{ .extra = 3, .flagged = true }, // tail 2: inside the old allowance
+        .{ .extra = 8, .flagged = true }, // tail 7
+    };
+    for (cases) |c| {
+        const zeros = try allocator.alloc(u8, c.extra);
+        defer allocator.free(zeros);
+        @memset(zeros, 0);
+        const stream = try singleCoeffStreamEx(allocator, .predictable, 0x10, zeros);
         defer allocator.free(stream);
         var strict = try jp2z.internal.deepValidate(allocator, stream, true);
         defer strict.deinit(allocator);
@@ -1775,18 +1853,50 @@ test "deepValidate: bytes appended past the MQ FLUSH output are classified again
             try std.testing.expect(strict.overall != .fail);
             continue;
         }
-        const needle = try std.fmt.allocPrint(allocator, "max {d} byte(s), cap {d}", .{ c.extra - 1, mq_under_read_cap });
+        const needle = try std.fmt.allocPrint(allocator, "max {d} byte(s)", .{c.extra - 1});
         defer allocator.free(needle);
         try std.testing.expectEqual(jp2z.Severity.fail, strict.overall);
         try std.testing.expect(failDetailContains(strict, .entropy_under_read, needle));
-        var saw_warn = false;
-        for (lenient.findings.items) |f| {
-            if (f.code == .entropy_under_read) {
-                try std.testing.expectEqual(jp2z.Severity.warn, f.severity);
-                saw_warn = true;
-            }
+        try std.testing.expect(failDetailContains(strict, .entropy_under_read, "cblksty 0x10"));
+        try std.testing.expect(failDetailContains(strict, .entropy_under_read, "byte offset"));
+        try std.testing.expect(failDetailContains(strict, .entropy_under_read, "other decoders"));
+        try std.testing.expectEqual(jp2z.Severity.warn, findingSeverity(lenient, .entropy_under_read).?);
+    }
+}
+
+test "deepValidate: a code-block contribution ending in 0xFF (T.800 B.10.7 must not) → finding 261 cblk_contribution_ends_ff, strict FAIL / lenient WARN; an 0xFF anywhere else is not flagged" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { extra: []const u8, flagged: bool }{
+        .{ .extra = &.{}, .flagged = false },
+        .{ .extra = &.{0xFF}, .flagged = true },
+        .{ .extra = &.{ 0x00, 0xFF }, .flagged = true },
+        .{ .extra = &.{ 0xFF, 0x00 }, .flagged = false },
+        .{ .extra = &.{ 0xFF, 0x00, 0xFF, 0x00 }, .flagged = false },
+        .{ .extra = &.{ 0x00, 0x00, 0x00, 0xFF }, .flagged = true },
+    };
+    for (cases) |c| {
+        const stream = try singleCoeffStreamEx(allocator, .flush, 0, c.extra);
+        defer allocator.free(stream);
+        var strict = try jp2z.internal.deepValidate(allocator, stream, true);
+        defer strict.deinit(allocator);
+        var lenient = try jp2z.internal.deepValidate(allocator, stream, false);
+        defer lenient.deinit(allocator);
+        if (!c.flagged) {
+            try std.testing.expect(!hasFinding(strict, .cblk_contribution_ends_ff));
+            try std.testing.expect(!hasFinding(lenient, .cblk_contribution_ends_ff));
+            continue;
         }
-        try std.testing.expect(saw_warn);
+        try std.testing.expectEqual(jp2z.Severity.fail, strict.overall);
+        try std.testing.expect(failDetailContains(strict, .cblk_contribution_ends_ff, "B.10.7"));
+        try std.testing.expect(failDetailContains(strict, .cblk_contribution_ends_ff, "first: tile "));
+        // The contribution is the last thing before EOC, so its final byte
+        // (the offending 0xFF) sits three bytes before the end of the stream.
+        const ff_needle = try std.fmt.allocPrint(allocator, "0xFF at byte offset {d}", .{stream.len - 3});
+        defer allocator.free(ff_needle);
+        try std.testing.expect(failDetailContains(strict, .cblk_contribution_ends_ff, ff_needle));
+        try std.testing.expect(failDetailContains(strict, .cblk_contribution_ends_ff, "other decoders"));
+        try std.testing.expectEqual(jp2z.Severity.warn, findingSeverity(lenient, .cblk_contribution_ends_ff).?);
+        try std.testing.expect(findingDetailContains(lenient, .cblk_contribution_ends_ff, ff_needle));
     }
 }
 
@@ -2772,6 +2882,8 @@ const MiniStreamOpts = struct {
     /// Ssiz precision so non-uniform descriptors can be crafted.
     components: u16 = 1,
     last_comp_prec: ?u8 = null,
+    /// COD SPcod code-block style (cblksty): 0x10 is predictable termination.
+    cblksty: u8 = 0,
 };
 
 /// Generalised mini-stream: same 4x4 mono 5/3 shell as buildMiniStream but
@@ -2802,7 +2914,7 @@ fn buildPackedMiniStream(allocator: std.mem.Allocator, o: MiniStreamOpts) ![]u8 
         try buf.appendSlice(allocator, &.{ prec, 0x01, 0x01 });
     }
     // COD — Scod, LRCP, `layers`, no MCT, `decomp`, cblk 64x64, 5/3
-    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, o.prog, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, 0x00, 0x01 };
+    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, o.prog, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, o.cblksty, 0x01 };
     std.mem.writeInt(u16, cod[6..8], o.layers, .big);
     // QCD — Lqcd = 2 + body
     var qcd: std.ArrayList(u8) = .empty;

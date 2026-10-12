@@ -658,22 +658,60 @@ fn overReadCap(cblksty: u8) u32 {
     // cbsty 0x34) sit at 2. Strict finding here, not openjpeg's warning-only.
     return if (cblksty & 0x10 != 0) 3 else 12;
 }
-/// Unconsumed bytes a code-block segment may leave past the decoder's final
-/// position before deepValidate reports entropy_under_read. Neither
-/// termination T.800 defines leaves any: on genuine coder output jp2z's
-/// decoder loads every byte and asks for one past the end, both for the
-/// standard FLUSH (Annex C, SETBITS + two BYTEOUTs) and for the predictable
-/// termination of D.4.2 (round-trip property tests against a spec-written
-/// encoder, tests/unit/validate.zig, 4000 seeded streams each, tail 0). Real
-/// encoders still keep a byte or two past their termination
-/// (balloon_eciRGB_icc: max 1 over 4336 code-blocks) and no clause in hand
-/// forbids that, so 2 are allowed; more is a length/data inconsistency
-/// (strict FAIL, lenient WARN). A 2026-10-10 field report of one producer's
-/// JPX streams leaving 3 per code-block, which OpenJPEG decodes, is recorded
-/// in docs/mktp-research/jpeg2000.md (4.5) pending the D.4.2 / B.10.7 text.
+/// Reporting floor for bytes a non-PTERM code-block segment carries past the
+/// decoder's final position (finding 252 at WARN in both modes). T.800 D.4.2
+/// accepts any termination that "places all of the needed bytes" without
+/// making the decoder backtrack, so surplus bytes are conforming and never
+/// FAIL here. The WARN is a corruption heuristic, calibrated on the corpus:
+/// the largest tail any conforming producer leaves is 3 (issue206,
+/// issue559, validate's 241 streams; balloon_eciRGB_icc: max 1 over 4336
+/// code-blocks), while every tail seen on damaged entropy data is 15 or
+/// more (the nonregression census of 2026-10-12: 15, 20, 22, 24, 47 ... 30635;
+/// a single flipped byte in c1_mono measures 641). Tails 4..14 are
+/// unobserved either way; the floor sits at the last conforming value.
+/// Neither termination the standard defines leaves any: on genuine coder
+/// output jp2z's decoder loads every byte and asks for one past the end, for
+/// the standard FLUSH (Annex C) and for the predictable termination of D.4.2
+/// alike (round-trip property tests against a spec-written encoder,
+/// tests/unit/validate.zig, 4000 seeded streams each, tail 0). Under PTERM
+/// (cblksty 0x10) the procedure "shall be used" and the length "is simply
+/// the total number of bytes pushed out", so deepValidate reports any
+/// measurable surplus there as a violation without consulting this floor.
+/// Verbatim clauses: docs/T800_CODEWORD_SEGMENT_TERMINATION_VERBATIM.md.
 /// complexity: O(1)
-fn underReadCap() u32 {
-    return 2;
+fn underReadFloor() u32 {
+    return 3;
+}
+/// T.800 D.4.2 ("the special value, 0xFF, which shall not be sent") and
+/// D.6 ("The last byte shall not be an 0xFF value"): no terminated codeword
+/// segment, MQ or raw, ends in 0xFF. Walks the segment lengths over the
+/// code-block's concatenated bytes and returns the offset within `data` of
+/// the first offending last byte. A segment running past the data is left to
+/// the byte-budget checks.
+/// complexity: O(segments)
+fn segmentEndingInFF(data: []const u8, segments: []const cblk_plan.SegInfo) ?usize {
+    var end: usize = 0;
+    for (segments) |seg| {
+        end += seg.byte_len;
+        if (end > data.len) return null;
+        if (seg.byte_len > 0 and data[end - 1] == 0xFF) return end - 1;
+    }
+    return null;
+}
+test "segmentEndingInFF: classifier over (data, segments) sets, only a segment's last byte counts (T.800 D.4.2, D.6)" {
+    const Seg = cblk_plan.SegInfo;
+    const cases = [_]struct { data: []const u8, segs: []const Seg, want: ?usize }{
+        .{ .data = &.{ 0x00, 0xFF, 0x00, 0x00, 0x00 }, .segs = &.{ .{ .passes = 1, .byte_len = 3 }, .{ .passes = 1, .byte_len = 2 } }, .want = null },
+        .{ .data = &.{ 0x00, 0x00, 0xFF, 0x00, 0x00 }, .segs = &.{ .{ .passes = 1, .byte_len = 3 }, .{ .passes = 1, .byte_len = 2 } }, .want = 2 },
+        .{ .data = &.{ 0x00, 0x00, 0x00, 0x00, 0xFF }, .segs = &.{ .{ .passes = 1, .byte_len = 3 }, .{ .passes = 1, .byte_len = 2 } }, .want = 4 },
+        // A zero-length segment has no last byte; the next one ends at 1.
+        .{ .data = &.{ 0xFF, 0xFF }, .segs = &.{ .{ .passes = 1, .byte_len = 0 }, .{ .passes = 1, .byte_len = 2 } }, .want = 1 },
+        .{ .data = &.{0xFF}, .segs = &.{.{ .passes = 1, .byte_len = 0 }}, .want = null },
+        // A segment running past the data is malformed; the budget checks own that.
+        .{ .data = &.{ 0x00, 0xFF }, .segs = &.{.{ .passes = 1, .byte_len = 5 }}, .want = null },
+        .{ .data = &.{ 0x00, 0xFF }, .segs = &.{}, .want = null },
+    };
+    for (cases) |c| try std.testing.expectEqual(c.want, segmentEndingInFF(c.data, c.segs));
 }
 test "overReadCap: classifier over the (cblksty, over_read) boundary domain" {
     const PTERM: u8 = 0x10; // T.800 SPcod cblksty bit 4 — predictable termination
@@ -818,7 +856,29 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
     var first_surplus: ?cblk_plan.CblkDecodePlan = null;
     var segsym_count: u32 = 0;
     var first_segsym: ?cblk_plan.CblkDecodePlan = null;
+    var pterm_under_count: u32 = 0;
+    var max_pterm_under: u32 = 0;
+    var first_pterm_under: ?cblk_plan.CblkDecodePlan = null;
+    var first_pterm_under_tail: u32 = 0;
+    var first_under_tail: u32 = 0;
+    var ends_ff_count: u32 = 0;
+    var first_ends_ff: ?cblk_plan.CblkDecodePlan = null;
+    var first_ends_ff_offset: ?usize = null;
     for (list.plans) |plan| {
+        // A contribution or terminated segment ending in 0xFF is proven from
+        // the bytes alone (T.800 B.10.7, D.4.2, D.6); no decode needed. The
+        // extractor records the exact byte for a contribution; a segment end
+        // is exact only when the code-block has a single contribution (its
+        // data is then contiguous in the stream).
+        const seg_ff = segmentEndingInFF(plan.data, plan.segments);
+        if (plan.contribution_ends_ff or seg_ff != null) {
+            ends_ff_count += 1;
+            if (first_ends_ff == null) {
+                first_ends_ff = plan;
+                first_ends_ff_offset = plan.ends_ff_offset orelse
+                    if (seg_ff != null and plan.data.len == plan.first_len) plan.src_offset + seg_ff.? else null;
+            }
+        }
         // numbps == 0 means the zero-bitplane tag tree consumed the whole
         // bit-depth budget (zero_bitplanes >= M_b). A cblk with coding
         // passes over ZERO bit-planes is impossible — a tag-tree/bit-depth
@@ -870,10 +930,25 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
             segsym_count += 1;
             if (first_segsym == null) first_segsym = plan;
         }
-        if (cblk.under_read > underReadCap()) {
+        // Bytes past the coder's termination (T.800 D.4.2). Under PTERM the
+        // termination procedure is mandatory and fixes the segment length, so
+        // any measurable surplus is a violation. Without PTERM any technique
+        // that places the needed bytes is acceptable; the surplus is a
+        // corruption heuristic at WARN above the corpus floor.
+        if (cblk.under_read > 0 and plan.cblksty & 0x10 != 0) {
+            pterm_under_count += 1;
+            max_pterm_under = @max(max_pterm_under, cblk.under_read);
+            if (first_pterm_under == null) {
+                first_pterm_under = plan;
+                first_pterm_under_tail = cblk.under_read;
+            }
+        } else if (cblk.under_read > underReadFloor()) {
             under_count += 1;
             max_under = @max(max_under, cblk.under_read);
-            if (first_under == null) first_under = plan;
+            if (first_under == null) {
+                first_under = plan;
+                first_under_tail = cblk.under_read;
+            }
         }
     }
     if (zbp_overflow_count > 0) {
@@ -904,10 +979,29 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) !codes
         const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) over-read past their entropy data (truncated/corrupt) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ over_count, p.tile, p.component, p.resolution, p.band, p.precinct });
         try appendFinding(&report, allocator, sev, .entropy_over_read, p.src_offset, detail);
     }
+    // Detail wording for everything below follows one rule: say exactly
+    // what is wrong, where it starts (a byte offset), and that other
+    // decoders tolerate it while jp2z, whose purpose is corruption
+    // detection, cannot.
+    if (pterm_under_count > 0) {
+        const p = first_pterm_under.?;
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) carry bytes past the predictable termination (max {d} byte(s), cblksty 0x{x:0>2}); first: tile {d} comp {d} r{d} band {d} prc {d}, data at byte offset {d}, the decoder stopped {d} byte(s) before the end of that code-block's data. With PTERM the termination procedure shall be used and fixes the segment length (T.800 D.4.2), so the surplus is a violation. OpenJPEG and other decoders ignore surplus bytes; jp2z cannot, because a declared length that disagrees with the coded data is how corruption shows", .{ pterm_under_count, max_pterm_under, p.cblksty, p.tile, p.component, p.resolution, p.band, p.precinct, p.src_offset, first_pterm_under_tail });
+        try appendFinding(&report, allocator, sev, .entropy_under_read, p.src_offset, detail);
+    }
     if (under_count > 0) {
         const p = first_under.?;
-        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) left entropy bytes unconsumed past the MQ termination (max {d} byte(s), cap {d}, cblksty 0x{x:0>2}) (first: tile {d} comp {d} r{d} band {d} prc {d})", .{ under_count, max_under, underReadCap(), p.cblksty, p.tile, p.component, p.resolution, p.band, p.precinct });
-        try appendFinding(&report, allocator, sev, .entropy_under_read, p.src_offset, detail);
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) carry bytes the arithmetic decoder never consumed (max {d} byte(s) past its final position, floor {d}, cblksty 0x{x:0>2}); first: tile {d} comp {d} r{d} band {d} prc {d}, data at byte offset {d}, {d} unread byte(s) at the end of that code-block's data. T.800 D.4.2 permits surplus bytes after a non-predictable termination, but no conforming encoder in the calibration corpus leaves more than {d}, and longer tails have only been seen in corrupted entropy data. OpenJPEG and other decoders ignore the surplus; jp2z reports it because its purpose is to detect corruption, which that tolerance hides", .{ under_count, max_under, underReadFloor(), p.cblksty, p.tile, p.component, p.resolution, p.band, p.precinct, p.src_offset, first_under_tail, underReadFloor() });
+        try appendFinding(&report, allocator, .warn, .entropy_under_read, p.src_offset, detail);
+    }
+    if (ends_ff_count > 0) {
+        const p = first_ends_ff.?;
+        const where = if (first_ends_ff_offset) |o|
+            try std.fmt.allocPrint(allocator, "the offending 0xFF at byte offset {d}", .{o})
+        else
+            try allocator.dupe(u8, "the offending 0xFF ends a terminated segment inside that code-block's data");
+        defer allocator.free(where);
+        const detail = try std.fmt.allocPrint(allocator, "{d} code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF; first: tile {d} comp {d} r{d} band {d} prc {d}, data at byte offset {d}, {s}. T.800 forbids this (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value). OpenJPEG and other decoders read past it without complaint; jp2z reports the violation because a stray 0xFF is indistinguishable from damage", .{ ends_ff_count, p.tile, p.component, p.resolution, p.band, p.precinct, p.src_offset, where });
+        try appendFinding(&report, allocator, sev, .cblk_contribution_ends_ff, p.src_offset, detail);
     }
 
     // EOC is mandatory (T.800 A.4.4). The structural walk flags a missing

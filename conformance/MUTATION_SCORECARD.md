@@ -146,3 +146,43 @@ differ in size, fill and pattern. The known-invalid structural classes
 stay sniper, bolter and the 1024-byte zero-fill from SOC. Crashes are
 not a category here (the matrix runs in-process; a panic fails the
 suite); the sparse-flip crash hypothesis is for the probe, not this gate.
+
+2026-10-12: the entropy-tail finding (c252 entropy_under_read without
+PTERM) is a WARN in both modes above a floor of 3 unread bytes, no longer
+a strict FAIL above 2. The T.800 (11/2015) text, pulled on 2026-10-11
+(docs/T800_CODEWORD_SEGMENT_TERMINATION_VERBATIM.md), settles that D.4.2
+accepts "any technique that places all of the needed bytes" without
+backtracking, so a surplus after a non-predictable termination is
+conforming and FAIL would break the severity contract (FAIL = proven
+violation). It stays reported because no conforming producer in the
+corpus leaves more than 3 (issue206, issue559, validate's 241 streams)
+while every tail measured on damaged entropy data is 15 or more, so it is
+the project's corruption heuristic, labeled as such in its detail. Under
+PTERM (cblksty 0x10) the same finding is strict FAIL / lenient WARN on any
+tail (the procedure "shall be used" and fixes the length). New c261
+cblk_contribution_ends_ff (a contribution or terminated segment ending in
+0xFF: B.10.7 "must not", D.4.2 "shall not be sent", D.6 "shall not") is
+strict FAIL / lenient WARN; it fires on 12 nonregression files and no
+conformance file.
+
+Consequences for this matrix. A probe now counts as detected when strict
+validation returns WARN or worse (`Outcome.flagged`), since the WARN is
+the detector; the known-corrupt and false-positive gates keep the
+strict-FAIL meaning (`Outcome.rejected`), and a new gate requires every
+valid control to come back below WARN (`false_positive_flags == 0`, the
+specificity side of the heuristic). Moving the floor from 2 to 3 loses
+the two probes whose mutant measures a tail of exactly 3 (e1_colr bolter,
+verified with the pre-change binary: "max 3 byte(s)"; g3_colr shotgun,
+inferred: the floor was the only change between the two builds) and the
+zero-fill column gained one. Measured at this commit, strict detection by
+family and class:
+
+| family | controls | sniper | bolter | legacy zero-fill 1024 B | shotgun 8..16 bits / 32 B | nuke 1024 B |
+|---|---:|---:|---:|---:|---:|---:|
+| codestream | 23 | 15 | 15 | 22 | 18 | 22 |
+| jp2 | 3 | 3 | 3 | 3 | 3 | 3 |
+
+These are the new floors. A tail of 3 is indistinguishable from the field
+class by this metric alone; a sharper discriminator (for example decoding
+the tail bytes as a continuation and checking for the FLUSH pattern) would
+be new work, recorded in PLAN.md.

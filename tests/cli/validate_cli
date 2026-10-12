@@ -31,19 +31,36 @@ case "$out" in '{"overall":'*'"findings":'*) pass "--json document shape";; *) f
 "$cli" validate - < "$mono" >/dev/null 2>&1; rc=$?
 check_rc "validate - reads stdin" 0 "$rc"
 
-# 4. a byte flipped mid-stream: strict FAILs (1), lenient WARNs (2)
+# 4a. one byte set to 0xFF mid-stream. The lengths stay consistent, so the
+# only trace is a long unread tail in one code-block: T.800 D.4.2 permits
+# that, so it is the WARN corruption heuristic (finding 252) in BOTH modes,
+# exit 2, and the message must name the offset and the tolerance of other
+# decoders.
 cp "$mono" "$tmp/corrupt.j2c"
 size=$(wc -c < "$mono"); mid=$((size / 2))
 printf '\377' | dd of="$tmp/corrupt.j2c" bs=1 seek="$mid" conv=notrunc status=none
 err=$("$cli" validate --strict "$tmp/corrupt.j2c" 2>&1 >/dev/null); rc=$?
-check_rc "corrupted strict exits 1" 1 "$rc"
-case "$err" in *"overall: fail"*) pass "corrupted strict says fail";; *) fail "corrupted strict says fail (got: $err)";; esac
+check_rc "flipped byte: strict exits 2 (warn heuristic)" 2 "$rc"
+case "$err" in *"overall: warn"*) pass "flipped byte: strict says warn";; *) fail "flipped byte: strict says warn (got: $err)";; esac
+case "$err" in *"warn c252"*"byte offset"*"other decoders"*) pass "flipped byte: c252 names the offset and other decoders' tolerance";; *) fail "flipped byte: c252 names the offset and other decoders' tolerance (got: $err)";; esac
 "$cli" validate --lenient "$tmp/corrupt.j2c" >/dev/null 2>&1; rc=$?
-check_rc "corrupted lenient exits 2 (warn)" 2 "$rc"
+check_rc "flipped byte: lenient exits 2 (warn)" 2 "$rc"
 
-# 5. later flag wins: --lenient --strict is strict
-"$cli" validate --lenient --strict "$tmp/corrupt.j2c" >/dev/null 2>&1; rc=$?
+# 4b. 64 zero bytes mid-stream: the MQ decoder runs out of data (finding
+# 251, a proven over-read): strict FAILs (1), lenient WARNs (2).
+cp "$mono" "$tmp/zeroed.j2c"
+head -c 64 /dev/zero | dd of="$tmp/zeroed.j2c" bs=1 seek="$mid" conv=notrunc status=none
+err=$("$cli" validate --strict "$tmp/zeroed.j2c" 2>&1 >/dev/null); rc=$?
+check_rc "zeroed run: strict exits 1" 1 "$rc"
+case "$err" in *"overall: fail"*) pass "zeroed run: strict says fail";; *) fail "zeroed run: strict says fail (got: $err)";; esac
+"$cli" validate --lenient "$tmp/zeroed.j2c" >/dev/null 2>&1; rc=$?
+check_rc "zeroed run: lenient exits 2 (warn)" 2 "$rc"
+
+# 5. later flag wins, in both orders
+"$cli" validate --lenient --strict "$tmp/zeroed.j2c" >/dev/null 2>&1; rc=$?
 check_rc "later flag wins (--lenient --strict)" 1 "$rc"
+"$cli" validate --strict --lenient "$tmp/zeroed.j2c" >/dev/null 2>&1; rc=$?
+check_rc "later flag wins (--strict --lenient)" 2 "$rc"
 
 # 6. a path with spaces
 mkdir -p "$tmp/dir with space"; cp "$mono" "$tmp/dir with space/a b.j2c"

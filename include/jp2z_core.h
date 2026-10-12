@@ -198,7 +198,7 @@ typedef enum {
      * offending code-block in `detail`. */
     JP2Z_FINDING_JP2_PACKETS_UNDER_READ      = 250,
     JP2Z_FINDING_ENTROPY_OVER_READ           = 251,
-    JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,
+    JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,  /* WARN (both modes) above a floor of 3 unread bytes without PTERM: conforming per T.800 D.4.2 but only seen on corrupted data; strict FAIL / lenient WARN on any tail under PTERM */
     JP2Z_FINDING_CODING_PASS_OVERFLOW        = 253,
     JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END   = 254,  /* a good sign */
     /* A code-block's zero-bitplane tag tree consumed the whole bit-depth
@@ -217,6 +217,7 @@ typedef enum {
     JP2Z_FINDING_SEGMENTATION_SYMBOL_MISMATCH = 258,
     JP2Z_FINDING_PROFILE_VIOLATION           = 259,
     JP2Z_FINDING_REVERSIBLE_EXPONENT_MISMATCH = 260, /* WARN: reversible subband exponent != R_I + log2(gain) + RCT growth (T.800 E.2 Eq. E-10, informative) */
+    JP2Z_FINDING_CBLK_CONTRIBUTION_ENDS_FF   = 261, /* FAIL: a code-block contribution or terminated segment ends in 0xFF (T.800 B.10.7, D.4.2, D.6) */
 } jp2z_finding_code_t;
 
 typedef struct {

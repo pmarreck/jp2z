@@ -225,17 +225,46 @@ honestly. Agreed order:
       a 3-byte tail (issue206_image-000, issue559-eci-090/091) are
       TPsot==TNsot producers, the same pairing validate saw. Record:
       docs/mktp-research/jpeg2000.md 4.5 + census artifact. Replied.
+- [x] (2026-10-12 13:30 EDT) Finding 252 split by cblksty and finding 261 added,
+      per the T.800 (11/2015) text pulled on 2026-10-11
+      (docs/T800_CODEWORD_SEGMENT_TERMINATION_VERBATIM.md). Without PTERM,
+      D.4.2 accepts any termination that "places all of the needed bytes", so
+      the surplus is conforming and 252 is a WARN in both modes above a corpus
+      floor of 3 (largest conforming tail 3; damaged data 15+): the project's
+      corruption heuristic, labeled as such, since BDFN's policy is to be
+      stricter than forgiving decoders and to use WARN for what they accept.
+      Under PTERM (cblksty 0x10) the procedure "shall be used" and fixes the
+      length, so any tail is strict FAIL / lenient WARN. 261
+      cblk_contribution_ends_ff (B.10.7 "must not", D.4.2 "shall not be sent",
+      D.6 "shall not"): strict FAIL / lenient WARN, exact byte offset in the
+      detail. Every detail string names what is wrong, the byte offset where
+      it starts, and that other decoders tolerate it (messaging rule, BDFN
+      2026-10-12). Mutation matrix: detection measured as WARN-or-worse,
+      controls must stay below WARN, floors re-baselined {15,15,22,18,22}
+      (two tail-3 probes lost, zero-fill +1; conformance/MUTATION_SCORECARD.md).
+      CLI test: flipped byte → rc 2 both modes; 64 zero bytes → rc 1 / 2.
+      Census: 0/57 conformance verdicts change; 261 fires on 12 nonregression
+      files and flips 5 from info to fail (j2k32, orb-blue10 x4; byte-verified).
+      Record: docs/mktp-research/jpeg2000.md 4.6.
+- [ ] Registry 261 to Einstein for blessing (jpegz mirrors the enum, its
+      errors.zig ends at 260); status note to validate (3-byte class now quiet,
+      longer tails WARN c252 in both modes, new c261 FAIL). Sent 2026-10-12.
+- [ ] Sharper discriminator for the entropy tail: a tail of 3 is the field
+      class and cannot be flagged by length alone (e1_colr bolter and g3_colr
+      shotgun mutants measure exactly 3). Candidate: check the unread bytes
+      against the FLUSH pattern (D.4.2 drops a trailing 0xFF, so a conforming
+      tail is the coder's own output) before treating them as surplus.
 - [ ] MKTP follow-ups needing T.800 text before a severity is chosen (each
       red-first once the clause is in hand): ihdr first in jp2h (I.5.3.1) and
       at least one colr box (I.5.3.3, Table I.4; the unit-test JP2 helpers
       emit colr-less jp2h and must change first); MCT = 1 with fewer than 3
       or geometrically mismatched components (G.2; decode already refuses);
       COD/COC/QCD/QCC/RGN in a tile-part header other than the first (Table
-      A.1 placement; WARN 145 today). B.10.7 and D.4.1-D.4.2: whether
-      bytes past the coder's termination inside a code-block contribution
-      are a violation (252 keeps strict FAIL / lenient WARN with cap 2
-      meanwhile; witnesses in docs/mktp-research/jpeg2000.md 4.5). Ask BDFN
-      for the extracts by the Annex E route.
+      A.1 placement; WARN 145 today). B.10.7 and D.4.1-D.4.2 are settled
+      (2026-10-12, checked item above). The T.800 PDF text is obtainable by
+      the same route as the Annex E extracts (LEARNINGS, 2026-09-16 entry
+      on reaching the reference material): pull the remaining clauses that
+      way instead of waiting.
 - [ ] Mutation vocabulary migration, probe rerun (Peter, 2026-09-29; global memory
       "Corruption mutation vocabulary uses sniper bolter shotgun and nuke"):
       shotgun now = 8..16 distinct bit flips in a fully contained 32-byte

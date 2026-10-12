@@ -87,6 +87,15 @@ pub const CblkDecodePlan = struct {
     /// boundaries inside the byte stream and a handful of other
     /// per-pass behaviours.
     cblksty: u8,
+    /// Some packet contribution to this code-block ended in 0xFF, which
+    /// T.800 B.10.7 forbids ("must not end in a 0xFF"). Set by the
+    /// extractor from the raw contribution bytes; the segment-end check
+    /// (D.4.2, D.6) runs on `data` + `segments` in deepValidate.
+    contribution_ends_ff: bool = false,
+    /// Byte offset (host-file, like `src_offset`) of the first
+    /// contribution-ending 0xFF when `contribution_ends_ff` is set, so the
+    /// finding can name the exact byte rather than the code-block's anchor.
+    ends_ff_offset: ?usize = null,
 
     /// Concatenated compressed bytes for every pass in `total_passes`.
     /// Owned by this plan — `deinit` frees it.

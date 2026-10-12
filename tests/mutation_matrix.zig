@@ -60,6 +60,10 @@ const fixtures = [_]Fixture{
 const Stats = struct {
     controls: usize = 0,
     false_positive_rejects: usize = 0,
+    /// Valid controls that came back WARN or worse: the specificity side of
+    /// the entropy-tail heuristic (a WARN on a known-good file is a false
+    /// positive for the corruption detector even though it is not a reject).
+    false_positive_flags: usize = 0,
     known_corrupt_by_class: [3]usize = @splat(0),
     known_corrupt_misses_by_class: [3]usize = @splat(0),
     entropy_probes_by_class: [entropy_classes]usize = @splat(0),
@@ -88,7 +92,13 @@ fn familyEntropyIndex(family: Family, class: usize) usize {
     return @intFromEnum(family) * entropy_classes + class;
 }
 
-const Outcome = struct { rejected: bool, unsupported: bool };
+/// `rejected` is a strict FAIL (a proven violation). `flagged` is WARN or
+/// worse: since 2026-10-12 the entropy-tail heuristic (finding 252 without
+/// PTERM) reports at WARN in both modes because T.800 D.4.2 permits the
+/// surplus, so corruption detection is measured as flagged while the
+/// known-corrupt and false-positive gates keep rejected. A valid control
+/// must be neither.
+const Outcome = struct { rejected: bool, flagged: bool, unsupported: bool };
 
 fn strictOutcome(allocator: std.mem.Allocator, data: []const u8) !Outcome {
     var report = try jp2z.deepValidate(allocator, data, true);
@@ -97,7 +107,11 @@ fn strictOutcome(allocator: std.mem.Allocator, data: []const u8) !Outcome {
     for (report.findings.items) |finding| {
         if (finding.code == .jp2_unsupported_marker_ignored) unsupported = true;
     }
-    return .{ .rejected = report.overall == .fail, .unsupported = unsupported };
+    return .{
+        .rejected = report.overall == .fail,
+        .flagged = @intFromEnum(report.overall) >= @intFromEnum(jp2z.Severity.warn),
+        .unsupported = unsupported,
+    };
 }
 
 fn codestreamStart(data: []const u8) ?usize {
@@ -180,6 +194,7 @@ fn runMatrix(allocator: std.mem.Allocator) !Stats {
             stats.false_positive_rejects += 1;
             stats.false_positive_rejects_by_family[@intFromEnum(fixture.family)] += 1;
         }
+        if (control.flagged) stats.false_positive_flags += 1;
 
         const soc = codestreamStart(fixture.data) orelse return error.MissingCodestream;
         for (0..3) |class| {
@@ -226,7 +241,7 @@ fn runMatrix(allocator: std.mem.Allocator) !Stats {
                 else => unreachable,
             }
             stats.entropy_probes_by_class[class] += 1;
-            const detected = (try strictOutcome(allocator, mutant)).rejected;
+            const detected = (try strictOutcome(allocator, mutant)).flagged;
             if (detected) {
                 stats.entropy_detected_by_class[class] += 1;
                 stats.entropy_detected_by_family_and_class[familyEntropyIndex(fixture.family, class)] += 1;
@@ -241,6 +256,7 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     const stats = try runMatrix(std.testing.allocator);
     try std.testing.expectEqual(fixtures.len, stats.controls);
     try std.testing.expectEqual(@as(usize, 0), stats.false_positive_rejects);
+    try std.testing.expectEqual(@as(usize, 0), stats.false_positive_flags);
     try std.testing.expectEqual([_]usize{ fixtures.len, fixtures.len, fixtures.len }, stats.known_corrupt_by_class);
     try std.testing.expectEqual([_]usize{ 0, 0, 0 }, stats.known_corrupt_misses_by_class);
     try std.testing.expectEqual([_]usize{ 23, 3 }, stats.controls_by_family);
@@ -252,11 +268,17 @@ test "strict validation classifies valid controls and known-invalid mutations ov
     for (stats.entropy_probes_by_class) |count| try std.testing.expect(count > 0);
     // Regression floor by family × {sniper, bolter, legacy zero-fill, shotgun,
     // nuke}. Entropy changes are probes rather than known-invalid files, so
-    // improvement may raise the counts without invalidating the gate. The
-    // legacy zero-fill column keeps its pre-2026-09-29 floor; the sparse
-    // shotgun and nuke floors are the counts measured when they were added
-    // and are never compared with the zero-fill column.
-    const sensitivity_floor = [_]usize{ 15, 16, 21, 19, 22, 3, 3, 3, 3, 3 };
+    // improvement may raise the counts without invalidating the gate. A probe
+    // counts as detected when strict validation returns WARN or worse (see
+    // Outcome.flagged). Re-baselined 2026-10-12 when the non-PTERM tail floor
+    // moved from 2 to 3 (T.800 D.4.2 permits the surplus and conforming
+    // producers leave tails of 3, so a tail of 3 can no longer be flagged):
+    // codestream bolter 16 → 15 (e1_colr's mutant measures exactly 3) and
+    // shotgun 19 → 18 (g3_colr's mutant, same reason); zero-fill 21 → 22
+    // (measured). The legacy zero-fill column otherwise keeps its
+    // pre-2026-09-29 operator; the sparse shotgun and nuke floors are never
+    // compared with the zero-fill column.
+    const sensitivity_floor = [_]usize{ 15, 15, 22, 18, 22, 3, 3, 3, 3, 3 };
     for (stats.entropy_detected_by_family_and_class, sensitivity_floor) |actual, floor| {
         try std.testing.expect(actual >= floor);
     }
@@ -270,11 +292,11 @@ test "mutation matrix: dump measured stats when MUTATION_MATRIX_DUMP is set (sco
     const s = try runMatrix(std.testing.allocator);
     std.debug.print(
         \\
-        \\mutation-matrix: controls_by_family={any} false_positive_rejects_by_family={any} unsupported_by_family={any}
+        \\mutation-matrix: controls_by_family={any} false_positive_rejects_by_family={any} false_positive_flags={d} unsupported_by_family={any}
         \\mutation-matrix: known_corrupt_misses_by_family_and_class={any}
         \\mutation-matrix: entropy_detected_by_family_and_class={any} (order per family: sniper, bolter, legacy-shotgun/zero-fill 1024 B, shotgun 8..16 bits/32 B, nuke 1024 B pseudorandom; codestream then jp2)
         \\
-    , .{ s.controls_by_family, s.false_positive_rejects_by_family, s.unsupported_controls_by_family, s.known_corrupt_misses_by_family_and_class, s.entropy_detected_by_family_and_class });
+    , .{ s.controls_by_family, s.false_positive_rejects_by_family, s.false_positive_flags, s.unsupported_controls_by_family, s.known_corrupt_misses_by_family_and_class, s.entropy_detected_by_family_and_class });
 }
 
 // Sparse shotgun operator (fleet mutation vocabulary, Peter 2026-09-29):

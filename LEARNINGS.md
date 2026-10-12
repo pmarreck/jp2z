@@ -731,3 +731,55 @@ comparing thresholds. Record: docs/mktp-research/jpeg2000.md section 4.5.
 Tooling note: `zig fmt` on tests/unit/validate.zig rewrites about 200
 unrelated lines (the file is not fmt-clean). Keep new test code hand
 formatted, or format the file in its own commit.
+
+## Prefer the more correct option, even when it costs work or risk (2026-10-12)
+
+BDFN, when offered a cheap option and a correct one for finding 252:
+"we almost always want to do the 'more correct' option even if it
+entails additional work or risk". This is a standing preference, not a
+one-off. When a design question has an answer that is right by the
+standard or by the project's contract and another that is merely
+convenient, present both with costs, recommend the correct one, and
+expect it to be chosen. Save the convenient option for when the correct
+one is actually impossible, and say so.
+
+## The spec text decides severity; detection lives in WARN when the spec permits the pattern (2026-10-12)
+
+Finding 252 (bytes a code-block carries past the MQ decoder's final
+position) had been a strict FAIL above 2, and it was also the project's
+main entropy-corruption detector: a single flipped byte mid-stream leaves
+the lengths consistent and shows up only as a long unread tail. The T.800
+(11/2015) text, fetched over SSH and extracted verbatim into
+docs/T800_CODEWORD_SEGMENT_TERMINATION_VERBATIM.md, says D.4.2 accepts
+"any technique that places all of the needed bytes" without backtracking:
+the surplus is conforming without PTERM, so FAIL would mean "proven
+violation" about something the standard allows. Dropping it to INFO cost
+the detector (mutation-matrix sniper 15 → 4, bolter 16 → 5; the CLI's
+corrupted fixture exited 0). The resolution came from the owner's
+stated policy: this validator is deliberately stricter than forgiving
+decoders because that is the only way to detect real corruption, and
+"technically wrong but accepted by other decoders" is WARN. So the
+non-PTERM tail is WARN in both modes above a corpus-calibrated floor
+(3: the largest tail any conforming producer leaves; damaged data
+measures 15 or more), labeled in its detail as a heuristic, and the
+mutation matrix measures detection as WARN-or-worse while keeping its
+reject gates at FAIL. Under PTERM the same tail is a proven violation
+(the procedure "shall be used" and fixes the length) and FAILs. A new
+finding, 261, catches the one thing the text proves from a single byte
+in every mode: a contribution or terminated segment ending in 0xFF.
+
+Two things worth keeping from the exercise. First, when a severity
+change breaks a detection gate, do not pick between "honest contract"
+and "working detector" alone; the owner holds a third option (WARN as a
+labeled heuristic) and a policy that chooses it. Second, the messaging
+rule BDFN set for every WARN of this kind: say exactly what is wrong,
+the byte offset where it starts, and that other decoders are more
+forgiving on this divergence while this project, by its goals, cannot
+be. The three detail strings (252 non-PTERM, 252 PTERM, 261) follow it,
+and the unit tests pin the offset and the "other decoders" sentence so
+a rewrite cannot quietly drop them.
+
+Measurement note: moving the floor from 2 to 3 loses exactly the probes
+whose mutant measures a tail of 3 (e1_colr bolter, g3_colr shotgun). The
+metric cannot separate them from the field class; a sharper
+discriminator is future work, not a reason to flag conforming files.

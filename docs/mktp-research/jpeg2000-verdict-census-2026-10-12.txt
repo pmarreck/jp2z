@@ -1,0 +1,136 @@
+FILE input/nonregression/1336.pdf.asan.47.376.jp2
+  old overall: fail | new overall: fail
+  info c252 @3732 8 code-block(s) carry bytes past the arithmetic coder's termination (max 1734 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r0 band 0 prc 0)
+  
+FILE input/nonregression/1802.pdf.SIGSEGV.36e.894.jp2
+  old overall: fail | new overall: fail
+  info c252 @77792 46 code-block(s) carry bytes past the arithmetic coder's termination (max 364 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 12 comp 0 r2 band 1 prc 0)
+  
+FILE input/nonregression/2236.pdf.SIGSEGV.398.1376.jp2
+  old overall: fail | new overall: fail
+  info c252 @2388 9 code-block(s) carry bytes past the arithmetic coder's termination (max 469 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r3 band 3 prc 0)
+  
+FILE input/nonregression/2.pdf.SIGFPE.706.1112.jp2
+  old overall: fail | new overall: fail
+  info c252 @7203 22 code-block(s) carry bytes past the arithmetic coder's termination (max 136 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 3 comp 1 r2 band 1 prc 0)
+  
+FILE input/nonregression/4241ac039aba57e6a9c948d519d94216_asan_heap-oob_14650f2_7469_602.jp2
+  old overall: fail | new overall: fail
+  info c252 @387 5 code-block(s) carry bytes past the arithmetic coder's termination (max 15 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r25 band 3 prc 0)
+  
+FILE input/nonregression/451.pdf.SIGSEGV.5b5.3723.jp2
+  old overall: fail | new overall: fail
+  info c252 @1191 3 code-block(s) carry bytes past the arithmetic coder's termination (max 47 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r3 band 1 prc 0)
+  
+FILE input/nonregression/451.pdf.SIGSEGV.f4c.3723.jp2
+  old overall: fail | new overall: fail
+  info c252 @641 6 code-block(s) carry bytes past the arithmetic coder's termination (max 75 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r3 band 1 prc 0)
+  
+FILE input/nonregression/broken1.jp2
+  old overall: fail | new overall: fail
+  info c252 @3723 10 code-block(s) carry bytes past the arithmetic coder's termination (max 95 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 2 r5 band 3 prc 0)
+  
+FILE input/nonregression/broken3.jp2
+  old overall: fail | new overall: fail
+  info c252 @1789 9 code-block(s) carry bytes past the arithmetic coder's termination (max 178 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r3 band 2 prc 0)
+  
+FILE input/nonregression/broken.jpc
+  old overall: fail | new overall: fail
+  info c252 @13846 30 code-block(s) carry bytes past the arithmetic coder's termination (max 833 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r5 band 1 prc 0)
+  
+FILE input/nonregression/dwt_interleave_h.gsr105.jp2
+  old overall: fail | new overall: fail
+  info c252 @413 4 code-block(s) carry bytes past the arithmetic coder's termination (max 15 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 2 r27 band 3 prc 0)
+  
+FILE input/nonregression/edf_c2_1000671.jp2
+  old overall: fail | new overall: fail
+  info c252 @1215 11 code-block(s) carry bytes past the arithmetic coder's termination (max 3272 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 2 comp 2 r1 band 3 prc 0)
+  
+FILE input/nonregression/edf_c2_20.jp2
+  old overall: fail | new overall: fail
+  info c252 @1523 4 code-block(s) carry bytes past the arithmetic coder's termination (max 173 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r3 band 1 prc 0)
+  
+FILE input/nonregression/issue135.j2k
+  old overall: fail | new overall: fail
+  info c252 @1124936 992 code-block(s) carry bytes past the arithmetic coder's termination (max 30635 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r5 band 2 prc 22)
+  fail c261 @1499125 7 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 0 r5 band 1 prc 51)
+FILE input/nonregression/issue206_image-000.jp2
+  old overall: fail | new overall: fail
+  info c252 @2543 1 code-block(s) carry bytes past the arithmetic coder's termination (max 3 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 2 r3 band 1 prc 0)
+  
+FILE input/nonregression/issue390.jp2
+  old overall: fail | new overall: fail
+  info c252 @1885 2 code-block(s) carry bytes past the arithmetic coder's termination (max 15 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r4 band 3 prc 0)
+  fail c261 @1885 1 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 0 r4 band 3 prc 0)
+FILE input/nonregression/issue395.jp2
+  old overall: fail | new overall: fail
+  info c252 @26002 123 code-block(s) carry bytes past the arithmetic coder's termination (max 259 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r5 band 3 prc 0)
+  fail c261 @42226 1 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 2 r5 band 2 prc 11)
+FILE input/nonregression/issue397.jp2
+  old overall: fail | new overall: fail
+  info c252 @697 4 code-block(s) carry bytes past the arithmetic coder's termination (max 200 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 2 r0 band 0 prc 0)
+  
+FILE input/nonregression/issue399.j2k
+  old overall: fail | new overall: fail
+  info c252 @17259 2 code-block(s) carry bytes past the arithmetic coder's termination (max 22 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 4 comp 0 r0 band 0 prc 0)
+  fail c261 @17192 1 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 4 comp 0 r1 band 1 prc 0)
+FILE input/nonregression/issue429.jp2
+  old overall: fail | new overall: fail
+  info c252 @1112 9 code-block(s) carry bytes past the arithmetic coder's termination (max 92 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r2 band 1 prc 0)
+  
+FILE input/nonregression/issue432.jp2
+  old overall: fail | new overall: fail
+  info c252 @2603 24 code-block(s) carry bytes past the arithmetic coder's termination (max 1948 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r0 band 0 prc 33)
+  fail c261 @23006 1 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 0 r1 band 3 prc 124)
+FILE input/nonregression/issue495.jp2
+  old overall: fail | new overall: fail
+  info c252 @387 3 code-block(s) carry bytes past the arithmetic coder's termination (max 168 byte(s), floor 2, cblksty 0x80); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r0 band 0 prc 0)
+  
+FILE input/nonregression/issue559-eci-090-CIELab.jp2
+  old overall: fail | new overall: fail
+  info c252 @47886 1 code-block(s) carry bytes past the arithmetic coder's termination (max 3 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r5 band 3 prc 0)
+  
+FILE input/nonregression/issue559-eci-091-CIELab.jp2
+  old overall: fail | new overall: fail
+  info c252 @25304 1 code-block(s) carry bytes past the arithmetic coder's termination (max 3 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 1 comp 0 r5 band 3 prc 0)
+  
+FILE input/nonregression/issue725.jp2
+  old overall: fail | new overall: fail
+  info c252 @333 4 code-block(s) carry bytes past the arithmetic coder's termination (max 20 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r3 band 1 prc 0)
+  
+FILE input/nonregression/issue774.jp2
+  old overall: fail | new overall: fail
+  info c252 @358 3 code-block(s) carry bytes past the arithmetic coder's termination (max 20 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 2 r4 band 2 prc 0)
+  
+FILE input/nonregression/issue775-2.j2k
+  old overall: fail | new overall: fail
+  info c252 @401 4 code-block(s) carry bytes past the arithmetic coder's termination (max 15 byte(s), floor 2, cblksty 0x2d); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 1 r18 band 1 prc 0)
+  fail c261 @247 1 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 0 r17 band 1 prc 0)
+FILE input/nonregression/j2k32.j2k
+  old overall: info | new overall: fail
+  
+  fail c261 @472 55 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 1 r1 band 2 prc 0)
+FILE input/nonregression/kodak_2layers_lrcp.j2c
+  old overall: fail | new overall: fail
+  info c252 @1124936 992 code-block(s) carry bytes past the arithmetic coder's termination (max 30635 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r5 band 2 prc 22)
+  fail c261 @1499125 7 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 0 r5 band 1 prc 51)
+FILE input/nonregression/orb-blue10-lin-j2k.j2k
+  old overall: info | new overall: fail
+  
+  fail c261 @387 15 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 1 r1 band 3 prc 0)
+FILE input/nonregression/orb-blue10-lin-jp2.jp2
+  old overall: info | new overall: fail
+  
+  fail c261 @469 15 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 1 r1 band 3 prc 0)
+FILE input/nonregression/orb-blue10-win-j2k.j2k
+  old overall: info | new overall: fail
+  
+  fail c261 @274 9 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 3 r0 band 0 prc 0)
+FILE input/nonregression/orb-blue10-win-jp2.jp2
+  old overall: info | new overall: fail
+  
+  fail c261 @356 9 code-block(s) have a packet contribution or terminated codeword segment ending in 0xFF, which T.800 forbids (B.10.7 must not end in a 0xFF; D.4.2 shall not be sent; D.6 shall not be an 0xFF value) (first: tile 0 comp 3 r0 band 0 prc 0)
+FILE input/nonregression/v4dwt_interleave_h.gsr105.j2k
+  old overall: fail | new overall: fail
+  info c252 @226 1 code-block(s) carry bytes past the arithmetic coder's termination (max 24 byte(s), floor 2, cblksty 0x00); conforming without predictable termination, any technique that places the needed bytes is acceptable (T.800 D.4.2) (first: tile 0 comp 0 r0 band 0 prc 0)
+  

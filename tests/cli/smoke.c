@@ -45,6 +45,7 @@ _Static_assert(JP2Z_FINDING_JP2_TRAILING_BYTES == 257, "finding registry: c257")
 _Static_assert(JP2Z_FINDING_SEGMENTATION_SYMBOL_MISMATCH == 258, "finding registry: c258");
 _Static_assert(JP2Z_FINDING_PROFILE_VIOLATION == 259, "finding registry: c259");
 _Static_assert(JP2Z_FINDING_REVERSIBLE_EXPONENT_MISMATCH == 260, "finding registry: c260");
+_Static_assert(JP2Z_FINDING_CBLK_CONTRIBUTION_ENDS_FF == 261, "finding registry: c261");
 
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { \

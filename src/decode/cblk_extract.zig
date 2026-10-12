@@ -70,6 +70,10 @@ pub const CblkExtractor = struct {
         /// Passes / bytes of the FIRST packet contribution (layer-0 share).
         first_passes: u32 = 0,
         first_len: u32 = 0,
+        /// A packet contribution ended in 0xFF (T.800 B.10.7 "must not").
+        contribution_ends_ff: bool = false,
+        /// Offset of the first such 0xFF (rebased with src_offset).
+        ends_ff_offset: ?usize = null,
         /// Per-segment {passes, byte_len} (LAZY/TERMALL). Heap-owned
         /// copy of the latest CodeBlockState snapshot; freed in deinit
         /// or transferred to the plan in finalize.
@@ -99,7 +103,10 @@ pub const CblkExtractor = struct {
     /// C ABI contract ("byte offset into the input data").
     pub fn addSrcOffsetBase(self: *CblkExtractor, base: usize) void {
         var it = self.map.valueIterator();
-        while (it.next()) |entry| entry.src_offset += base;
+        while (it.next()) |entry| {
+            entry.src_offset += base;
+            if (entry.ends_ff_offset) |*o| o.* += base;
+        }
     }
 
     /// Record a per-packet contribution: appends `bytes` to the
@@ -146,6 +153,10 @@ pub const CblkExtractor = struct {
             };
         }
         gop.value_ptr.total_passes = meta.total_passes;
+        if (bytes.len > 0 and bytes[bytes.len - 1] == 0xFF) {
+            gop.value_ptr.contribution_ends_ff = true;
+            if (gop.value_ptr.ends_ff_offset == null) gop.value_ptr.ends_ff_offset = meta.src_offset + bytes.len - 1;
+        }
         try gop.value_ptr.buffer.appendSlice(self.allocator, bytes);
         // Store the latest per-segment snapshot (CodeBlockState grows it
         // across packets; the final call carries the complete list).
@@ -188,6 +199,8 @@ pub const CblkExtractor = struct {
                 .first_passes = entry.first_passes,
                 .first_len = entry.first_len,
                 .cblksty = entry.cblksty,
+                .contribution_ends_ff = entry.contribution_ends_ff,
+                .ends_ff_offset = entry.ends_ff_offset,
                 .data = data,
                 .segments = entry.segments,
             };
@@ -197,6 +210,33 @@ pub const CblkExtractor = struct {
         return .{ .plans = plans, .tile_override_unsupported = self.tile_override_unsupported, .ht_unsupported = self.ht_unsupported };
     }
 };
+
+test "CblkExtractor: contribution_ends_ff classifies each packet contribution's last byte (T.800 B.10.7), over a set" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { parts: []const []const u8, flagged: bool }{
+        .{ .parts = &.{&.{ 0x12, 0x34 }}, .flagged = false },
+        .{ .parts = &.{&.{ 0x12, 0xFF }}, .flagged = true },
+        // The 0xFF that B.10.7 lets an encoder move into the NEXT packet
+        // is a violation only when a contribution still ends in it.
+        .{ .parts = &.{ &.{ 0x12, 0xFF }, &.{0x00} }, .flagged = true },
+        .{ .parts = &.{ &.{ 0xFF, 0x12 }, &.{0x00} }, .flagged = false },
+        .{ .parts = &.{ &.{0x12}, &.{}, &.{0x34} }, .flagged = false }, // an empty contribution has no last byte
+        .{ .parts = &.{ &.{0x12}, &.{0xFF} }, .flagged = true },
+    };
+    for (cases) |c| {
+        var ex = CblkExtractor.init(allocator);
+        defer ex.deinit();
+        const key: CblkKey = .{ .tile = 0, .component = 0, .resolution = 0, .band = 0, .precinct = 0, .grid_x = 0, .grid_y = 0 };
+        for (c.parts) |part| try ex.appendContribution(key, part, .{
+            .sb_x0 = 0, .sb_y0 = 0, .sb_x1 = 4, .sb_y1 = 4,
+            .zero_bitplanes = 0, .m_b = 8, .qcd_expn = 0, .qcd_mant = 0, .src_offset = 0, .cblksty = 0, .total_passes = 1,
+            .segments = &.{},
+        });
+        var list = try ex.finalize();
+        defer list.deinit(allocator);
+        try std.testing.expectEqual(c.flagged, list.plans[0].contribution_ends_ff);
+    }
+}
 
 test "CblkExtractor: init/deinit on empty extractor" {
     var ex = CblkExtractor.init(std.testing.allocator);
