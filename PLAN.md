@@ -246,9 +246,10 @@ honestly. Agreed order:
       Census: 0/57 conformance verdicts change; 261 fires on 12 nonregression
       files and flips 5 from info to fail (j2k32, orb-blue10 x4; byte-verified).
       Record: docs/mktp-research/jpeg2000.md 4.6.
-- [ ] Registry 261 to Einstein for blessing (jpegz mirrors the enum, its
-      errors.zig ends at 260); status note to validate (3-byte class now quiet,
-      longer tails WARN c252 in both modes, new c261 FAIL). Sent 2026-10-12.
+- [x] (2026-10-12 13:33 EDT) Registry 261 to Einstein for blessing (jpegz mirrors
+      the enum, its errors.zig ends at 260) and status note to validate (3-byte
+      class quiet, longer tails WARN c252 in both modes, new c261 FAIL): both
+      inbox notes written. Blessing itself still pending.
 - [ ] Sharper discriminator for the entropy tail: a tail of 3 is the field
       class and cannot be flagged by length alone (e1_colr bolter and g3_colr
       shotgun mutants measure exactly 3). Candidate: check the unread bytes
