@@ -198,7 +198,7 @@ typedef enum {
      * offending code-block in `detail`. */
     JP2Z_FINDING_JP2_PACKETS_UNDER_READ      = 250,
     JP2Z_FINDING_ENTROPY_OVER_READ           = 251,
-    JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,  /* WARN (both modes) above a floor of 3 unread bytes without PTERM: conforming per T.800 D.4.2 but only seen on corrupted data; strict FAIL / lenient WARN on any tail under PTERM */
+    JP2Z_FINDING_ENTROPY_UNDER_READ          = 252,  /* without PTERM: WARN (both modes) above a floor of 3 unread bytes, a corruption heuristic rather than a proven nonconformance (T.800 D.4.2 permits the surplus; the floor is corpus-calibrated). Under PTERM: strict FAIL / lenient WARN on any tail, a termination violation (the decoder leaves tail 0 on genuine PTERM output) */
     JP2Z_FINDING_CODING_PASS_OVERFLOW        = 253,
     JP2Z_FINDING_JP2_PACKETS_WALKED_TO_END   = 254,  /* a good sign */
     /* A code-block's zero-bitplane tag tree consumed the whole bit-depth

@@ -249,7 +249,17 @@ honestly. Agreed order:
 - [x] (2026-10-12 13:33 EDT) Registry 261 to Einstein for blessing (jpegz mirrors
       the enum, its errors.zig ends at 260) and status note to validate (3-byte
       class quiet, longer tails WARN c252 in both modes, new c261 FAIL): both
-      inbox notes written. Blessing itself still pending.
+      inbox notes written.
+- [x] (2026-10-13 08:45 EDT) Registry reply received (coordinator Turing,
+      formerly Einstein): 261 approved as an append-only assignment, 252
+      retained at its number, with two severity qualifications now reflected
+      in docs/INTERFACE_CONTRACT.md, src/core/errors.zig and the C header:
+      the non-PTERM tail WARN is a heuristic suspicion (a corpus floor cannot
+      prove every conforming encoder stays under 3), and the PTERM strict FAIL
+      rests on a termination violation (tail 0 is pinned on genuine
+      predictable-termination output). p0_02 (ISO, TERMALL+PTERM+SEGSYM) is
+      asserted free of c252/c261 by name as the encoder-derived PTERM control.
+      jpegz mirror requested by the registry owner. Reply note sent.
 - [ ] Sharper discriminator for the entropy tail: a tail of 3 is the field
       class and cannot be flagged by length alone (e1_colr bolter and g3_colr
       shotgun mutants measure exactly 3). Candidate: check the unread bytes

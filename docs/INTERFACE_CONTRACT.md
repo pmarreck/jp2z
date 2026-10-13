@@ -189,7 +189,11 @@ These are jp2z's current numeric finding codes (the wire format consumers
 read). The **canonical** cross-project registry — reconciled across
 `validate` / `jpegz` / `jp2z` — is owned by Einstein. **Do not add or
 renumber codes without Einstein sign-off** (numeric ABI + cross-project
-semantics).
+semantics). The coordinator agent was named Einstein until 2026-10-13 and
+is named Turing from then on; rows keep the name under which they were
+approved. A numeric registration approves the number and the append-only
+placement, not every severity classification: the owner may qualify a
+severity separately, as the 252 row records.
 
 | Code | Name | Meaning |
 |-----:|------|---------|
@@ -209,7 +213,7 @@ semantics).
 | 208 | `jp2_uses_5x3_wavelet` | info: reversible 5/3 |
 | 250 | `jp2_packets_under_read` | walker stopped before tp_body end — possible per-cblk bug |
 | 251 | `entropy_over_read` | MQ/RAW synthesized >2 past-end 0xFF — truncated entropy data |
-| 252 | `entropy_under_read` | cblk carries bytes past its MQ/RAW termination. Without PTERM: WARN in both modes above a corpus floor of 3 (conforming per T.800 D.4.2, so never FAIL; the corruption heuristic, since no conforming encoder leaves more than 3 and damaged data leaves 15+). Under PTERM (cblksty 0x10): strict FAIL / lenient WARN on any tail (the termination procedure is mandatory and fixes the length). Detail names the max tail, cblksty, the first code-block's byte offset and the tolerance of other decoders (2026-10-12) |
+| 252 | `entropy_under_read` | cblk carries bytes past its MQ/RAW termination. Without PTERM: WARN in both modes above a corpus floor of 3. This is a heuristic suspicion of corruption, not a proven nonconformance: T.800 D.4.2 permits the surplus, and the floor is corpus-calibrated (no conforming encoder in the calibration corpus left more than 3; damaged data left 15 or more), which cannot establish that every conforming encoder stays under it. Under PTERM (cblksty 0x10): strict FAIL / lenient WARN on any tail, a termination violation (the procedure is mandatory and fixes the length, and the decoder leaves tail 0 on genuine predictable-termination output, so the tail is not decoder bookkeeping). Detail names the max tail, cblksty, the first code-block's byte offset and the tolerance of other decoders (2026-10-12; severity qualifications per registry reply 2026-10-13) |
 | 253 | `coding_pass_overflow` | cblk total_passes exceeds 3·numbps−2 (corrupt header) |
 | **254** | **`jp2_packets_walked_to_end`** | **info: walker consumed every tile-part body byte, per tile (renumbered 209→254 per Einstein registry: 209 = jpegz `jfif_metadata_present`)** |
 | 255 | `zero_bitplane_overflow` | cblk zero-bitplane count consumes the whole bit-depth (numbps = 0) yet carries coding passes; strict FAIL / lenient WARN |
@@ -218,6 +222,6 @@ semantics).
 | 258 | `segmentation_symbol_mismatch` | SEGSYM (cblksty 0x20): a cleanup pass ended without the 1010 symbol (D.5); entropy data corrupted |
 | 259 | `profile_violation` | Rsiz claims a profile and breaks one of its restrictions (Table A.10 / A.45); FAIL |
 | 260 | `reversible_exponent_mismatch` | reversible subband exponent differs from the E.2 Eq. E-10 formula (informative); WARN, never FAIL |
-| 261 | `cblk_contribution_ends_ff` | a packet contribution or terminated codeword segment ends in 0xFF (T.800 B.10.7 "must not end in a 0xFF", D.4.2 "shall not be sent", D.6 "shall not be an 0xFF value"); proven from one byte, strict FAIL / lenient WARN; detail names the exact byte offset (2026-10-12, pending Einstein blessing; jpegz to mirror) |
+| 261 | `cblk_contribution_ends_ff` | a packet contribution or terminated codeword segment ends in 0xFF (T.800 B.10.7 "must not end in a 0xFF", D.4.2 "shall not be sent", D.6 "shall not be an 0xFF value"); proven from one byte, strict FAIL / lenient WARN; detail names the exact byte offset (assigned 2026-10-12; registry-approved 2026-10-13 as an append-only assignment, jpegz mirror requested by the registry owner) |
 
-— jp2z (drafted for Einstein blessing; reply to `/Users/pmarreck/Code/jp2z/inbox/`)
+— jp2z (rows 255–261 registry-approved 2026-10-13; coordination goes through the project `inbox/`)

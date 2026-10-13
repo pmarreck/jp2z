@@ -1783,7 +1783,7 @@ test "deepValidate: a PTERM code-block (cblksty 0x10) that is exactly its predic
     try expectSingleCoeffImage(allocator, stream);
 }
 
-test "deepValidate: surplus bytes after a non-PTERM termination are conforming (T.800 D.4.2) but no known encoder leaves more than 3: 252 is WARN in both modes above the corpus floor, never FAIL, and names the offset and the tolerance of other decoders" {
+test "deepValidate: surplus bytes after a non-PTERM termination are conforming (T.800 D.4.2) and no encoder in the calibration corpus leaves more than 3: 252 is a heuristic WARN in both modes above the corpus floor, never FAIL, and names the offset and the tolerance of other decoders" {
     const allocator = std.testing.allocator;
     // The decoder loads two bytes past the FLUSH output before it stops
     // (pinned above: tail 0 with over-read), and `under_read` counts the byte
@@ -3758,7 +3758,7 @@ test "validate: main-header RGN (ROI shift 8 on component 0) is applied — no c
     try std.testing.expect(rep.isOk());
 }
 
-test "deepValidate strict: the six vendored COC/RGN ISO fixtures accept with no ignored marker" {
+test "deepValidate strict: the six vendored COC/RGN ISO fixtures accept with no ignored marker, no entropy tail (c252) and no trailing 0xFF (c261); p0_02 is the encoder-derived PTERM control" {
     const allocator = std.testing.allocator;
     const fixtures = [_]struct { name: []const u8, data: []const u8 }{
         .{ .name = "p0_02", .data = p0_02_j2k }, // COC, TERMALL+PTERM+SEGSYM, dx=2
@@ -3771,6 +3771,14 @@ test "deepValidate strict: the six vendored COC/RGN ISO fixtures accept with no 
     for (fixtures) |f| {
         var rep = try jp2z.internal.deepValidate(allocator, f.data, true);
         defer rep.deinit(allocator);
+        // p0_02 (TERMALL + PTERM + SEGSYM, every pass its own terminated
+        // segment) is the independent, encoder-derived control for the PTERM
+        // branch of c252: a predictable termination that the ISO encoder
+        // produced must leave no measurable tail, and no contribution or
+        // segment of these fixtures may end in 0xFF (c261). Both findings
+        // would be strict FAILs, so they are also asserted by name.
+        try std.testing.expect(!hasFinding(rep, .entropy_under_read));
+        try std.testing.expect(!hasFinding(rep, .cblk_contribution_ends_ff));
         if (rep.overall == .fail or hasFinding(rep, .jp2_unsupported_marker_ignored)) {
             std.debug.print("\n[coc/rgn] {s}: overall={s}\n", .{ f.name, @tagName(rep.overall) });
             for (rep.findings.items) |fd| if (fd.severity == .warn or fd.severity == .fail) std.debug.print("  {s} {s} @{?d}\n", .{ @tagName(fd.severity), @tagName(fd.code), fd.offset });
