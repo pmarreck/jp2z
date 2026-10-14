@@ -260,6 +260,16 @@ honestly. Agreed order:
       predictable-termination output). p0_02 (ISO, TERMALL+PTERM+SEGSYM) is
       asserted free of c252/c261 by name as the encoder-derived PTERM control.
       jpegz mirror requested by the registry owner. Reply note sent.
+- [x] (2026-10-14 14:10 EDT) validate's unified classification notice
+      processed: LEARNINGS, the research record and the 252 contract row now
+      point at the shared memory (WARN = no proven violation; the old "accepted
+      by other decoders" phrasing is retired). No severity changed: non-PTERM
+      252 is a typed heuristic WARN, PTERM 252 and 261 are proven FAILs. The
+      memory lists "jp2z finding 252" among classes validate moves to FAIL,
+      which holds only for the PTERM branch; validate told by note that routing
+      must follow the reported severity or 252 must split through the registry.
+      validate replied the same afternoon: strict mode, route on reported
+      severity, no split, memory corrected to "none of jp2z's classes move".
 - [ ] Sharper discriminator for the entropy tail: a tail of 3 is the field
       class and cannot be flagged by length alone (e1_colr bolter and g3_colr
       shotgun mutants measure exactly 3). Candidate: check the unread bytes

@@ -783,3 +783,23 @@ Measurement note: moving the floor from 2 to 3 loses exactly the probes
 whose mutant measures a tail of 3 (e1_colr bolter, g3_colr shotgun). The
 metric cannot separate them from the field class; a sharper
 discriminator is future work, not a reason to flag conforming files.
+
+Classification update (2026-10-14). The phrase "technically wrong but
+accepted by other decoders is WARN" is retired by the unified
+classification memory "Validate verdicts - FAIL is unexplained damage, KNOWN_DEFECT is an admitted producer defect, WARN is no proven violation, limits are reach" (shared memory root, $HOME/MEMORIES; authority: validate's TERMINOLOGY.md). Under it, WARN means no proven violation,
+and "readers open it" is never a reason for WARN. jp2z's severities
+already satisfy that reading, for a different stated reason than the
+one above: the non-PTERM 252 is WARN because T.800 D.4.2 permits the
+pattern, so it is a typed heuristic suspicion, never a FAIL on its own;
+the PTERM 252 and 261 are proven violations and FAIL. The "other
+decoders" sentence in each detail explains the divergence from forgiving
+decoders; it is not the reason for the severity. "Lenient" is a decoding
+mode of this library; validate's routing decides the verdict, and the
+memory lists 252 and the lenient side of 261 among the classes validate
+is moving to FAIL. Because one code, 252, carries both a proven
+violation (PTERM, reported FAIL) and a heuristic (non-PTERM, reported
+WARN), a consumer must route on the reported severity, or the code has
+to split through the registry. validate chose the former the same day:
+it calls jp2z in strict mode and routes 252 on the reported severity,
+and it corrected the memory's JPEG 2000 line to say none of jp2z's
+classes move.
