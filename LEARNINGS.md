@@ -803,3 +803,16 @@ to split through the registry. validate chose the former the same day:
 it calls jp2z in strict mode and routes 252 on the reported severity,
 and it corrected the memory's JPEG 2000 line to say none of jp2z's
 classes move.
+
+## A fixed detail buffer with a `catch` fallback can silently swap the message (2026-10-14)
+
+Finding details are formatted with `std.fmt.bufPrint` into a stack buffer
+and fall back to a short literal when the buffer is too small. Three new
+details overran their 200- and 240-byte buffers, so the file carried the
+fallback text and the unit tests, which assert on needles such as the
+component count or the EnumCS value, failed "without output". The
+compiler cannot catch this (the length depends on runtime values), so the
+needle tests are the control: every detail that names a value must have a
+test that asserts the value appears. When writing a detail, size the buffer
+for the longest formatted form (320 bytes here) and keep the fallback as a
+last resort, never as the message a consumer is expected to read.

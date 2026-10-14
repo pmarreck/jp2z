@@ -1262,10 +1262,16 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
     var cmap_span: ?struct { body: []const u8, off: u64 } = null;
     var cdef_span: ?struct { body: []const u8, off: u64 } = null;
     var saw_colr = false;
+    // I.5.3: ihdr "shall be the first box in the JP2 Header box" and all
+    // colr boxes "shall be contiguous". Track the first sub-box type and
+    // whether the previous sub-box was a colr.
+    var first_tbox: ?u32 = null;
+    var prev_was_colr = false;
     var pos: usize = 0;
     while (pos + 8 <= body.len) {
         const lbox = std.mem.readInt(u32, body[pos..][0..4], .big);
         const tbox = std.mem.readInt(u32, body[pos + 4 ..][0..4], .big);
+        if (first_tbox == null) first_tbox = tbox;
 
         var box_total: usize = undefined;
         var body_off: usize = 8;
@@ -1331,6 +1337,12 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
             // enumerated one second. Only the first box decides the
             // colour-space notice; later boxes get the structural checks.
             const first_colr = !saw_colr;
+            // I.5.3: "All Colour Specification boxes shall be contiguous
+            // within the JP2 Header box." A colr after a non-colr that
+            // followed an earlier colr is a proven violation.
+            if (saw_colr and !prev_was_colr) {
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, base + pos, "colr boxes must be contiguous within jp2h; another box separates this one from the previous colr (T.800 I.5.3)");
+            }
             saw_colr = true;
             if (cb.len < 3) {
                 try emit(report, allocator, .fail, .bad_marker_length, coff, "colr box shorter than METH/PREC/APPROX (T.800 I.5.3.3)");
@@ -1345,15 +1357,30 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
                         // Amendment / Part-2 spaces (CIELab 14, ...) append
                         // their own fields, so only the minimum is checked.
                         16, 17, 18 => if (cb.len != 7) try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 1 box must be exactly 7 bytes for a Part-1 EnumCS (T.800 I.5.3.3)"),
-                        else => if (first_colr) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff + 3, "colr EnumCS is not a Part-1 colour space (16 sRGB, 17 greyscale, 18 sYCC); Part 2 / vendor value"),
+                        // I.3.3: the FIRST colr box "shall be one of the methods
+                        // as defined and restricted in this Recommendation", and
+                        // Table I.10 reserves every EnumCS but 16, 17 and 18 for
+                        // other ITU-T | ISO uses. A conforming reader uses that
+                        // first box and ignores the rest, so a later box with a
+                        // Part-2 value (ISO file5/file7) is not a violation.
+                        else => if (first_colr) {
+                            var cs_buf: [320]u8 = undefined;
+                            const cs_detail = std.fmt.bufPrint(&cs_buf, "first colr box carries EnumCS {d}, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot", .{cs}) catch "first colr EnumCS outside Table I.10 (T.800 I.3.3)";
+                            try emit(report, allocator, .fail, .jp2_invalid_codestream, coff + 3, cs_detail);
+                        },
                     }
                 },
                 2 => if (cb.len <= 3) {
                     try emit(report, allocator, .fail, .bad_marker_length, coff, "colr METH 2 carries no ICC profile (T.800 I.5.3.3)");
                 },
-                else => if (first_colr) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, coff, "colr METH is not 1 or 2: reserved in Part 1 (Part 2 any-ICC / vendor colour)"),
+                else => if (first_colr) {
+                    var m_buf: [320]u8 = undefined;
+                    const m_detail = std.fmt.bufPrint(&m_buf, "first colr box uses METH {d}; T.800 Table I.11 allows 1 (enumerated) or 2 (restricted ICC), and the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot", .{cb[0]}) catch "first colr METH outside 1..2 (T.800 I.3.3)";
+                    try emit(report, allocator, .fail, .jp2_invalid_codestream, coff, m_detail);
+                },
             }
         }
+        prev_was_colr = tbox == BoxType.colr;
         if (tbox == BoxType.pclr) {
             pclr = try parsePclrBox(report, allocator, body[pos + body_off .. pos + box_total], base + pos + body_off);
         }
@@ -1362,6 +1389,24 @@ fn parseJp2HeaderBox(report: *ValidationReport, allocator: Allocator, body: []co
         }
 
         pos += box_total;
+    }
+    // I.5.3.1: "The contents of the JP2 Header box shall start with an Image
+    // Header box." Reported only when an ihdr exists somewhere in jp2h; a
+    // missing ihdr is the caller's finding.
+    if (dims != null) {
+        if (first_tbox) |t| {
+            if (t != BoxType.ihdr) {
+                const name: [4]u8 = .{ @truncate(t >> 24), @truncate(t >> 16), @truncate(t >> 8), @truncate(t) };
+                var fb_buf: [160]u8 = undefined;
+                const fb = std.fmt.bufPrint(&fb_buf, "jp2h must start with ihdr (T.800 I.5.3.1); its first box is '{s}'. Readers locate ihdr by type and open the file; the order is still a violation", .{name}) catch "jp2h must start with ihdr (T.800 I.5.3.1)";
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, base, fb);
+            }
+        }
+    }
+    // I.5.3: "There shall be at least one Colour Specification box within
+    // the JP2 Header box."
+    if (!saw_colr) {
+        try emit(report, allocator, .fail, .jp2_invalid_codestream, base, "jp2h has no colr box (T.800 I.5.3: at least one Colour Specification box). Readers assume a colour space and open the file; the omission is still a violation");
     }
     // I.5.3.5: cmap is present exactly when pclr is.
     if (pclr != null and cmap_span == null) {
@@ -2048,7 +2093,7 @@ fn walkTileParts(
     // once declared nonzero, caps the part count; a completed tile accepts
     // no further parts. Survives TileWalk removal (walk state is freed on
     // completion, but the structural ledger must outlive it).
-    const TpState = struct { next_tpsot: u16 = 0, tnsot: u8 = 0, broken: bool = false, complete: bool = false };
+    const TpState = struct { next_tpsot: u16 = 0, tnsot: u8 = 0, broken: bool = false, complete: bool = false, poc_in_first: bool = false };
     var tp_state = std.AutoHashMap(u16, TpState).init(allocator);
     defer tp_state.deinit();
     while (true) {
@@ -2204,6 +2249,41 @@ fn walkTileParts(
                 const pp = std.fmt.bufPrint(&pp_buf, "{s}: tile {d} uses PPT; the profile prohibits it", .{ tp_profile, isot16 }) catch "PPT prohibited";
                 try emit(report, allocator, .fail, .profile_violation, pos + 12, pp);
             }
+            // A.6.1 / A.6.2 / A.6.4 / A.6.5: COD, COC, QCD and QCC "shall be
+            // found only in the first tile-part (TPsot = 0)"; RGN (A.6.3) is
+            // defined for the main and first tile-part header and Figure A.5
+            // lists only POC, PPT, PLT, COM and SOD for a later part. A POC
+            // may appear in any part, but A.6.6: "a POC marker segment must
+            // appear in the first tile-part header of that tile". Decoders
+            // ignore the misplaced segment and render; jp2z reports it.
+            if (tpsot != 0) {
+                const Misplaced = struct { name: []const u8, clause: []const u8, at: ?usize };
+                var misplaced: [5]Misplaced = .{
+                    .{ .name = "COD", .clause = "A.6.1", .at = if (tp_ov.cod) |s| s.start - 4 else null },
+                    .{ .name = "COC", .clause = "A.6.2", .at = if (tp_ov.coc.items.len > 0) tp_ov.coc.items[0].start - 4 else null },
+                    .{ .name = "QCD", .clause = "A.6.4", .at = if (tp_ov.has_qcd) tp_ov.qcd_start - 4 else null },
+                    .{ .name = "QCC", .clause = "A.6.5", .at = if (tp_ov.qcc.items.len > 0) tp_ov.qcc.items[0].start - 4 else null },
+                    .{ .name = "RGN", .clause = "A.6.3", .at = if (tp_ov.rgn.items.len > 0) tp_ov.rgn.items[0].start - 4 else null },
+                };
+                for (&misplaced) |*m| {
+                    if (m.at) |at| {
+                        var mp_buf: [320]u8 = undefined;
+                        const mp = std.fmt.bufPrint(&mp_buf, "tile {d}: {s} marker segment in tile-part {d}; T.800 {s} allows it only in the first tile-part header (TPsot = 0). Decoders ignore the misplaced segment; jp2z reports it", .{ isot16, m.name, tpsot, m.clause }) catch "coding marker in a later tile-part header (T.800 A.6)";
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, at, mp);
+                    }
+                }
+                if (tp_ov.n > 0) {
+                    if (tp_state.getPtr(isot16)) |s| {
+                        if (!s.poc_in_first) {
+                            var pc_buf: [320]u8 = undefined;
+                            const pc = std.fmt.bufPrint(&pc_buf, "tile {d}: POC first appears in tile-part {d}; T.800 A.6.6 requires a POC in the first tile-part header of a tile whose progression it describes. Decoders apply it late; jp2z reports it", .{ isot16, tpsot }) catch "POC first appears in a later tile-part header (T.800 A.6.6)";
+                            try emit(report, allocator, .fail, .jp2_invalid_codestream, pos + 12, pc);
+                        }
+                    }
+                }
+            } else if (tp_ov.n > 0) {
+                if (tp_state.getPtr(isot16)) |s| s.poc_in_first = true;
+            }
         } else {
             // A.4.4: every tile-part carries SOD. Unreachable means a header
             // segment's length runs past the tile-part end (edf_c2_1103421:
@@ -2321,16 +2401,10 @@ fn walkTileParts(
                             // outlives this tile-part): the clone is moved, not freed.
                             tile_params.comps = &.{};
                         }
-                    } else {
-                        // COD/QCD/QCC are only honored in a tile's FIRST tile-part
-                        // header (T.800 A.6.1/A.6.4/A.6.5 placement); a later one
-                        // is ignored — surface it rather than silently drop.
-                        if (tp_ov.cod) |span| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, span.start - 4, null);
-                        if (tp_ov.has_qcd) try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, tp_ov.qcd_start - 4, null);
-                        for (tp_ov.qcc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
-                        for (tp_ov.coc.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
-                        for (tp_ov.rgn.items) |q| try emit(report, allocator, .warn, .jp2_unsupported_marker_ignored, q.start - 4, null);
                     }
+                    // COD/COC/QCD/QCC/RGN in a later tile-part header are not
+                    // applied; the header scan above already reported them as
+                    // the A.6 placement violation they are.
                     if (tiles.getPtr(isot16)) |tw| {
                         // POC entries from THIS tile-part's header accumulate
                         // onto the tile's sequencer before its body is walked
@@ -2800,6 +2874,35 @@ fn parseCodInto(
         cp.num_layers = num_layers;
         cp.mct = mct_raw == 1;
         cp.scod = scod;
+        // Table A.17: MCT 1 is a "component transformation used on components
+        // 0, 1, 2", and G.2 / G.3 require those three to "have the same
+        // separation on the reference grid and the same bit-depth". Fewer
+        // than three components leaves the transform undefined (undecodable);
+        // unequal descriptors are a proven violation. Either way decoders
+        // such as OpenJPEG skip or force the transform and render something.
+        if (mct_raw == 1) {
+            if (cp.num_components < 3) {
+                var mc_buf: [320]u8 = undefined;
+                const mc = std.fmt.bufPrint(&mc_buf, "SGcod MCT 1 applies to components 0, 1, 2 (T.800 Table A.17, G.2/G.3) but SIZ declares {d} component(s); the transform is undefined for this image. Other decoders drop the transform and decode anyway; jp2z reports it", .{cp.num_components}) catch "SGcod MCT 1 with fewer than three components (T.800 Table A.17)";
+                try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 4, mc);
+            } else if (cp.comps.len >= 3) {
+                const c0 = cp.comps[0];
+                var k: usize = 1;
+                while (k < 3) : (k += 1) {
+                    const ck = cp.comps[k];
+                    if (ck.dx != c0.dx or ck.dy != c0.dy) {
+                        var sb_buf: [320]u8 = undefined;
+                        const sb = std.fmt.bufPrint(&sb_buf, "SGcod MCT 1 but component {d} has sub-sampling {d}x{d} where component 0 has {d}x{d}; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it", .{ k, ck.dx, ck.dy, c0.dx, c0.dy }) catch "SGcod MCT 1 over unequally sub-sampled components (T.800 G.2/G.3)";
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 4, sb);
+                    }
+                    if (ck.prec != c0.prec or ck.signed != c0.signed) {
+                        var bd_buf: [320]u8 = undefined;
+                        const bd = std.fmt.bufPrint(&bd_buf, "SGcod MCT 1 but component {d} has bit depth {d}{s} where component 0 has {d}{s}; the three transformed components shall have the same bit depth (T.800 G.2/G.3). Other decoders transform anyway; jp2z reports it", .{ k, ck.prec, if (ck.signed) " signed" else "", c0.prec, if (c0.signed) " signed" else "" }) catch "SGcod MCT 1 over components of unequal bit depth (T.800 G.2/G.3)";
+                        try emit(report, allocator, .fail, .jp2_invalid_codestream, offset + 4, bd);
+                    }
+                }
+            }
+        }
         if (walkable) {
             cp.num_decomp_levels = cc.num_decomp_levels;
             cp.cblk_width_exp = cc.cblk_width_exp;
@@ -3403,9 +3506,19 @@ const TileWalk = struct {
                             const prc_x = p % grid.width;
                             const prc_y = p / grid.width;
                             const cblks = subbands.cblksInPrecinctSubband(
-                                rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels,
-                                r, sb, prc_x, prc_y, ppx, ppy,
-                                cc.cblk_width_exp, cc.cblk_height_exp,
+                                rect.tcx0,
+                                rect.tcy0,
+                                rect.tcw,
+                                rect.tch,
+                                cc.num_decomp_levels,
+                                r,
+                                sb,
+                                prc_x,
+                                prc_y,
+                                ppx,
+                                ppy,
+                                cc.cblk_width_exp,
+                                cc.cblk_height_exp,
                             );
                             const slot = layout.index(c, r, sb, p);
                             states[slot] = try packet_header.SubbandState.initFromGrid(
@@ -3624,12 +3737,21 @@ fn walkTilePartBody(
                             break;
                         }
                         const cb_rect = subbands.cblkSubbandRect(
-                            rect.tcx0, rect.tcy0, rect.tcw, rect.tch, cc.num_decomp_levels,
-                            pi.resolution, ex_sb,
-                            prc_x_in_grid, prc_y_in_grid,
-                            ppx, ppy,
-                            cc.cblk_width_exp, cc.cblk_height_exp,
-                            gx, gy,
+                            rect.tcx0,
+                            rect.tcy0,
+                            rect.tcw,
+                            rect.tch,
+                            cc.num_decomp_levels,
+                            pi.resolution,
+                            ex_sb,
+                            prc_x_in_grid,
+                            prc_y_in_grid,
+                            ppx,
+                            ppy,
+                            cc.cblk_width_exp,
+                            cc.cblk_height_exp,
+                            gx,
+                            gy,
                         );
                         try ex.appendContribution(.{
                             .tile = tw.tile_index,
@@ -3715,8 +3837,6 @@ fn walkTilePartBody(
     // Body exactly consumed, iterator still has packets → resume next part.
     return .incomplete;
 }
-
-
 
 fn isKnownMainHeaderMarker(marker: u16) bool {
     return switch (marker) {
@@ -3878,7 +3998,6 @@ fn parseSizBody(report: *ValidationReport, allocator: Allocator, body: []const u
     report.coding_params = cp_local;
 }
 
-
 pub fn emit(
     report: *ValidationReport,
     allocator: Allocator,
@@ -3939,9 +4058,9 @@ test "parseSizBody: 41-byte minimum SIZ yields width/height" {
 test "parseQcdBody: style 0 reversible — extracts G_b and per-subband M_b" {
     const body = [_]u8{
         0x40,
-        8  << 3,
-        9  << 3,
-        9  << 3,
+        8 << 3,
+        9 << 3,
+        9 << 3,
         10 << 3,
         10 << 3,
         10 << 3,
@@ -3962,7 +4081,7 @@ test "parseQcdBody: style 0 reversible — extracts G_b and per-subband M_b" {
     const cp = report.coding_params.?;
     try std.testing.expectEqual(@as(u8, 2), cp.quant.guard_bits);
     try std.testing.expectEqual(@as(u8, 0), cp.quant.quant_style);
-    try std.testing.expectEqual(@as(u8, 9),  cp.quant.mb[0]);
+    try std.testing.expectEqual(@as(u8, 9), cp.quant.mb[0]);
     try std.testing.expectEqual(@as(u8, 10), cp.quant.mb[1]);
     try std.testing.expectEqual(@as(u8, 10), cp.quant.mb[2]);
     try std.testing.expectEqual(@as(u8, 11), cp.quant.mb[3]);
@@ -3981,7 +4100,7 @@ test "CodingParams.mbForSubband: r=0 -> idx 0; r>=1 -> 3*(r-1)+band" {
     cp.quant.mb[5] = 14;
     cp.quant.mb[6] = 15;
 
-    try std.testing.expectEqual(@as(u8, 9),  cp.mbForSubband(0, 0, 0));
+    try std.testing.expectEqual(@as(u8, 9), cp.mbForSubband(0, 0, 0));
     try std.testing.expectEqual(@as(u8, 10), cp.mbForSubband(0, 1, 1));
     try std.testing.expectEqual(@as(u8, 11), cp.mbForSubband(0, 1, 2));
     try std.testing.expectEqual(@as(u8, 12), cp.mbForSubband(0, 1, 3));
@@ -3993,9 +4112,12 @@ test "CodingParams.mbForSubband: r=0 -> idx 0; r>=1 -> 3*(r-1)+band" {
 test "CodingParams.tileRect: 256x256 image, 128x128 tiles -> 2x2 grid" {
     const cp: jp2z.CodingParams = .{
         .num_components = 1,
-        .image_x0 = 0, .image_y0 = 0,
-        .tile_x0 = 0, .tile_y0 = 0,
-        .tile_w = 128, .tile_h = 128,
+        .image_x0 = 0,
+        .image_y0 = 0,
+        .tile_x0 = 0,
+        .tile_y0 = 0,
+        .tile_w = 128,
+        .tile_h = 128,
     };
     const nt = cp.numTilesXY(256, 256);
     try std.testing.expectEqual(@as(u32, 2), nt.x);

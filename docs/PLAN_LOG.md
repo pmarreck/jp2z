@@ -192,3 +192,7 @@ Completed PLAN.md items retired by plan-retire, oldest retirement first.
 - [x] [Completed] Phase 2 M1 (core scope): pure-Zig codestream walker — J2K marker walk + JP2 box walk + tile-part walk to EOC; `validate()` returns structured findings for missing/malformed/truncated input
 - [x] [Completed] Phase 2 M2 (tier-2 packet headers): walker BYTE-PERFECT against opj_t2 on every vendored ISO 15444-4 conformance fixture (c1_mono, d1_colr, file1, file9). All 5 progression orders + per-resolution variable precinct counts + reference-grid iteration for PCRL/CPRL + per-precinct SubbandState + T.800 A.6.1 cblk-cap-by-precinct.
 - [x] [Completed] Phase 2 M3 (tier-1 EBCOT core): MQ arithmetic decoder (T.800 Annex C) + EBCOT context model (19 contexts, ZC/SC/MR formation per T.800 Table D-1/D-3/D.3.3) + three coding passes (SP/MR/CL with RLC sub-path) + bit-plane orchestrator (decodeCblk). 97 inline tests passing. Pending: walker integration to feed real cblk byte slices, then OpenJPEG oracle byte-perfect verification.
+
+## Retired 2026-10-14
+
+- [x] [Recently completed] **Minor (Thelio)**: the `warning(link): unexpected LLD stderr` in the fast dev-loop build no longer appears (2026-09-18, `zig build test` in the devShell with zig 0.16.0 prints no link warning). Closed as not reproducible.

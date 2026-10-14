@@ -1,0 +1,99 @@
+Strict census after the jp2h order / colr / MCT-input / marker-placement checks (2026-10-14)
+Binary: zig-out/bin/jp2z built from the working tree that became the commit recording this file.
+Corpora: vendored tests/unit/fixtures/conformance (26), openjpeg-data input/conformance (57), input/nonregression (151).
+A HIT is a file whose strict output mentions one of the new checks; FLIP means the new checks are its only FAIL-severity findings.
+
+jp2z devShell — zig 0.16.0, openjpeg 2.5.4 (Phase 1 backend)
+== vendored: files=26 strict_fail=0 new_check_hits=0
+== openjpeg-conformance: files=57 strict_fail=0 new_check_hits=0
+HIT rc=1 openjpeg-data/input/nonregression/123.j2c
+    fail c141 @51 SGcod MCT 1 applies to components 0, 1, 2 (T.800 Table A.17, G.2/G.3) but SIZ declares 1 component(s); the transform is undefined for this image. Other decoders drop the transform and decode anyway; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/1336.pdf.asan.47.376.jp2
+    fail c141 @179 SGcod MCT 1 but component 1 has sub-sampling 17x1 where component 0 has 1x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/147af3f1083de4393666b7d99b01b58b_signal_sigsegv_130c531_6155_5136.jp2
+    fail c141 @111 first colr box carries EnumCS 12, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/bug.j2c
+    fail c141 @51 SGcod MCT 1 applies to components 0, 1, 2 (T.800 Table A.17, G.2/G.3) but SIZ declares 1 component(s); the transform is undefined for this image. Other decoders drop the transform and decode anyway; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_1000671.jp2
+    fail c141 @142 SGcod MCT 1 but component 2 has bit depth 4 where component 0 has 8; the three transformed components shall have the same bit depth (T.800 G.2/G.3). Other decoders transform anyway; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_1000691.jp2
+    fail c141 @222 tile 0: COC marker segment in tile-part 128; T.800 A.6.2 allows it only in the first tile-part header (TPsot = 0). Decoders ignore the misplaced segment; jp2z reports it
+    fail c141 @233 tile 0: QCC marker segment in tile-part 128; T.800 A.6.5 allows it only in the first tile-part header (TPsot = 0). Decoders ignore the misplaced segment; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_1013627.jp2
+    fail c141 @142 SGcod MCT 1 but component 2 has sub-sampling 1x17 where component 0 has 1x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_1015644.jp2
+    fail c141 @222 tile 2048: COC marker segment in tile-part 128; T.800 A.6.2 allows it only in the first tile-part header (TPsot = 0). Decoders ignore the misplaced segment; jp2z reports it
+    fail c141 @233 tile 2048: QCC marker segment in tile-part 128; T.800 A.6.5 allows it only in the first tile-part header (TPsot = 0). Decoders ignore the misplaced segment; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_1103421.jp2
+    fail c141 @73 first colr box carries EnumCS 276, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/edf_c2_20.jp2
+    fail c141 @142 SGcod MCT 1 but component 1 has sub-sampling 17x1 where component 0 has 1x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/illegalcolortransform.j2k
+    fail c141 @51 SGcod MCT 1 applies to components 0, 1, 2 (T.800 Table A.17, G.2/G.3) but SIZ declares 1 component(s); the transform is undefined for this image. Other decoders drop the transform and decode anyway; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/issue205.jp2
+    fail c141 @111 first colr box carries EnumCS 12, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue208.jp2
+    fail c141 @108 first colr box uses METH 3; T.800 Table I.11 allows 1 (enumerated) or 2 (restricted ICC), and the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue211.jp2
+    fail c141 @105 first colr box uses METH 4; T.800 Table I.11 allows 1 (enumerated) or 2 (restricted ICC), and the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue236-ESYCC-CDEF.jp2
+    fail c141 @77 first colr box carries EnumCS 24, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue364-38.jp2
+    fail c141 @111 first colr box carries EnumCS 12, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue397.jp2
+    fail c141 @74 first colr box uses METH 254; T.800 Table I.11 allows 1 (enumerated) or 2 (restricted ICC), and the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue495.jp2
+    fail c141 @142 SGcod MCT 1 but component 2 has bit depth 11 signed where component 0 has 8; the three transformed components shall have the same bit depth (T.800 G.2/G.3). Other decoders transform anyway; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/issue559-eci-090-CIELab.jp2
+    fail c141 @111 first colr box carries EnumCS 14, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue559-eci-091-CIELab.jp2
+    fail c141 @111 first colr box carries EnumCS 14, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/issue725.jp2
+    fail c141 @85 first colr box carries EnumCS 24, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+    fail c141 @191 SGcod MCT 1 but component 1 has sub-sampling 1x1 where component 0 has 15x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+    fail c141 @191 SGcod MCT 1 but component 2 has sub-sampling 1x1 where component 0 has 15x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/issue733.jp2
+    fail c141 @191 SGcod MCT 1 but component 1 has sub-sampling 32x1 where component 0 has 1x1; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/issue774.jp2
+    fail c141 @85 first colr box carries EnumCS 12, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+    fail c141 @191 SGcod MCT 1 but component 1 has sub-sampling 1x1 where component 0 has 254x254; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+    fail c141 @191 SGcod MCT 1 but component 2 has sub-sampling 1x1 where component 0 has 254x254; the three transformed components shall have the same separation on the reference grid (T.800 G.2/G.3). Other decoders force or skip the transform; jp2z reports it
+HIT rc=1 openjpeg-data/input/nonregression/issue820.jp2
+    fail c141 @73 first colr box carries EnumCS 62224, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/mem-b2ace68c-1381.jp2
+    fail c141 @111 first colr box carries EnumCS 12, reserved for other ITU-T | ISO uses (T.800 Table I.10: 16 sRGB, 17 greyscale, 18 sYCC); the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+HIT rc=1 openjpeg-data/input/nonregression/oss-fuzz2785.jp2
+    warn c141 @112 PPT Zppt indices are not contiguous from 0
+HIT rc=1 openjpeg-data/input/nonregression/text_GBR.jp2
+    fail c141 @187 first colr box uses METH 3; T.800 Table I.11 allows 1 (enumerated) or 2 (restricted ICC), and the first colour method shall be one Part 1 defines (I.3.3). Readers that know Part 2 open it; a Part-1 reader cannot
+== openjpeg-nonregression: files=151 strict_fail=116 new_check_hits=27
+
+== Flip classification
+FLIP->FAIL   123.j2c  (new: 1; brand/colr: )
+ALREADY-FAIL 1336.pdf.asan.47.376.jp2  (other fails: 3)
+ALREADY-FAIL 147af3f1083de4393666b7d99b01b58b_signal_sigsegv_130c531_6155_5136.jp2  (other fails: 3)
+FLIP->FAIL   bug.j2c  (new: 1; brand/colr: )
+ALREADY-FAIL edf_c2_1000671.jp2  (other fails: 9)
+ALREADY-FAIL edf_c2_1000691.jp2  (other fails: 2)
+ALREADY-FAIL edf_c2_1013627.jp2  (other fails: 2)
+ALREADY-FAIL edf_c2_1015644.jp2  (other fails: 2)
+ALREADY-FAIL edf_c2_1103421.jp2  (other fails: 1)
+ALREADY-FAIL edf_c2_20.jp2  (other fails: 2)
+ALREADY-FAIL illegalcolortransform.j2k  (other fails: 1)
+FLIP->FAIL   issue205.jp2  (new: 1; brand/colr: EnumCS 12)
+ALREADY-FAIL issue208.jp2  (other fails: 20)
+ALREADY-FAIL issue211.jp2  (other fails: 1)
+FLIP->FAIL   issue236-ESYCC-CDEF.jp2  (new: 1; brand/colr: EnumCS 24)
+ALREADY-FAIL issue364-38.jp2  (other fails: 2)
+ALREADY-FAIL issue397.jp2  (other fails: 2)
+ALREADY-FAIL issue495.jp2  (other fails: 4)
+ALREADY-FAIL issue559-eci-090-CIELab.jp2  (other fails: 8)
+ALREADY-FAIL issue559-eci-091-CIELab.jp2  (other fails: 8)
+ALREADY-FAIL issue725.jp2  (other fails: 1)
+ALREADY-FAIL issue733.jp2  (other fails: 3)
+ALREADY-FAIL issue774.jp2  (other fails: 3)
+ALREADY-FAIL issue820.jp2  (other fails: 4)
+ALREADY-FAIL mem-b2ace68c-1381.jp2  (other fails: 13)
+NO-NEW-FAIL  oss-fuzz2785.jp2
+ALREADY-FAIL text_GBR.jp2  (other fails: 16)
+== flips=4 already_fail=22 no_new_fail=1

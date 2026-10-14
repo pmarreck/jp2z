@@ -2661,9 +2661,13 @@ const synth_97_stream = [_]u8{
 };
 
 /// Wrap a raw codestream in a minimal well-formed JP2 shell:
-/// signature(12) + ftyp(20) + jp2h(30: ihdr only) + jp2c(8 + payload).
-/// Returns an owned buffer; the jp2c PAYLOAD starts at host offset 70.
-const jp2_shell_payload_base: u64 = 12 + 20 + 30 + 8;
+/// signature(12) + ftyp(20) + jp2h(45: ihdr + colr) + jp2c(8 + payload).
+/// Returns an owned buffer; the jp2c PAYLOAD starts at host offset 85.
+const jp2_shell_payload_base: u64 = 12 + 20 + 45 + 8;
+/// colr: METH 1, PREC 0, APPROX 0, EnumCS 17 (greyscale). T.800 I.5.3 requires
+/// at least one Colour Specification box in jp2h, so every well-formed shell
+/// carries this one unless a test supplies its own.
+const colr_grey = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11 };
 fn wrapInJp2(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
@@ -2671,9 +2675,10 @@ fn wrapInJp2(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
     // ftyp: lbox=20 'ftyp' brand='jp2 ' minv=0 compat='jp2 '
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
-    // jp2h: lbox=30 'jp2h' { ihdr: lbox=22 'ihdr' h=4 w=4 nc=1 bpc=7 c=7 unk=0 ipr=0 }
-    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x1E, 0x6A, 0x70, 0x32, 0x68 });
+    // jp2h: lbox=45 'jp2h' { ihdr: lbox=22 'ihdr' h=4 w=4 nc=1 bpc=7 c=7 unk=0 ipr=0; colr(15) }
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x2D, 0x6A, 0x70, 0x32, 0x68 });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 });
+    try buf.appendSlice(allocator, &colr_grey);
     // jp2c
     const jp2c_total: u32 = @intCast(8 + payload.len);
     var lbox_bytes: [4]u8 = undefined;
@@ -2736,12 +2741,12 @@ test "validate: jp2c before jp2h violates I.5.3 ordering → FAIL" {
     const allocator = std.testing.allocator;
     const wrapped = try wrapInJp2(allocator, &synth_97_stream);
     defer allocator.free(wrapped);
-    // Reorder: sig(12) + ftyp(20) + jp2c(...) + jp2h(30).
+    // Reorder: sig(12) + ftyp(20) + jp2c(...) + jp2h(45).
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, wrapped[0..32]); // sig + ftyp
-    try buf.appendSlice(allocator, wrapped[62..]); // jp2c box
-    try buf.appendSlice(allocator, wrapped[32..62]); // jp2h box
+    try buf.appendSlice(allocator, wrapped[77..]); // jp2c box
+    try buf.appendSlice(allocator, wrapped[32..77]); // jp2h box
     var rep = try jp2z.validate(allocator, buf.items);
     defer rep.deinit(allocator);
     try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
@@ -2787,11 +2792,12 @@ test "validate: XLBox (lbox=1) ihdr sub-box is parsed — its lying dims are cau
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
-    // jp2h: lbox=38 { ihdr with XLBox: lbox=1 'ihdr' xlbox=30 h=9 w=9 nc=1 bpc=7 c=7 unk=0 ipr=0 }
-    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x26, 0x6A, 0x70, 0x32, 0x68 });
+    // jp2h: lbox=53 { ihdr with XLBox: lbox=1 'ihdr' xlbox=30 h=9 w=9 nc=1 bpc=7 c=7 unk=0 ipr=0; colr(15) }
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x35, 0x6A, 0x70, 0x32, 0x68 });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x01, 0x69, 0x68, 0x64, 0x72 });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x09, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 });
+    try buf.appendSlice(allocator, &colr_grey);
     // jp2c (SIZ inside says 4x4)
     const jp2c_total: u32 = @intCast(8 + synth_97_stream.len);
     var lbox_bytes: [4]u8 = undefined;
@@ -2818,10 +2824,10 @@ test "validate: absence findings (missing ftyp/jp2h/jp2c) carry an offset — no
     const cases = [_]struct { name: []const u8, data: []const u8 }{
         // sig + jp2h + jp2c (ftyp removed: bytes 12..32 cut)
         .{ .name = "no-ftyp", .data = try std.mem.concat(allocator, u8, &.{ wrapped[0..12], wrapped[32..] }) },
-        // sig + ftyp + jp2c (jp2h removed: bytes 32..62 cut)
-        .{ .name = "no-jp2h", .data = try std.mem.concat(allocator, u8, &.{ wrapped[0..32], wrapped[62..] }) },
-        // sig + ftyp + jp2h (jp2c removed: tail cut at 62)
-        .{ .name = "no-jp2c", .data = try allocator.dupe(u8, wrapped[0..62]) },
+        // sig + ftyp + jp2c (jp2h removed: bytes 32..77 cut)
+        .{ .name = "no-jp2h", .data = try std.mem.concat(allocator, u8, &.{ wrapped[0..32], wrapped[77..] }) },
+        // sig + ftyp + jp2h (jp2c removed: tail cut at 77)
+        .{ .name = "no-jp2c", .data = try allocator.dupe(u8, wrapped[0..77]) },
     };
     defer for (cases) |c| allocator.free(@constCast(c.data));
 
@@ -2884,6 +2890,10 @@ const MiniStreamOpts = struct {
     last_comp_prec: ?u8 = null,
     /// COD SPcod code-block style (cblksty): 0x10 is predictable termination.
     cblksty: u8 = 0,
+    /// COD SGcod multiple component transformation (0 or 1, Table A.17).
+    mct: u8 = 0,
+    /// Overrides the LAST component's XRsiz so unequal sub-sampling can be crafted.
+    last_comp_dx: ?u8 = null,
 };
 
 /// Generalised mini-stream: same 4x4 mono 5/3 shell as buildMiniStream but
@@ -2911,10 +2921,11 @@ fn buildPackedMiniStream(allocator: std.mem.Allocator, o: MiniStreamOpts) ![]u8 
     var ci: u16 = 0;
     while (ci < o.components) : (ci += 1) {
         const prec: u8 = if (ci + 1 == o.components and o.last_comp_prec != null) o.last_comp_prec.? - 1 else 0x07;
-        try buf.appendSlice(allocator, &.{ prec, 0x01, 0x01 });
+        const dx: u8 = if (ci + 1 == o.components and o.last_comp_dx != null) o.last_comp_dx.? else 0x01;
+        try buf.appendSlice(allocator, &.{ prec, dx, 0x01 });
     }
-    // COD — Scod, LRCP, `layers`, no MCT, `decomp`, cblk 64x64, 5/3
-    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, o.prog, 0x00, 0x00, 0x00, o.decomp, 0x04, 0x04, o.cblksty, 0x01 };
+    // COD — Scod, LRCP, `layers`, `mct`, `decomp`, cblk 64x64, 5/3
+    var cod: [14]u8 = .{ 0xFF, 0x52, 0x00, 0x0C, o.scod, o.prog, 0x00, 0x00, o.mct, o.decomp, 0x04, 0x04, o.cblksty, 0x01 };
     std.mem.writeInt(u16, cod[6..8], o.layers, .big);
     // QCD — Lqcd = 2 + body
     var qcd: std.ArrayList(u8) = .empty;
@@ -4093,22 +4104,45 @@ test "audit: TLM Stlm reserved bits (0-3, 7) set → FAIL (Table A.34)" {
 // permutation observable on an otherwise all-zero crafted image.
 
 /// wrapInJp2 with a configurable ihdr component count and extra jp2h
-/// sub-boxes appended after ihdr.
+/// sub-boxes appended after ihdr. The greyscale colr is inserted right after
+/// ihdr when `extra_jp2h` carries no colr box of its own (I.5.3 needs one).
 fn wrapInJp2Ex(allocator: std.mem.Allocator, payload: []const u8, nc: u16, extra_jp2h: []const u8) ![]u8 {
+    var p: usize = 0;
+    var has_colr = false;
+    while (p + 8 <= extra_jp2h.len) {
+        const lbox = std.mem.readInt(u32, extra_jp2h[p..][0..4], .big);
+        if (std.mem.eql(u8, extra_jp2h[p + 4 ..][0..4], "colr")) has_colr = true;
+        if (lbox < 8) break;
+        p += lbox;
+    }
+    if (has_colr) return wrapInJp2Bare(allocator, payload, nc, extra_jp2h);
+    const with_colr = try std.mem.concat(allocator, u8, &.{ &colr_grey, extra_jp2h });
+    defer allocator.free(with_colr);
+    return wrapInJp2Bare(allocator, payload, nc, with_colr);
+}
+
+/// wrapInJp2Ex without the default colr: the jp2h holds ihdr (nc components)
+/// followed by exactly `extra_jp2h`.
+fn wrapInJp2Bare(allocator: std.mem.Allocator, payload: []const u8, nc: u16, extra_jp2h: []const u8) ![]u8 {
+    var ihdr: [22]u8 = .{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x07, 0x07, 0x00, 0x00 };
+    std.mem.writeInt(u16, ihdr[16..18], nc, .big);
+    const body = try std.mem.concat(allocator, u8, &.{ &ihdr, extra_jp2h });
+    defer allocator.free(body);
+    return wrapInJp2Body(allocator, payload, body);
+}
+
+/// JP2 shell around `payload` whose jp2h body is exactly `jp2h_body` (any
+/// sub-box order, so the I.5.3 ordering rules can be exercised).
+fn wrapInJp2Body(allocator: std.mem.Allocator, payload: []const u8, jp2h_body: []const u8) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A });
     try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 });
     var jp2h_len: [4]u8 = undefined;
-    std.mem.writeInt(u32, &jp2h_len, @intCast(8 + 22 + extra_jp2h.len), .big);
+    std.mem.writeInt(u32, &jp2h_len, @intCast(8 + jp2h_body.len), .big);
     try buf.appendSlice(allocator, &jp2h_len);
     try buf.appendSlice(allocator, &.{ 0x6A, 0x70, 0x32, 0x68 });
-    var nc_bytes: [2]u8 = undefined;
-    std.mem.writeInt(u16, &nc_bytes, nc, .big);
-    try buf.appendSlice(allocator, &.{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04 });
-    try buf.appendSlice(allocator, &nc_bytes);
-    try buf.appendSlice(allocator, &.{ 0x07, 0x07, 0x00, 0x00 });
-    try buf.appendSlice(allocator, extra_jp2h);
+    try buf.appendSlice(allocator, jp2h_body);
     var lbox_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &lbox_bytes, @intCast(8 + payload.len), .big);
     try buf.appendSlice(allocator, &lbox_bytes);
@@ -4911,7 +4945,9 @@ test "report: colr (meth 1) enumerated colour space is surfaced" {
     var rep = try jp2z.validate(allocator, jp2);
     defer rep.deinit(allocator);
     try std.testing.expectEqual(@as(?u32, 17), rep.colr_enumcs);
-    const none = try wrapInJp2Ex(allocator, payload, 1, &.{});
+    // No colr at all: the container is nonconforming (I.5.3) and the report
+    // carries no colour space; the shell's default colr is bypassed on purpose.
+    const none = try wrapInJp2Bare(allocator, payload, 1, &.{});
     defer allocator.free(none);
     var rep0 = try jp2z.validate(allocator, none);
     defer rep0.deinit(allocator);
@@ -4973,7 +5009,7 @@ test "SEGSYM: a clean fixture has no c258; a byte flipped in its entropy data yi
 
 const jp_sig = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
 const ftyp_jp2 = [_]u8{ 0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x6A, 0x70, 0x32, 0x20, 0x00, 0x00, 0x00, 0x00, 0x6A, 0x70, 0x32, 0x20 };
-const jp2h_min = [_]u8{ 0x00, 0x00, 0x00, 0x1E, 0x6A, 0x70, 0x32, 0x68, 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 };
+const jp2h_min = [_]u8{ 0x00, 0x00, 0x00, 0x2D, 0x6A, 0x70, 0x32, 0x68, 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 } ++ colr_grey;
 
 fn jp2cBox(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     var lbox: [4]u8 = undefined;
@@ -5041,7 +5077,7 @@ test "JP2: ihdr NC, BPC and C must agree with the codestream (I.5.3.1); BPC 0xFF
     try std.testing.expect(failDetailContains(r4, .jp2_invalid_codestream, "bpcc"));
 }
 
-test "JP2: colr METH 1 needs exactly 7 body bytes; reserved METH or a Part-2 EnumCS is valid-but-unsupported (I.5.3.3)" {
+test "JP2: colr METH 1 needs exactly 7 body bytes (I.5.3.3); the first colr box with a METH other than 1 or 2, or an EnumCS outside Table I.10, is a proven violation (I.3.3) → FAIL" {
     const allocator = std.testing.allocator;
     const payload = try buildPackedMiniStream(allocator, .{});
     defer allocator.free(payload);
@@ -5056,15 +5092,17 @@ test "JP2: colr METH 1 needs exactly 7 body bytes; reserved METH or a Part-2 Enu
     defer allocator.free(jp2b);
     var r2 = try jp2z.validate(allocator, jp2b);
     defer r2.deinit(allocator);
-    for (r2.findings.items) |f| try std.testing.expect(f.severity != .fail);
-    try std.testing.expect(hasFinding(r2, .jp2_unsupported_marker_ignored));
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "I.3.3"));
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "METH 3"));
     const cmyk = [_]u8{ 0x00, 0x00, 0x00, 0x0F, 0x63, 0x6F, 0x6C, 0x72, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C }; // EnumCS 12 (Part 2)
     const jp2c = try wrapInJp2Ex(allocator, payload, 1, &cmyk);
     defer allocator.free(jp2c);
     var r3 = try jp2z.validate(allocator, jp2c);
     defer r3.deinit(allocator);
-    for (r3.findings.items) |f| try std.testing.expect(f.severity != .fail);
-    try std.testing.expect(hasFinding(r3, .jp2_unsupported_marker_ignored));
+    try std.testing.expectEqual(jp2z.Severity.fail, r3.overall);
+    try std.testing.expect(failDetailContains(r3, .jp2_invalid_codestream, "EnumCS 12"));
+    try std.testing.expect(failDetailContains(r3, .jp2_invalid_codestream, "Table I.10"));
 }
 
 test "JP2: jp2h must precede jp2c (I.5.3)" {
@@ -5329,7 +5367,7 @@ test "validate: Scod SOP bit with a packet that carries no SOP marker → clean;
     try std.testing.expectEqual(jp2z.Severity.fail, r3.overall);
 }
 
-test "JP2: only the first colr box governs the colour-space notice; a later Part-2 EnumCS is not flagged (ISO file5/file7 shape)" {
+test "JP2: only the first colr box governs the colour space; a later Part-2 EnumCS is ignored (ISO file5/file7 shape) while the same EnumCS in the FIRST colr box FAILs (I.3.3)" {
     const allocator = std.testing.allocator;
     const payload = try buildPackedMiniStream(allocator, .{});
     defer allocator.free(payload);
@@ -5347,7 +5385,8 @@ test "JP2: only the first colr box governs the colour-space notice; a later Part
     defer allocator.free(lone);
     var rep2 = try jp2z.validate(allocator, lone);
     defer rep2.deinit(allocator);
-    try std.testing.expect(hasFinding(rep2, .jp2_unsupported_marker_ignored));
+    try std.testing.expectEqual(jp2z.Severity.fail, rep2.overall);
+    try std.testing.expect(failDetailContains(rep2, .jp2_invalid_codestream, "EnumCS 21"));
 }
 
 // ── Profile checks (docs/T800_PROFILES.md: Table A.10, Table A.45, cinema, broadcast, IMF) ──
@@ -5618,4 +5657,186 @@ test "reversible bit-plane budget: a 12-bit Ssiz on p0_13 is WARN 260, a 9-bit o
         defer r.deinit(allocator);
         try std.testing.expect(!hasFinding(r, .reversible_exponent_mismatch));
     }
+}
+
+// ── jp2h box order and colr presence (T.800 I.5.3, I.3.3), MCT inputs
+// (G.2/G.3), marker placement in later tile-parts (A.6). Clause text:
+// docs/T800_JP2H_RCT_MARKER_PLACEMENT_VERBATIM.md ───────────────────────
+
+const ihdr_4x4_mono = [_]u8{ 0x00, 0x00, 0x00, 0x16, 0x69, 0x68, 0x64, 0x72, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x07, 0x07, 0x00, 0x00 };
+
+test "JP2: jp2h must start with ihdr (I.5.3.1): a colr box before ihdr → FAIL naming the order; ihdr first → no such finding" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const colr_first = colr_grey ++ ihdr_4x4_mono;
+    const wrong = try wrapInJp2Body(allocator, payload, &colr_first);
+    defer allocator.free(wrong);
+    var rep = try jp2z.validate(allocator, wrong);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "start with ihdr"));
+    // The ihdr is still read (dims agree with SIZ): the order is the only fault.
+    try std.testing.expect(!failDetailContains(rep, .jp2_invalid_codestream, "no usable ihdr"));
+    const ihdr_first = ihdr_4x4_mono ++ colr_grey;
+    const right = try wrapInJp2Body(allocator, payload, &ihdr_first);
+    defer allocator.free(right);
+    var ok = try jp2z.validate(allocator, right);
+    defer ok.deinit(allocator);
+    try std.testing.expect(!failDetailContains(ok, .jp2_invalid_codestream, "start with ihdr"));
+    try std.testing.expect(ok.isOk());
+}
+
+test "JP2: jp2h without any colr box → FAIL (I.5.3: at least one Colour Specification box); the shell's greyscale colr satisfies it" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    const bare = try wrapInJp2Bare(allocator, payload, 1, &.{});
+    defer allocator.free(bare);
+    var rep = try jp2z.validate(allocator, bare);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "no colr box"));
+    const shell = try wrapInJp2Ex(allocator, payload, 1, &.{});
+    defer allocator.free(shell);
+    var ok = try jp2z.validate(allocator, shell);
+    defer ok.deinit(allocator);
+    try std.testing.expect(!hasFinding(ok, .jp2_invalid_codestream));
+    try std.testing.expect(ok.isOk());
+}
+
+test "JP2: colr boxes must be contiguous (I.5.3): colr, another box, colr → FAIL at the second colr; colr, colr, another box → clean" {
+    const allocator = std.testing.allocator;
+    const payload = try buildPackedMiniStream(allocator, .{});
+    defer allocator.free(payload);
+    // An empty 'res ' superbox (I.5.3.7) is a legal, ignorable neighbour.
+    const res_empty = [_]u8{ 0x00, 0x00, 0x00, 0x08, 0x72, 0x65, 0x73, 0x20 };
+    const split = colr_grey ++ res_empty ++ colr_grey;
+    const jp2_split = try wrapInJp2Ex(allocator, payload, 1, &split);
+    defer allocator.free(jp2_split);
+    var rep = try jp2z.validate(allocator, jp2_split);
+    defer rep.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, rep.overall);
+    try std.testing.expect(failDetailContains(rep, .jp2_invalid_codestream, "contiguous"));
+    // Anchored at the second colr box: sig(12) ftyp(20) jp2h header(8) ihdr(22) colr(15) res(8).
+    try std.testing.expectEqual(@as(?u64, 12 + 20 + 8 + 22 + 15 + 8), findingOffset(rep, .jp2_invalid_codestream));
+    const grouped = colr_grey ++ colr_grey ++ res_empty;
+    const jp2_grouped = try wrapInJp2Ex(allocator, payload, 1, &grouped);
+    defer allocator.free(jp2_grouped);
+    var ok = try jp2z.validate(allocator, jp2_grouped);
+    defer ok.deinit(allocator);
+    try std.testing.expect(!failDetailContains(ok, .jp2_invalid_codestream, "contiguous"));
+    try std.testing.expect(ok.isOk());
+}
+
+test "COD: SGcod MCT 1 names components 0, 1, 2 (Table A.17) and they shall share sub-sampling and bit depth (G.2/G.3): one component, an odd bit depth or an odd XRsiz → FAIL; three equal components → clean" {
+    const allocator = std.testing.allocator;
+    const one = try buildPackedMiniStream(allocator, .{ .mct = 1 });
+    defer allocator.free(one);
+    var r1 = try jp2z.validate(allocator, one);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r1.overall);
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "MCT"));
+    try std.testing.expect(failDetailContains(r1, .jp2_invalid_codestream, "1 component"));
+    const depth = try buildPackedMiniStream(allocator, .{ .mct = 1, .components = 3, .last_comp_prec = 12, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(depth);
+    var r2 = try jp2z.validate(allocator, depth);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r2.overall);
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "bit depth"));
+    try std.testing.expect(failDetailContains(r2, .jp2_invalid_codestream, "G.2"));
+    const sub = try buildPackedMiniStream(allocator, .{ .mct = 1, .components = 3, .last_comp_dx = 2, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(sub);
+    var r3 = try jp2z.validate(allocator, sub);
+    defer r3.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, r3.overall);
+    try std.testing.expect(failDetailContains(r3, .jp2_invalid_codestream, "sub-sampling"));
+    const uniform = try buildPackedMiniStream(allocator, .{ .mct = 1, .components = 3, .body = &.{ 0x00, 0x00, 0x00 } });
+    defer allocator.free(uniform);
+    var ok = try jp2z.validate(allocator, uniform);
+    defer ok.deinit(allocator);
+    try std.testing.expect(!hasFinding(ok, .jp2_invalid_codestream));
+    try std.testing.expect(ok.isOk());
+}
+
+/// Two-tile-part stream like twoPartStream (TNsot 2) with extra marker
+/// segments in the first (`hdr0`) and second (`hdr1`) tile-part headers.
+fn twoPartStreamEx(allocator: std.mem.Allocator, hdr0: []const u8, hdr1: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x4F });
+    try buf.appendSlice(allocator, &.{
+        0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x07, 0x01, 0x01,
+    });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 });
+    try buf.appendSlice(allocator, &.{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 });
+    const parts = [_]struct { tpsot: u8, hdr: []const u8 }{ .{ .tpsot = 0, .hdr = hdr0 }, .{ .tpsot = 1, .hdr = hdr1 } };
+    for (parts) |part| {
+        var psot: [4]u8 = undefined;
+        std.mem.writeInt(u32, &psot, @intCast(12 + part.hdr.len + 2 + 1), .big);
+        try buf.appendSlice(allocator, &.{ 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00 });
+        try buf.appendSlice(allocator, &psot);
+        try buf.appendSlice(allocator, &.{ part.tpsot, 0x02 });
+        try buf.appendSlice(allocator, part.hdr);
+        try buf.appendSlice(allocator, &.{ 0xFF, 0x93, 0x00 });
+    }
+    try buf.appendSlice(allocator, &.{ 0xFF, 0xD9 });
+    return buf.toOwnedSlice(allocator);
+}
+
+test "A.6: COD, COC, QCD, QCC and RGN in a tile-part header other than the first → FAIL naming the marker, tile and part; COM there, or a POC that also opened the tile, stays clean; a POC first seen in a later part → FAIL (A.6.6)" {
+    const allocator = std.testing.allocator;
+    const cod = [_]u8{ 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 };
+    const coc = [_]u8{ 0xFF, 0x53, 0x00, 0x09, 0x00, 0x00, 0x00, 0x04, 0x04, 0x00, 0x01 };
+    const qcd = [_]u8{ 0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40 };
+    const qcc = [_]u8{ 0xFF, 0x5D, 0x00, 0x05, 0x00, 0x40, 0x40 };
+    const rgn = [_]u8{ 0xFF, 0x5E, 0x00, 0x05, 0x00, 0x00, 0x02 };
+    const com = [_]u8{ 0xFF, 0x64, 0x00, 0x05, 0x00, 0x01, 0x78 };
+    // POC: RSpoc 0, CSpoc 0, LYEpoc 2, REpoc 1, CEpoc 1, Ppoc 0 (LRCP): the whole tile.
+    const poc = [_]u8{ 0xFF, 0x5F, 0x00, 0x09, 0x00, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00 };
+    const violators = [_]struct { name: []const u8, seg: []const u8, clause: []const u8 }{
+        .{ .name = "COD", .seg = &cod, .clause = "A.6.1" },
+        .{ .name = "COC", .seg = &coc, .clause = "A.6.2" },
+        .{ .name = "QCD", .seg = &qcd, .clause = "A.6.4" },
+        .{ .name = "QCC", .seg = &qcc, .clause = "A.6.5" },
+        .{ .name = "RGN", .seg = &rgn, .clause = "A.6.3" },
+    };
+    for (violators) |v| {
+        const data = try twoPartStreamEx(allocator, &.{}, v.seg);
+        defer allocator.free(data);
+        var rep = try jp2z.validate(allocator, data);
+        defer rep.deinit(allocator);
+        if (rep.overall != .fail or !failDetailContains(rep, .jp2_invalid_codestream, "tile 0: ") or !failDetailContains(rep, .jp2_invalid_codestream, v.name) or !failDetailContains(rep, .jp2_invalid_codestream, "tile-part 1") or !failDetailContains(rep, .jp2_invalid_codestream, v.clause)) {
+            std.debug.print("\n[later-part] {s}: overall={s}\n", .{ v.name, @tagName(rep.overall) });
+            for (rep.findings.items) |f| std.debug.print("  {s} {s} @{?d} {s}\n", .{ @tagName(f.severity), @tagName(f.code), f.offset, f.detail orelse "" });
+            return error.TestUnexpectedResult;
+        }
+        // The same segment in the FIRST tile-part header is where it belongs.
+        const first = try twoPartStreamEx(allocator, v.seg, &.{});
+        defer allocator.free(first);
+        var ok = try jp2z.validate(allocator, first);
+        defer ok.deinit(allocator);
+        try std.testing.expect(!failDetailContains(ok, .jp2_invalid_codestream, "tile-part 1"));
+    }
+    const com_later = try twoPartStreamEx(allocator, &.{}, &com);
+    defer allocator.free(com_later);
+    var c = try jp2z.validate(allocator, com_later);
+    defer c.deinit(allocator);
+    try std.testing.expect(c.isOk());
+    const poc_both = try twoPartStreamEx(allocator, &poc, &poc);
+    defer allocator.free(poc_both);
+    var pb = try jp2z.validate(allocator, poc_both);
+    defer pb.deinit(allocator);
+    try std.testing.expect(pb.isOk());
+    const poc_later = try twoPartStreamEx(allocator, &.{}, &poc);
+    defer allocator.free(poc_later);
+    var pl = try jp2z.validate(allocator, poc_later);
+    defer pl.deinit(allocator);
+    try std.testing.expectEqual(jp2z.Severity.fail, pl.overall);
+    try std.testing.expect(failDetailContains(pl, .jp2_invalid_codestream, "A.6.6"));
 }
