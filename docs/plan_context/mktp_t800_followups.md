@@ -1,0 +1,5 @@
+# MKTP follow-ups that needed T.800 text (open)
+
+Source item moved from PLAN.md on 2026-10-14. The T.800 (11/2015) text was pulled on 2026-10-11 by the route in LEARNINGS (2026-09-16 entry); the clauses are extracted verbatim into docs/T800_JP2H_RCT_MARKER_PLACEMENT_VERBATIM.md once read.
+
+MKTP follow-ups needing T.800 text before a severity is chosen (each red-first once the clause is in hand): ihdr first in jp2h (I.5.3.1) and at least one colr box (I.5.3.3, Table I.4; the unit-test JP2 helpers emit colr-less jp2h and must change first); MCT = 1 with fewer than 3 or geometrically mismatched components (G.2; decode already refuses); COD/COC/QCD/QCC/RGN in a tile-part header other than the first (Table A.1 placement; WARN 145 today). B.10.7 and D.4.1-D.4.2 are settled (2026-10-12, checked item above). The T.800 PDF text is obtainable by the same route as the Annex E extracts (LEARNINGS, 2026-09-16 entry on reaching the reference material): pull the remaining clauses that way instead of waiting.
