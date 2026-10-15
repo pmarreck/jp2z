@@ -156,8 +156,27 @@ pub fn build(b: *std.Build) void {
     const label_install = b.addInstallArtifact(probe_label, .{});
     b.step("probe-label", "Build the probe-survivor labeller (input: PROBE_FIXTURE=<abs>, PROBE_EVENTS=<abs>)").dependOn(&label_install.step);
 
+    // ── Corruption-coverage statistics (zig build coverage-stats) ───
+    // Pure arithmetic over the per-trial outcomes ./corruption-coverage
+    // collects: Wilson intervals, a drift test against the committed
+    // baseline, the Markdown table. No jp2z import, no openjpeg: it reads
+    // JSON Lines and writes text, so it stays a thin, testable tool.
+    const cov_mod = b.createModule(.{
+        .root_source_file = b.path("tools/coverage_stats.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const coverage_stats = b.addExecutable(.{ .name = "jp2z-coverage-stats", .root_module = cov_mod });
+    const cov_install = b.addInstallArtifact(coverage_stats, .{});
+    b.step("coverage-stats", "Build the corruption-coverage statistics tool (input: COVERAGE_TRIALS=<abs>, COVERAGE_BASELINE=<abs?>, COVERAGE_SUMMARY=<abs>)").dependOn(&cov_install.step);
+    const cov_tests = b.addTest(.{ .name = "jp2z_coverage_stats", .root_module = cov_mod });
+    const run_cov_tests = b.addRunArtifact(cov_tests);
+    b.step("coverage-stats-test", "Unit-test the corruption-coverage statistics").dependOn(&run_cov_tests.step);
+
     // ── Tests ──────────────────────────────────────────────────────
     const test_step = b.step("test", "Run unit + CLI tests");
+    test_step.dependOn(&run_cov_tests.step);
 
     // (1) Inline tests inside jp2z.zig and the modules it imports.
     const inline_mod = b.createModule(.{

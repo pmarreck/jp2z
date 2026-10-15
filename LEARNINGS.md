@@ -816,3 +816,23 @@ needle tests are the control: every detail that names a value must have a
 test that asserts the value appears. When writing a detail, size the buffer
 for the longest formatted form (320 bytes here) and keep the fallback as a
 last resort, never as the message a consumer is expected to read.
+
+## A parallel worker sees only exported state; exit 127 is the harness, not the decoder (2026-10-15)
+
+The first run of `./corruption-coverage` reported every trial as a crash.
+The per-trial function ran under `xargs -P ... bash -c`, which inherits
+exported variables only; the `timeout` path was a plain shell variable, so
+the worker ran an empty command and got exit 127 ("command not found"),
+which the classifier filed under "crash" with everything else outside
+0/1/2/124. Two rules came out of it. Export every variable a worker
+function reads, and test the driver on a tiny run before trusting a
+campaign. Treat exit 126 and 127 as harness failures that abort the run
+rather than as decoder outcomes: a crash column that can be filled by a
+misspelled path is not a crash column.
+
+A second failure followed: the campaign was queued behind a build slot,
+and two edits made to the driver meanwhile rewrote the file under the
+bash process that later read it, so it died with a syntax error in the
+middle of a comment. Bash reads a script as it goes; a long run must start
+from a frozen copy of the script (or the script must not be touched until
+it exits).

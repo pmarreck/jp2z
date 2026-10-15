@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# ./corruption-coverage — measure jp2z's corrupt-input detection with
+# corruption_reader's consumer CLI (docs/consumer_cli.md there), an oracle
+# this project did not write.
+#
+# For every known-good fixture (pristine strict validation must exit 0) and
+# every profile (default: sniper, bolter, shotgun, nuke), corruption-reader
+# draws ROUNDS seeded cases, writes each corrupted copy to a temporary file,
+# and `jp2z validate --strict` judges the copy: exit 1 (FAIL) is rejected,
+# 2 (WARN) is flagged, 0 is accepted; a signal, an internal error or a
+# timeout is counted on its own and never as a detection. The statistics
+# (Wilson 95% intervals, a one-sided drift test against the committed
+# baseline) are computed by tools/coverage_stats.zig, which is unit-tested;
+# this script only orchestrates processes.
+#
+# Outputs (committed as the regression baseline):
+#   conformance/CORRUPTION_COVERAGE.md            provenance + table + verdict
+#   conformance/corruption_coverage.ndjson         provenance line + one summary record per cell
+#   conformance/corruption_coverage_survivors.ndjson  every accepted / crashed / timed-out
+#                                                  trial, replayable with corruption-reader
+#                                                  `draw PROFILE --master SEED --round R` + `apply`
+#
+# Usage: ./corruption-coverage [--rounds N] [--seed S] [--profiles a,b,c]
+#                              [--jobs N] [--timeout SECS] [--no-baseline]
+#                              [--out-dir DIR] [FIXTURE...]
+# Exit 0: no crash, no significant drop. 1: a crash/timeout or a drop
+# (the table says where). 2: usage or setup failure.
+#
+# NEVER `set -e`: a rejected mutant exits non-zero by design. `set -u` only.
+set -u
+cd "$(dirname "$0")" || exit 1
+if [ -z "${OPENJPEG_INCLUDE:-}" ]; then
+	exec nix develop -c "$0" "$@"
+fi
+
+rounds=200
+seed=0x6a70327a
+profiles=sniper,bolter,shotgun,nuke
+jobs=$(nproc 2>/dev/null || echo 4)
+timeout_secs=60
+use_baseline=1
+out_dir=conformance
+fixtures=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--rounds) rounds=$2; shift 2 ;;
+		--rounds=*) rounds=${1#*=}; shift ;;
+		--seed) seed=$2; shift 2 ;;
+		--seed=*) seed=${1#*=}; shift ;;
+		--profiles) profiles=$2; shift 2 ;;
+		--profiles=*) profiles=${1#*=}; shift ;;
+		--jobs) jobs=$2; shift 2 ;;
+		--jobs=*) jobs=${1#*=}; shift ;;
+		--timeout) timeout_secs=$2; shift 2 ;;
+		--timeout=*) timeout_secs=${1#*=}; shift ;;
+		--no-baseline) use_baseline=0; shift ;;
+		--out-dir) out_dir=$2; shift 2 ;;
+		--out-dir=*) out_dir=${1#*=}; shift ;;
+		-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--) shift; while [ $# -gt 0 ]; do fixtures+=("$1"); shift; done ;;
+		-*) echo "corruption-coverage: unknown option $1" >&2; exit 2 ;;
+		*) fixtures+=("$1"); shift ;;
+	esac
+done
+case "$rounds" in ''|*[!0-9]*) echo "corruption-coverage: --rounds needs a positive integer" >&2; exit 2 ;; esac
+[ "$rounds" -ge 1 ] || { echo "corruption-coverage: --rounds needs a positive integer" >&2; exit 2; }
+
+# The oracle executable: CORRUPTION_READER=<path>, else one on PATH, else the
+# pin in tools/coverage/flake.nix (a private repository fetched over SSH, so
+# it lives outside the main flake; the build is cached after the first run).
+cr=${CORRUPTION_READER:-$(command -v corruption-reader || true)}
+if [ -z "$cr" ]; then
+	echo "==> resolving the pinned corruption-reader (tools/coverage/flake.nix)" >&2
+	cr_store=$(nix build ./tools/coverage --no-link --print-out-paths 2>"$TMPDIR/jp2z-coverage-nix.err") || {
+		echo "    FAIL: nix build ./tools/coverage: $(tail -3 "$TMPDIR/jp2z-coverage-nix.err")" >&2; exit 2; }
+	cr=$cr_store/bin/corruption-reader
+fi
+[ -n "$cr" ] && [ -x "$cr" ] || { echo "corruption-coverage: corruption-reader not found (CORRUPTION_READER=<path>, PATH, or tools/coverage/flake.nix)" >&2; exit 2; }
+timeout_bin=$(command -v timeout || command -v gtimeout || true)
+[ -n "$timeout_bin" ] || { echo "corruption-coverage: coreutils timeout not found" >&2; exit 2; }
+command -v jq >/dev/null || { echo "corruption-coverage: jq not found" >&2; exit 2; }
+
+echo "==> building jp2z and the coverage statistics tool" >&2
+build_log=${TMPDIR:-/tmp}/jp2z-coverage-build-$$.log
+if ! MUTE_DEBUG_STATUS=1 zig build coverage-stats -Dopenjpeg-include="$OPENJPEG_INCLUDE" -Dopenjpeg-lib="$OPENJPEG_LIB" > "$build_log" 2>&1; then
+	echo "    FAIL: zig build (in $PWD):" >&2; tail -20 "$build_log" >&2; exit 2
+fi
+rm -f -- "$build_log"
+jp2z=$PWD/zig-out/bin/jp2z
+stats=$PWD/zig-out/bin/jp2z-coverage-stats
+[ -x "$jp2z" ] && [ -x "$stats" ] || { echo "    FAIL: binaries missing after build" >&2; exit 2; }
+
+if [ ${#fixtures[@]} -eq 0 ]; then
+	while IFS= read -r f; do fixtures+=("$f"); done < <(find tests/unit/fixtures/conformance -maxdepth 1 -type f \( -name '*.j2k' -o -name '*.j2c' -o -name '*.jp2' \) | sort)
+fi
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/jp2z-coverage.XXXXXX") || exit 2
+trap 'rm -rf -- "$work"' EXIT
+trials=$work/trials.ndjson
+jobfile=$work/jobs.tsv
+: > "$jobfile"
+
+jp2z_version=$("$jp2z" --version 2>/dev/null | head -1)
+cr_about=$("$cr" --about 2>/dev/null | head -1)
+commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+dirty=$(git status --porcelain 2>/dev/null | rg -v '^\?\? ' | wc -l | tr -d ' ')
+IFS=, read -r -a profile_list <<< "$profiles"
+profiles_json=$(printf '%s\n' "${profile_list[@]}" | jq -R . | jq -sc .)
+printf '{"corruption_coverage":1,"jp2z":"%s","jp2z_commit":"%s","uncommitted_changes":%s,"corruption_reader":"%s","consumer_contract":1,"seed":"%s","rounds":%s,"profiles":%s,"timeout_seconds":%s,"detection":"strict exit 1 (FAIL) or 2 (WARN)","date":"%s"}\n' \
+	"$jp2z_version" "$commit" "$dirty" "$cr_about" "$seed" "$rounds" "$profiles_json" "$timeout_secs" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$trials"
+
+skipped=()
+n_fixtures=0
+for fixture in "${fixtures[@]}"; do
+	name=$(basename "$fixture")
+	# Known-good admission: the pristine file must pass strict validation.
+	if ! "$timeout_bin" "$timeout_secs" "$jp2z" validate --strict "$fixture" >/dev/null 2>&1; then
+		skipped+=("$name")
+		continue
+	fi
+	n_fixtures=$((n_fixtures+1))
+	for profile in "${profile_list[@]}"; do
+		report=$work/$name.$profile.report.jsonl
+		paths=$work/$name.$profile.paths
+		mkdir -p "$work/$profile"
+		"$cr" corrupt "$profile" --master "$seed" --count "$rounds" --emit tmp --tmp-dir "$work/$profile" --omit-noop --report "$report" "$fixture" > "$paths" 2> "$work/$name.$profile.err"
+		rc=$?
+		if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+			echo "    FAIL: corruption-reader exit $rc on $name/$profile: $(head -c 300 "$work/$name.$profile.err")" >&2
+			exit 2
+		fi
+		# Zip report lines with emitted paths, in order (the contract's rule).
+		jq -r '[.round, .status, .emitted] | @tsv' "$report" | {
+			exec 3< "$paths"
+			while IFS=$'\t' read -r round status emitted; do
+				if [ "$emitted" = "true" ]; then
+					IFS= read -r path <&3 || { echo "    FAIL: fewer paths than emitted reports for $name/$profile" >&2; exit 2; }
+					printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$profile" "$round" "$status" "$path" >> "$jobfile"
+				else
+					printf '{"fixture":"%s","profile":"%s","round":%s,"status":"%s","rc":0,"class":"noop"}\n' "$name" "$profile" "$round" "$status" >> "$trials"
+				fi
+			done
+		} || exit 2
+	done
+done
+[ "$n_fixtures" -gt 0 ] || { echo "corruption-coverage: no known-good fixture to probe" >&2; exit 2; }
+
+# Validate every corrupted copy; outcomes are independent, so run them in parallel.
+validate_one() {
+	local name=$1 profile=$2 round=$3 status=$4 path=$5 rc class
+	"$TIMEOUT_BIN" "$TIMEOUT_SECS" "$JP2Z" validate --strict "$path" >/dev/null 2>&1
+	rc=$?
+	case "$rc" in
+		0) class=accepted ;;
+		2) class=flagged ;;
+		1) class=rejected ;;
+		124|137) class=timeout ;;
+		*) class=crash ;;
+	esac
+	printf '{"fixture":"%s","profile":"%s","round":%s,"status":"%s","rc":%s,"class":"%s"}\n' "$name" "$profile" "$round" "$status" "$rc" "$class"
+	rm -f -- "$path"
+}
+export -f validate_one
+export JP2Z=$jp2z TIMEOUT_SECS=$timeout_secs TIMEOUT_BIN=$timeout_bin
+total=$(wc -l < "$jobfile" | tr -d ' ')
+echo "==> validating $total corrupted copies of $n_fixtures fixture(s) × ${#profile_list[@]} profile(s) × $rounds rounds with $jobs jobs" >&2
+tr '\t' '\n' < "$jobfile" | xargs -P "$jobs" -n 5 bash -c 'validate_one "$@"' _ >> "$trials"
+# Exit 126/127 is the harness failing to run the validator at all (a missing
+# or non-executable command), never a decoder outcome; it must not be read
+# as a crash. Stop loudly instead of publishing numbers built on it.
+if jq -e 'select(.rc == 126 or .rc == 127)' "$trials" >/dev/null 2>&1; then
+	echo "    FAIL: the validator could not be executed in the worker shell (exit 126/127); check PATH, TIMEOUT_BIN and JP2Z" >&2
+	exit 2
+fi
+
+survivors=$out_dir/corruption_coverage_survivors.ndjson
+mkdir -p "$out_dir"
+baseline=$out_dir/corruption_coverage.ndjson
+summary=$work/summary.ndjson
+table=$work/table.md
+case "$baseline" in /*) baseline_abs=$baseline ;; *) baseline_abs=$PWD/$baseline ;; esac
+if [ "$use_baseline" -eq 1 ] && [ -f "$baseline" ]; then
+	COVERAGE_TRIALS=$trials COVERAGE_SUMMARY=$summary COVERAGE_BASELINE=$baseline_abs "$stats" > "$table"
+else
+	COVERAGE_TRIALS=$trials COVERAGE_SUMMARY=$summary "$stats" > "$table"
+fi
+verdict=$?
+
+{
+	echo "# Corruption coverage of jp2z strict validation"
+	echo
+	echo "Generated by \`./corruption-coverage\` on $(date -u +%Y-%m-%d) (UTC). jp2z $jp2z_version at $commit$( [ "$dirty" != 0 ] && echo " with uncommitted changes" ); $cr_about; consumer contract v1. Seed $seed, $rounds rounds per cell, timeout ${timeout_secs}s per validation. Profiles: ${profile_list[*]}. Fixtures: $n_fixtures known-good (pristine strict exit 0)$( [ ${#skipped[@]} -gt 0 ] && echo "; skipped (pristine did not pass strict): ${skipped[*]}" )."
+	echo
+	cat "$table"
+	echo
+	echo "Survivors (accepted, crashed or timed-out trials) are listed in \`corruption_coverage_survivors.ndjson\`; replay one with \`corruption-reader draw PROFILE --master $seed --round R FIXTURE\` and \`corruption-reader apply\`."
+} > "$out_dir/CORRUPTION_COVERAGE.md"
+{ head -1 "$trials"; cat "$summary"; } > "$baseline"
+{ head -1 "$trials"; jq -c 'select(.class == "accepted" or .class == "crash" or .class == "timeout")' "$trials"; } > "$survivors"
+
+cat "$table" >&2
+echo "==> wrote $out_dir/CORRUPTION_COVERAGE.md, $baseline, $survivors" >&2
+exit "$verdict"

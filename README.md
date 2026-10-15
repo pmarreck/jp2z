@@ -85,6 +85,35 @@ have murkier IP — **jp2z targets Part 1 only**.
 ./build_all   # native + cross for all 5 supported platforms
 ```
 
+## Corruption coverage
+
+`./corruption-coverage` measures how much corruption the strict validator
+catches, using the sibling project corruption_reader as an oracle this
+project did not write (its consumer CLI contract, `docs/consumer_cli.md`
+there). For every known-good fixture (the pristine file must pass strict
+validation) and each of the sniper (one bit), bolter (one byte), shotgun
+(16 bits in a 32-byte window) and nuke (a 4 KiB pseudorandom overwrite)
+profiles, corruption-reader draws seeded cases, and `jp2z validate --strict`
+judges each corrupted copy: FAIL and WARN count as detected, exit 0 as
+accepted, and a crash or timeout is counted on its own. The report
+(`conformance/CORRUPTION_COVERAGE.md`) gives each cell's detection rate
+with a Wilson 95% interval, and a one-sided two-proportion test against
+the committed baseline (`conformance/corruption_coverage.ndjson`) flags a
+significant drop; surviving cases are listed for replay. The statistics
+live in `tools/coverage_stats.zig` and run under `./test`; the campaign
+itself is a dedicated command.
+
+```bash
+./corruption-coverage                      # all vendored fixtures, 200 rounds per cell
+./corruption-coverage --rounds 400 --seed 0x2a tests/unit/fixtures/conformance/p0_04.j2k
+```
+
+corruption_reader is a private repository, so its pin lives in
+`tools/coverage/flake.nix` (fetched over SSH) rather than in the main
+flake: building or developing jp2z never needs private access, only this
+campaign does. `CORRUPTION_READER=<path>` or a `corruption-reader` on PATH
+overrides the pin.
+
 ## Third-party attribution
 
 jp2z is a pure-Zig **port** of [OpenJPEG](https://github.com/uclouvain/openjpeg)

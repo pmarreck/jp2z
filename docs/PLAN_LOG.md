@@ -196,3 +196,7 @@ Completed PLAN.md items retired by plan-retire, oldest retirement first.
 ## Retired 2026-10-14
 
 - [x] [Recently completed] **Minor (Thelio)**: the `warning(link): unexpected LLD stderr` in the fast dev-loop build no longer appears (2026-09-18, `zig build test` in the devShell with zig 0.16.0 prints no link warning). Closed as not reproducible.
+
+## Retired 2026-10-15
+
+- [x] [Recently completed] **>8-bit depth — p1_04** and **p0_13** (closed 2026-09-18): p1_04 NEAR max_abs 1 (was 3782); p0_13 PASS byte-exact (was NoCodingParams, then TooManyComponents).
