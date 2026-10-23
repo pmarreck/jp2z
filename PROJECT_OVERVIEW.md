@@ -20,13 +20,15 @@ earns its keep through four deliberate divergences — see "Why reimplement".
   decoding, inverse 5/3 and 9/7 wavelet transforms, MCT (RCT + ICT)
 - JP2 file format (T.800 Annex I) for delivery
 - J2K raw codestream
-- Decode only (encode = follow-on if demand surfaces)
+- Decode and validate; encode was added to scope on 2026-10-23 by BDFN
+  decision (Part 1 J2K/JP2 output exposed through the C ABI, with a C CLI
+  that decodes, encodes and verifies). Plan and defaults:
+  docs/plan_context/encoder_and_cli.md.
 
 **Out of scope:**
 - T.801 Part 2 / JPX extensions (murkier IP, less universal need)
 - T.802 Part 3 / MJ2 (Motion JPEG 2000) — separate codec family
 - T.803+ later parts (interactive protocols, secure JPEG 2000, etc.)
-- Encoding (Phase 4+ if requested)
 
 ## Why reimplement instead of just using openjpeg
 
