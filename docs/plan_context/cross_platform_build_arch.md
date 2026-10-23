@@ -37,9 +37,9 @@ name for the worker stays `x86_64-linux`.
   per-target packages, so no cross-compiled products exist to publish.
 - The dev scripts `sweep`, `probe-label` and `corruption-coverage` resolve
   tools at `zig-out/bin/<name>`; the Zig test graph uses run artifacts, which
-  is already the exact-product resolution the skill requires. Whether the
-  C end-to-end test receives the CLI as a build-graph artifact or by path is
-  to be verified during the migration.
+  is already the exact-product resolution the skill requires, and the C
+  end-to-end test receives the CLI as a build-graph artifact
+  (`addArtifactArg`), so only the three shell scripts resolve by path.
 - Profiles: ReleaseFast by default, ReleaseSafe in the test check; no
   build metadata (triple, profile, libc) is recorded beside the products.
 - `.gitignore` covers `zig-out/`, `result`, `result-*`; it has no rules yet
