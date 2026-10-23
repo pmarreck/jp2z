@@ -33,22 +33,15 @@
 #define EX_SOFTWARE 70
 #define EX_IOERR 74
 
-/* Build platform for --about, from the compiler's predefined macros. */
-#if defined(__APPLE__)
-#define JP2Z_PLATFORM "macos"
-#elif defined(_WIN32)
-#define JP2Z_PLATFORM "windows"
-#elif defined(__linux__)
-#define JP2Z_PLATFORM "linux"
-#else
-#define JP2Z_PLATFORM "unknown-os"
+/* Build target for --about: PF=<OS>-<ARCH> and, where it applies, the ABI
+   VARIANT, defined by build.zig from the resolved compiler target. */
+#ifndef JP2Z_PF
+#error "build target outside the supported PF matrix (build.zig defines JP2Z_PF)"
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-#define JP2Z_ARCH "aarch64"
-#elif defined(__x86_64__) || defined(_M_X64)
-#define JP2Z_ARCH "x86_64"
+#ifdef JP2Z_VARIANT
+#define JP2Z_TARGET "PF=" JP2Z_PF " VARIANT=" JP2Z_VARIANT
 #else
-#define JP2Z_ARCH "unknown-arch"
+#define JP2Z_TARGET "PF=" JP2Z_PF
 #endif
 
 static void usage(FILE *out) {
@@ -458,9 +451,8 @@ int main(int argc, char *argv[]) {
     if (argc < 2) { usage(stderr); return EX_USAGE; }
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) { usage(stdout); return 0; }
     if (strcmp(argv[1], "--about") == 0) {
-        /* One line: what it is, the version, and the platform it was built for. */
-        printf("jp2z %s: pure-Zig JPEG 2000 Part 1 codec and validator (%s %s)\n",
-               jp2z_version(), JP2Z_PLATFORM, JP2Z_ARCH);
+        /* One line: what it is, the version, and the target it was built for. */
+        printf("jp2z %s: pure-Zig JPEG 2000 Part 1 codec and validator " JP2Z_TARGET "\n", jp2z_version());
         return 0;
     }
     if (strcmp(argv[1], "--version") == 0) {

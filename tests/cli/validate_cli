@@ -76,11 +76,22 @@ check_rc "no path exits 64 (usage)" 64 "$rc"
 # 8. help mentions the verb
 "$cli" --help 2>/dev/null | grep -q 'validate' && pass "--help lists validate" || fail "--help lists validate"
 
-# 9. --about: one line with the name, version, platform and architecture
+# 9. --about: one line with the name, the version and the build target as
+#    PF=<OS>-<ARCH>, plus VARIANT=gnu|musl on Linux and Windows (none on
+#    macOS). The test binary runs natively, so PF must equal the host's PF
+#    from uname; the ABI itself is pinned exactly by the flake's per-target
+#    product check.
+. "$(cd -- "$(dirname -- "$0")" && pwd)/../../tools/sh/platform.bash"
+host_pf=$(jp2z_pf_host)
 about=$("$cli" --about 2>/dev/null); rc=$?
 check_rc "--about exits 0" 0 "$rc"
 [ "$(printf '%s\n' "$about" | wc -l)" = "1" ] && pass "--about is one line" || fail "--about is one line (got: $about)"
-case "$about" in jp2z*[0-9]*linux*|jp2z*[0-9]*macos*|jp2z*[0-9]*windows*) pass "--about names version and platform";; *) fail "--about names version and platform (got: $about)";; esac
+case "$about" in "jp2z "[0-9]*) pass "--about names the version";; *) fail "--about names the version (got: $about)";; esac
+case "$host_pf" in
+	macos-*) want_re=" PF=$host_pf\$" ;;
+	*) want_re=" PF=$host_pf VARIANT=(gnu|musl)\$" ;;
+esac
+[[ "$about" =~ $want_re ]] && pass "--about ends with PF=$host_pf and its variant" || fail "--about ends with PF=$host_pf and its variant (got: $about)"
 
 printf '%s\n' "validate_cli: $fails failure(s)"
 exit "$fails"

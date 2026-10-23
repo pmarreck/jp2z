@@ -81,6 +81,14 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
     });
     cli_mod.addIncludePath(b.path("include"));
+    // --about names the build target as PF=<OS>-<ARCH> [VARIANT=gnu|musl],
+    // from the resolved target and never the build host. A target outside
+    // the five-platform matrix leaves JP2Z_PF undefined and main.c refuses
+    // to compile rather than guess a name.
+    if (mechaPlatform(target.result)) |pf| {
+        cli_mod.addCMacro("JP2Z_PF", b.fmt("\"{s}\"", .{pf.name}));
+        if (pf.variant) |v| cli_mod.addCMacro("JP2Z_VARIANT", b.fmt("\"{s}\"", .{v}));
+    }
     cli_mod.linkLibrary(lib);
     // Phase 3: decode is the pure-Zig cleanroom route, so the CLI links no
     // openjpeg. If anything in the archive reached the wrapper again, this
@@ -387,4 +395,27 @@ pub fn build(b: *std.Build) void {
     run_run_test.addDirectoryArg(b.path("."));
     run_run_test.expectStdOutEqual("run_test: 0 failure(s)\n");
     test_step.dependOn(&run_run_test.step);
+}
+
+const Platform = struct { name: []const u8, variant: ?[]const u8 };
+
+/// Fleet platform name (PF, <OS>-<ARCH>) and ABI variant for a resolved
+/// compiler target: the explicit triple-to-PF translation the build
+/// convention requires. Null outside linux/mswin/macos x amd64/arm64 with
+/// the declared ABIs (musl or gnu on Linux, MinGW gnu on Windows).
+fn mechaPlatform(t: std.Target) ?Platform {
+    const amd64 = switch (t.cpu.arch) {
+        .x86_64 => true,
+        .aarch64 => false,
+        else => return null,
+    };
+    return switch (t.os.tag) {
+        .linux => .{
+            .name = if (amd64) "linux-amd64" else "linux-arm64",
+            .variant = if (t.abi.isMusl()) "musl" else if (t.abi.isGnu()) "gnu" else return null,
+        },
+        .windows => if (t.abi == .gnu) .{ .name = if (amd64) "mswin-amd64" else "mswin-arm64", .variant = "gnu" } else null,
+        .macos => if (amd64) null else .{ .name = "macos-arm64", .variant = null },
+        else => null,
+    };
 }

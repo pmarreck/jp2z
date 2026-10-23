@@ -70,6 +70,20 @@
           "mswin-amd64" = "PE32\\+ executable.*x86-64";
           "mswin-arm64" = "PE32\\+ executable.*Aarch64";
         };
+        # The product this builder can execute, and the exact target string
+        # its --about must end with (PF, plus VARIANT where an ABI applies).
+        nativePf = {
+          "x86_64-linux" = "linux-amd64";
+          "aarch64-linux" = "linux-arm64";
+          "aarch64-darwin" = "macos-arm64";
+        }.${system} or null;
+        pfVariant = {
+          "linux-amd64" = "musl";
+          "linux-arm64" = "musl";
+          "mswin-amd64" = "gnu";
+          "mswin-arm64" = "gnu";
+        };
+        aboutTarget = pf: "PF=${pf}" + pkgs.lib.optionalString (pfVariant ? ${pf}) " VARIANT=${pfVariant.${pf}}";
         mkTarget = pf: let
           triple = platformTriples.${pf};
           exe = if pkgs.lib.hasPrefix "mswin" pf then "jp2z.exe" else "jp2z";
@@ -87,6 +101,13 @@
             magic=$(file -b $out/bin/${exe})
             echo "$magic" | grep -Eq '${expectedMagic.${pf}}' \
               || { echo "header check failed for ${pf}: $magic"; exit 1; }
+            ${pkgs.lib.optionalString (pf == nativePf) ''
+              about=$($out/bin/${exe} --about)
+              case "$about" in
+                *" ${aboutTarget pf}") ;;
+                *) echo "--about does not end with '${aboutTarget pf}': $about"; exit 1 ;;
+              esac
+            ''}
             mkdir -p $out/share/jp2z
             printf '{"pf":"%s","triple":"%s","profile":"ReleaseFast","zig":"%s","file":"%s"}\n' \
               '${pf}' '${triple}' '${zigPkg.version}' "$magic" > $out/share/jp2z/build.json
