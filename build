@@ -1,9 +1,116 @@
 #!/usr/bin/env bash
-# Build jp2z via nix-build (sandboxed, deterministic). Mirrors
-# jpegz's ./build.
+# ./build — build jp2z (the C CLI, the static archive and its header) and
+# publish bin/<PF>/jp2z, following the fleet cross-platform build
+# convention (PF = <OS>-<ARCH>; matrix linux-amd64, linux-arm64,
+# macos-arm64, mswin-amd64, mswin-arm64). jp2z is a single implementation,
+# so there is no canonize step.
+#
+# Usage: ./build [--backend=nix|direct] [--debug|--test|--release]
+#                [--all-plats|--all-platforms|--all] [--all-impls]
+#                [--no-publish] [--plan] [-h|--help]
+#
+#   --backend=nix     (default) nix build .#jp2z-<PF>; the output link is
+#                     .nix-out/<PF>/ReleaseFast. Builds ReleaseFast only.
+#   --backend=direct  zig build install -Dtarget=<triple> -Doptimize=<profile>
+#                     --prefix zig-out/<PF>/[<VARIANT>/]<profile>; uses zig on
+#                     PATH, else the dev shell's. The equivalent by hand:
+#                       zig build install -Dtarget=x86_64-linux-musl \
+#                         -Doptimize=ReleaseFast --prefix zig-out/linux-amd64/musl/ReleaseFast
+#   --debug           Debug profile (direct backend)
+#   --test            ReleaseSafe, the profile the test suite runs (direct backend)
+#   --release         ReleaseFast (the default)
+#   --all-plats, --all-platforms
+#                     every platform in the matrix instead of the host only;
+#                     cross products are compile evidence, not runtime tests
+#   --all             all implementations and all platforms; one implementation
+#   --all-impls       accepted; jp2z has one implementation
+#   --no-publish      build only; leave bin/<PF>/ as it is
+#   --plan            print one line per target and build nothing
+#
+# Each product's header is checked by libmagic before bin/<PF>/jp2z is
+# replaced (atomically); a failed target keeps its previous entrypoint and
+# makes the exit status 1. Usage errors exit 2. ./run builds the host
+# target and launches it; ./test runs the full suite against exact products.
+# NEVER `set -e`: a failing target is reported, the others still build.
 set -u
-nix build .#packages.$(nix eval --raw --impure --expr 'builtins.currentSystem').default "$@"
-ls -la result/bin/ 2>/dev/null || true
-mkdir -p zig-out/bin
-cp -f result/bin/jp2z zig-out/bin/ 2>/dev/null || true
-echo "built: zig-out/bin/jp2z"
+root=$(cd -- "$(dirname -- "$0")" && pwd)
+cd "$root" || exit 1
+. tools/sh/platform.bash
+. tools/sh/publish.bash
+
+usage_error() { echo "build: $*" >&2; echo "build: see ./build --help" >&2; exit 2; }
+backend=nix
+profile=ReleaseFast
+all_plats=0
+publish=yes
+plan_only=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--backend=*) backend=${1#*=}; shift ;;
+		--backend) [ $# -ge 2 ] || usage_error "--backend needs nix or direct"; backend=$2; shift 2 ;;
+		--debug) profile=Debug; shift ;;
+		--test) profile=ReleaseSafe; shift ;;
+		--release) profile=ReleaseFast; shift ;;
+		--all-plats|--all-platforms|--all) all_plats=1; shift ;;
+		--all-impls|--all-implementations) shift ;;
+		--no-publish) publish=no; shift ;;
+		--plan) plan_only=1; shift ;;
+		-h|--help) sed -n '2,/^# NEVER/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
+		canonize) usage_error "jp2z has one implementation (zig); there is nothing to canonize" ;;
+		*) usage_error "unknown argument '$1'" ;;
+	esac
+done
+case "$backend" in nix|direct) ;; *) usage_error "unknown backend '$backend' (nix or direct)" ;; esac
+[ "$backend" = nix ] && [ "$profile" != ReleaseFast ] && usage_error "the nix backend builds ReleaseFast only; use --backend=direct for $profile"
+
+host=$(jp2z_pf_host) || usage_error "this host ($(uname -s) $(uname -m)) is outside the supported matrix"
+if [ "$all_plats" -eq 1 ]; then targets=$(jp2z_pf_matrix); else targets=$host; fi
+
+out_of() { # out_of PF : the product tree for this backend and profile
+	if [ "$backend" = nix ]; then echo ".nix-out/$1/$profile"; else jp2z_prefix "$1" "$profile"; fi
+}
+if [ "$plan_only" -eq 1 ]; then
+	for pf in $targets; do
+		out=$(out_of "$pf")
+		[ "$backend" = nix ] && out="$out attr=jp2z-$pf"
+		echo "plan pf=$pf triple=$(jp2z_pf_triple "$pf") backend=$backend profile=$profile out=$out publish=$publish"
+	done
+	exit 0
+fi
+
+zig_cmd=(zig)
+if [ "$backend" = direct ] && ! command -v zig >/dev/null 2>&1; then zig_cmd=(nix develop -c zig); fi
+
+build_one() { # build_one PF : build into its product tree; print the executable path
+	local pf=$1 triple out exe
+	triple=$(jp2z_pf_triple "$pf")
+	out=$(out_of "$pf")
+	exe=jp2z$(jp2z_pf_exe_suffix "$pf")
+	if [ "$backend" = nix ]; then
+		mkdir -p "$(dirname "$out")" || return 1
+		nix build ".#jp2z-$pf" --out-link "$out" >&2 || return 1
+	else
+		MUTE_DEBUG_STATUS=1 "${zig_cmd[@]}" build install -Dtarget="$triple" -Doptimize="$profile" --prefix "$out" >&2 || return 1
+		mkdir -p "$out/share/jp2z" || return 1
+		printf '{"pf":"%s","triple":"%s","profile":"%s","zig":"%s","file":"%s"}\n' \
+			"$pf" "$triple" "$profile" "$("${zig_cmd[@]}" version 2>/dev/null)" "$(file -b "$out/bin/$exe")" > "$out/share/jp2z/build.json"
+	fi
+	echo "$root/$out/bin/$exe"
+}
+
+rc=0
+summary=()
+for pf in $targets; do
+	echo "==> $pf ($(jp2z_pf_triple "$pf"), $backend, $profile)" >&2
+	if ! product=$(build_one "$pf"); then
+		summary+=("$pf: BUILD FAILED"); rc=1; continue
+	fi
+	if [ "$publish" = yes ]; then
+		if jp2z_publish "$root" "$pf" "$product" >&2; then summary+=("$pf: ok, published bin/$pf/")
+		else summary+=("$pf: built, NOT published (header check failed)"); rc=1; fi
+	else
+		summary+=("$pf: ok ($product)")
+	fi
+done
+printf '%s\n' "${summary[@]}" >&2
+exit "$rc"

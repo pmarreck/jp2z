@@ -250,3 +250,129 @@ export fn jp2z_deep_validate(
 export fn jp2z_version() [*:0]const u8 {
     return jp2z.version.ptr;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Encode
+// ─────────────────────────────────────────────────────────────────────
+
+const CEncodeParams = extern struct {
+    width: u32,
+    height: u32,
+    components: u16,
+    precision: u8,
+    levels: u8,
+    format: u8,
+    reserved: [7]u8,
+};
+comptime {
+    std.debug.assert(@sizeOf(CEncodeParams) == 20); // header: "Total size 20 bytes"
+}
+
+const CBuffer = extern struct {
+    data: ?[*]u8,
+    len: usize,
+};
+
+const levels_default: u8 = 0xFF;
+const format_j2k: u8 = 0;
+const format_jp2: u8 = 1;
+const status_invalid_argument: c_int = -10;
+const status_encode_failed: c_int = -11;
+
+export fn jp2z_buffer_free(buffer: ?*CBuffer) void {
+    const b = buffer orelse return;
+    if (b.data) |d| c_allocator.free(d[0..b.len]);
+    b.* = .{ .data = null, .len = 0 };
+}
+
+/// C entry to the lossless encoder: validates the caller's struct and byte
+/// count, de-interleaves the jp2z_image_t-layout samples (u8, or native u16
+/// above 8 bits) into per-component i32 planes, and hands the encoded bytes
+/// back in a c_allocator buffer released by jp2z_buffer_free.
+export fn jp2z_encode(
+    samples: [*c]const u8,
+    samples_len: usize,
+    params: ?*const CEncodeParams,
+    out: ?*CBuffer,
+) c_int {
+    clearLastError();
+    const o = out orelse {
+        setLastError("jp2z_encode: out must not be NULL", .{});
+        return status_invalid_argument;
+    };
+    o.* = .{ .data = null, .len = 0 };
+    const p = params orelse {
+        setLastError("jp2z_encode: params must not be NULL", .{});
+        return status_invalid_argument;
+    };
+    for (p.reserved) |r| if (r != 0) {
+        setLastError("jp2z_encode: reserved bytes must be zero", .{});
+        return status_invalid_argument;
+    };
+    if (p.format != format_j2k and p.format != format_jp2) {
+        setLastError("jp2z_encode: unknown format {d}", .{p.format});
+        return status_invalid_argument;
+    }
+    if (p.precision == 0 or p.precision > 16) {
+        setLastError("jp2z_encode: precision {d} is outside 1..16", .{p.precision});
+        return -3;
+    }
+    if (p.width == 0 or p.height == 0 or p.components == 0) {
+        setLastError("jp2z_encode: width, height and components must be nonzero", .{});
+        return status_invalid_argument;
+    }
+    const bps: usize = if (p.precision > 8) 2 else 1;
+    const pixels = std.math.mul(usize, p.width, p.height) catch return tooLarge();
+    const count = std.math.mul(usize, pixels, p.components) catch return tooLarge();
+    const want = std.math.mul(usize, count, bps) catch return tooLarge();
+    if (samples_len != want) {
+        setLastError("jp2z_encode: samples_len is {d} bytes; {d}x{d}x{d} at precision {d} needs {d}", .{ samples_len, p.width, p.height, p.components, p.precision, want });
+        return status_invalid_argument;
+    }
+    if (samples == null) {
+        setLastError("jp2z_encode: samples must not be NULL", .{});
+        return status_invalid_argument;
+    }
+    const bytes = samples[0..want];
+
+    var arena_state = std.heap.ArenaAllocator.init(c_allocator);
+    defer arena_state.deinit();
+    const ar = arena_state.allocator();
+    const planes = ar.alloc([]i32, p.components) catch return outOfMemory();
+    for (planes) |*pl| pl.* = ar.alloc(i32, pixels) catch return outOfMemory();
+    const nc: usize = p.components;
+    for (0..pixels) |i| for (0..nc) |c| {
+        const k = i * nc + c;
+        planes[c][i] = if (bps == 1) bytes[k] else std.mem.bytesToValue(u16, bytes[k * 2 ..][0..2]);
+    };
+
+    const ep: jp2z.encode.Params = .{
+        .width = p.width,
+        .height = p.height,
+        .components = p.components,
+        .precision = p.precision,
+        .levels = if (p.levels == levels_default) null else p.levels,
+    };
+    const consts: []const []const i32 = @ptrCast(planes);
+    const encoded = (if (p.format == format_jp2) jp2z.encode.encodeJp2(c_allocator, consts, ep) else jp2z.encode.encodeJ2k(c_allocator, consts, ep)) catch |err| {
+        setLastError("jp2z_encode failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.OutOfMemory => -8,
+            error.UnsupportedPrecision => -3,
+            error.CoefficientOverflow, error.CarryIntoSentinel => status_encode_failed,
+            error.InvalidDimensions, error.InvalidComponents, error.PlaneSizeMismatch, error.InvalidLevels, error.SampleOutOfRange => status_invalid_argument,
+        };
+    };
+    o.* = .{ .data = encoded.ptr, .len = encoded.len };
+    return 0;
+}
+
+fn tooLarge() c_int {
+    setLastError("jp2z_encode: image size overflows size_t", .{});
+    return status_invalid_argument;
+}
+
+fn outOfMemory() c_int {
+    setLastError("jp2z_encode: out of memory", .{});
+    return -8;
+}

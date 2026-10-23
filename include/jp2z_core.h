@@ -30,6 +30,8 @@ typedef enum {
     JP2Z_ERR_INVALID_JP2_CODESTREAM  = -7,
     JP2Z_ERR_OUT_OF_MEMORY           = -8,
     JP2Z_ERR_CALLBACK_ABORTED        = -9,
+    JP2Z_ERR_INVALID_ARGUMENT        = -10, /* a NULL pointer, nonzero reserved bytes, a bad size, dimension, count or sample */
+    JP2Z_ERR_ENCODE_FAILED           = -11, /* the encoder could not represent the input (detail in jp2z_last_error_message) */
 } jp2z_status_t;
 
 /* ── Color space / pixel layout ─────────────────────────────────── */
@@ -242,6 +244,74 @@ jp2z_status_t jp2z_decode_with_findings(
     const jp2z_decode_options_t         *options,
     jp2z_findings_sink_t                *sink,
     jp2z_image_t                        *out_image
+);
+
+/* ── Encode ─────────────────────────────────────────────────────── */
+
+typedef enum {
+    JP2Z_FORMAT_J2K = 0,   /* raw codestream */
+    JP2Z_FORMAT_JP2 = 1,   /* JP2 file: signature, ftyp, jp2h (ihdr, colr), jp2c */
+} jp2z_format_t;
+
+/* jp2z_encode_params_t.levels value selecting min(5, floor(log2(max(w, h)))). */
+#define JP2Z_LEVELS_DEFAULT 0xFF
+
+/* Total size 20 bytes; new fields take reserved bytes, which must be zero. */
+typedef struct {
+    uint32_t width;          /* >= 1 */
+    uint32_t height;         /* >= 1 */
+    uint16_t components;     /* 1..16384 (T.800 Csiz) */
+    uint8_t  precision;      /* bits per sample, 1..16 */
+    uint8_t  levels;         /* wavelet decomposition levels 0..32, or JP2Z_LEVELS_DEFAULT */
+    uint8_t  format;         /* jp2z_format_t */
+    uint8_t  reserved[7];
+} jp2z_encode_params_t;
+
+/* A byte buffer the library allocated; release it with jp2z_buffer_free. */
+typedef struct {
+    uint8_t *data;
+    size_t   len;
+} jp2z_buffer_t;
+
+/* Frees data (NULL is fine) and zeroes *buffer; buffer may be NULL. A second
+ * call on the SAME struct is then a no-op. This cannot protect copies: if
+ * the struct was copied, freeing through one copy leaves the others holding
+ * a dangling pointer, and freeing through them is a double free. */
+void jp2z_buffer_free(jp2z_buffer_t *buffer);
+
+/* Losslessly encode unsigned samples as JPEG 2000 (reversible 5/3 wavelet,
+ * RCT for three or more components, one tile, one quality layer).
+ *
+ * Samples. `samples` uses the layout jp2z_decode returns in
+ * jp2z_image_t.pixels: rows top to bottom, pixels left to right, and within
+ * a pixel the components in order (pixel-major, component-minor). Each
+ * sample is one byte when precision <= 8, else a uint16_t in the host's
+ * native byte order; uint16_t samples need no particular alignment. Each
+ * sample must be below 2^precision. `samples_len` is the byte count and
+ * must equal width * height * components * bytes-per-sample; that product
+ * is computed with overflow checks, and a product that does not fit in
+ * size_t is refused before any sample is read. `samples` and `params` are
+ * read only during the call and are not retained.
+ *
+ * Output. `out` must not be NULL and must point to valid, writable storage
+ * that does not overlap `samples` or `params`: it is cleared before the
+ * input is read. Its contents on entry are ignored and
+ * overwritten, never freed: if it already owns a buffer, release that with
+ * jp2z_buffer_free first or it leaks. On every failure with a non-NULL
+ * `out`, *out is left zeroed ({NULL, 0}); on success the caller owns
+ * out->data and releases it with jp2z_buffer_free.
+ *
+ * Status. JP2Z_OK; JP2Z_ERR_INVALID_ARGUMENT for a NULL pointer, nonzero
+ * reserved bytes, an unknown format, zero or out-of-range dimensions,
+ * components or levels, a wrong samples_len or a sample >= 2^precision;
+ * JP2Z_ERR_UNSUPPORTED_PRECISION for precision outside 1..16;
+ * JP2Z_ERR_OUT_OF_MEMORY; JP2Z_ERR_ENCODE_FAILED when the encoder cannot
+ * represent the input. jp2z_last_error_message() carries the detail. */
+jp2z_status_t jp2z_encode(
+    const uint8_t                *samples,
+    size_t                        samples_len,
+    const jp2z_encode_params_t   *params,
+    jp2z_buffer_t                *out
 );
 
 /* Deep strict validation: structural walk + full entropy decode, emitting

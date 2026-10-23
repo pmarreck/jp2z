@@ -333,7 +333,7 @@ pub fn mrContext(cblk: Cblk, x: u32, y: u32) CtxIdx {
 
 /// True if any of the 8-connected neighbours of (x, y) is currently
 /// significant. Out-of-bounds neighbours count as "not significant".
-fn hasSigNeighbor(cblk: Cblk, x: u32, y: u32) bool {
+pub fn hasSigNeighbor(cblk: Cblk, x: u32, y: u32) bool {
     const xi: i32 = @intCast(x);
     const yi: i32 = @intCast(y);
     const excl_south = cblk.vsc and (y % 4 == 3);
@@ -503,7 +503,7 @@ pub fn mrPassRaw(dec: *mq.RawDecoder, cblk: *Cblk, bp: u5) void {
 /// visited (i.e. SP didn't touch it), and have no significant
 /// 8-neighbour. The caller already vetted that the stripe is a full
 /// 4-row stripe (not the trailing partial one).
-fn rlcEligible(cblk: Cblk, x: u32, y_stripe: u32) bool {
+pub fn rlcEligible(cblk: Cblk, x: u32, y_stripe: u32) bool {
     var dy: u32 = 0;
     while (dy < 4) : (dy += 1) {
         const y = y_stripe + dy;

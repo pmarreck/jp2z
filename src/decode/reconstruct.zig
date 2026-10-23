@@ -494,7 +494,7 @@ pub fn decodeFromReport(allocator: Allocator, data: []const u8, report: *const c
 
 /// Inverse reversible colour transform (RCT, T.800 G.2). Operates in
 /// place on the three component planes (Y, Cb, Cr) → (R, G, B).
-fn inverseRct(c0: []i32, c1: []i32, c2: []i32) void {
+pub fn inverseRct(c0: []i32, c1: []i32, c2: []i32) void {
     const n = c0.len;
     var i: usize = 0;
     while (i < n) : (i += 1) {

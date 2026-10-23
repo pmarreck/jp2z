@@ -1,6 +1,8 @@
-# Mechatron Prime CI — Nix flake attributes the Thelio worker builds on each
-# signed push to yolo. Real attrs (verified via `nix flake show`); the worker is
-# x86_64-linux (thelio-nixos / mechatron-prime). These are exactly what `./test`
-# runs: the unit+CLI test check and the package-build check.
+# Mechatron Prime CI: the Nix flake attributes the x86_64-linux worker builds
+# on each signed push to yolo. checks.*.test and checks.*.build are what
+# `./test` runs; all-platforms cross-compiles the five-target matrix
+# (linux-amd64, linux-arm64, macos-arm64, mswin-amd64, mswin-arm64) and
+# checks each product's header, so it is compile evidence only.
 checks.x86_64-linux.test
 checks.x86_64-linux.build
+packages.x86_64-linux.all-platforms

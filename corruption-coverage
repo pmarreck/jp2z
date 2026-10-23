@@ -82,12 +82,16 @@ command -v jq >/dev/null || { echo "corruption-coverage: jq not found" >&2; exit
 
 echo "==> building jp2z and the coverage statistics tool" >&2
 build_log=${TMPDIR:-/tmp}/jp2z-coverage-build-$$.log
-if ! MUTE_DEBUG_STATUS=1 zig build coverage-stats -Dopenjpeg-include="$OPENJPEG_INCLUDE" -Dopenjpeg-lib="$OPENJPEG_LIB" > "$build_log" 2>&1; then
+# Build exactly what this run executes (the CLI and the statistics tool)
+# into the host's native dev prefix; never reuse a binary another build left.
+. tools/sh/platform.bash
+dev_prefix=$(jp2z_dev_prefix ReleaseFast) || { echo "corruption-coverage: host outside the supported matrix" >&2; exit 2; }
+if ! MUTE_DEBUG_STATUS=1 zig build install coverage-stats -Doptimize=ReleaseFast --prefix "$dev_prefix" -Dopenjpeg-include="$OPENJPEG_INCLUDE" -Dopenjpeg-lib="$OPENJPEG_LIB" > "$build_log" 2>&1; then
 	echo "    FAIL: zig build (in $PWD):" >&2; tail -20 "$build_log" >&2; exit 2
 fi
 rm -f -- "$build_log"
-jp2z=$PWD/zig-out/bin/jp2z
-stats=$PWD/zig-out/bin/jp2z-coverage-stats
+jp2z=$PWD/$dev_prefix/bin/jp2z
+stats=$PWD/$dev_prefix/bin/jp2z-coverage-stats
 [ -x "$jp2z" ] && [ -x "$stats" ] || { echo "    FAIL: binaries missing after build" >&2; exit 2; }
 
 if [ ${#fixtures[@]} -eq 0 ]; then

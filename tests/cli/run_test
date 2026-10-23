@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# ./run: builds the host target through ./build, then executes exactly
+# bin/<host PF>/jp2z with the arguments untouched (spaces, empty strings,
+# a leading dash) and its exit status; a failed build runs nothing. Uses a
+# temporary project root with a stand-in ./build so no real build happens.
+# NEVER `set -e`. Usage: run_test [PROJECT_ROOT]
+set -u
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+src=${1:-$here/../..}
+failures=0
+fail() { printf 'FAIL (line %s): %s\n' "${BASH_LINENO[0]}" "$*" >&2; failures=$((failures+1)); }
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/jp2z-run.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+proj="$tmp/a project"
+mkdir -p "$proj/tools/sh"
+cp "$src/run" "$proj/run"
+cp "$src/tools/sh/platform.bash" "$src/tools/sh/publish.bash" "$proj/tools/sh/"
+. "$src/tools/sh/platform.bash"
+host=$(jp2z_pf_host) || { echo "run_test: host outside the matrix" >&2; exit 1; }
+exe=jp2z$(jp2z_pf_exe_suffix "$host")
+# Stand-in ./build: records its arguments, then publishes a fake CLI that
+# prints each argument on its own line and exits with $FAKE_RC.
+cat > "$proj/build" <<STUB
+#!$BASH
+printf '%s\n' "\$@" > "\$(dirname "\$0")/build.args"
+[ "\${FAKE_BUILD_FAIL:-0}" = 1 ] && exit 1
+mkdir -p "\$(dirname "\$0")/bin/$host"
+printf '#!$BASH\nprintf "<%%s>\\\\n" "\$@"\nexit "\${FAKE_RC:-0}"\n' > "\$(dirname "\$0")/bin/$host/$exe"
+chmod +x "\$(dirname "\$0")/bin/$host/$exe"
+STUB
+chmod +x "$proj/build"
+
+out=$("$proj/run" validate "a b" "" --strict); rc=$?
+[ "$rc" -eq 0 ] || fail "run exit $rc"
+[ "$out" = $'<validate>\n<a b>\n<>\n<--strict>' ] || fail "arguments changed on the way: $out"
+[ "$(cat "$proj/build.args")" = "--no-publish-if-unchanged" ] && fail "unexpected build arguments"
+grep -qx -- "--backend=nix" "$proj/build.args" || fail "default backend not passed: $(tr '\n' ' ' < "$proj/build.args")"
+JP2Z_BUILD_BACKEND=direct "$proj/run" >/dev/null 2>&1
+grep -qx -- "--backend=direct" "$proj/build.args" || fail "JP2Z_BUILD_BACKEND not honored"
+FAKE_RC=7 "$proj/run" x >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 7 ] || fail "exit status not propagated (got $rc)"
+rm -rf -- "$proj/bin"
+out=$(FAKE_BUILD_FAIL=1 "$proj/run" x 2>/dev/null); rc=$?
+[ "$rc" -ne 0 ] && [ -z "$out" ] || fail "a failed build still ran something (rc $rc, out '$out')"
+
+[ "$failures" -eq 0 ] && echo "run_test: 0 failure(s)" || { echo "run_test: $failures failure(s)" >&2; exit 1; }

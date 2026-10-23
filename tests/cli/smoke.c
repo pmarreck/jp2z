@@ -297,6 +297,144 @@ int main(void) {
     ASSERT(ptsev >= 0 && ptsev < JP2Z_SEVERITY_FAIL, "valid PTERM stream: strict ACCEPTs under the tightened cap");
     jp2z_findings_sink_free(pts);
 
-    printf("PASS: jp2z C FFI smoke (29 assertions, version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM + code-registry + anchored-diagnostics)\n");
+    /* ── Encode through the C ABI, decode back, validate strictly ──
+     * Samples use the jp2z_image_t.pixels layout, so what jp2z_decode
+     * returns must equal what went in (lossless 5/3 path). */
+    _Static_assert(sizeof(jp2z_encode_params_t) == 20, "jp2z_encode_params_t is 20 bytes");
+    {
+        enum { W = 13, H = 7, C = 3 };
+        uint8_t rgb[W * H * C];
+        for (size_t i = 0; i < sizeof rgb; i++) rgb[i] = (uint8_t)((i * 37u + (i / 39u) * 11u) & 0xFF);
+        jp2z_encode_params_t ep = {0};
+        ep.width = W; ep.height = H; ep.components = C; ep.precision = 8;
+        ep.levels = JP2Z_LEVELS_DEFAULT; ep.format = JP2Z_FORMAT_JP2;
+        jp2z_buffer_t enc = {0};
+        ASSERT(jp2z_encode(rgb, sizeof rgb, &ep, &enc) == JP2Z_OK, "encode 13x7 RGB 8-bit as JP2");
+        ASSERT(enc.data != NULL && enc.len > 12, "encode returns bytes");
+        ASSERT(memcmp(enc.data, "\x00\x00\x00\x0CjP  \r\n\x87\n", 12) == 0, "JP2 output starts with the signature box");
+        jp2z_findings_sink_t *es = jp2z_findings_sink_create();
+        int esev = jp2z_deep_validate(enc.data, enc.len, 1, es);
+        ASSERT(esev == JP2Z_SEVERITY_PASS || esev == JP2Z_SEVERITY_INFO, "encoded JP2 validates strict-clean");
+        jp2z_findings_sink_free(es);
+        jp2z_image_t back = {0};
+        ASSERT(jp2z_decode(enc.data, enc.len, &back) == JP2Z_OK, "encoded JP2 decodes");
+        ASSERT(back.width == W && back.height == H && back.channels == C && back.bits_per_sample == 8, "decoded geometry matches");
+        ASSERT(back.pixels_len == sizeof rgb && memcmp(back.pixels, rgb, sizeof rgb) == 0, "decoded samples equal the input");
+        jp2z_image_free(&back);
+        jp2z_buffer_free(&enc);
+        ASSERT(enc.data == NULL && enc.len == 0, "jp2z_buffer_free zeroes the buffer");
+        jp2z_buffer_free(&enc);   /* second free is a no-op */
+        jp2z_buffer_free(NULL);
+    }
+    {
+        enum { W = 5, H = 4 };
+        uint16_t grey[W * H];
+        for (size_t i = 0; i < W * H; i++) grey[i] = (uint16_t)((i * 211u) & 0x0FFF);
+        jp2z_encode_params_t ep = {0};
+        ep.width = W; ep.height = H; ep.components = 1; ep.precision = 12;
+        ep.levels = 2; ep.format = JP2Z_FORMAT_J2K;
+        jp2z_buffer_t enc = {0};
+        ASSERT(jp2z_encode((const uint8_t *)grey, sizeof grey, &ep, &enc) == JP2Z_OK, "encode 5x4 12-bit grey as J2K");
+        ASSERT(enc.len > 4 && memcmp(enc.data, "\xFF\x4F\xFF\x51", 4) == 0, "J2K output starts with SOC SIZ");
+        jp2z_image_t back = {0};
+        ASSERT(jp2z_decode(enc.data, enc.len, &back) == JP2Z_OK, "encoded J2K decodes");
+        ASSERT(back.bits_per_sample == 12 && back.pixels_len == sizeof grey && memcmp(back.pixels, grey, sizeof grey) == 0, "12-bit samples round-trip");
+        jp2z_image_free(&back);
+        jp2z_buffer_free(&enc);
+    }
+    {
+        /* Refusals: each leaves the output zeroed and records a message. */
+        uint8_t px[4] = { 0, 1, 2, 15 };
+        jp2z_encode_params_t ok = {0};
+        ok.width = 2; ok.height = 2; ok.components = 1; ok.precision = 4;
+        ok.levels = JP2Z_LEVELS_DEFAULT; ok.format = JP2Z_FORMAT_J2K;
+        jp2z_buffer_t enc = {0};
+        ASSERT(jp2z_encode(px, sizeof px, &ok, &enc) == JP2Z_OK, "the baseline refusal input encodes");
+        jp2z_buffer_free(&enc);
+
+        jp2z_encode_params_t bad = ok;
+        ASSERT(jp2z_encode(px, 3, &ok, &enc) == JP2Z_ERR_INVALID_ARGUMENT && enc.data == NULL, "short sample buffer refused");
+        ASSERT(jp2z_last_error_message()[0] != '\0', "refusal records a message");
+        ASSERT(jp2z_encode(NULL, 4, &ok, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "NULL samples refused");
+        ASSERT(jp2z_encode(px, 4, NULL, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "NULL params refused");
+        ASSERT(jp2z_encode(px, 4, &ok, NULL) == JP2Z_ERR_INVALID_ARGUMENT, "NULL output refused");
+        bad.reserved[6] = 1;
+        ASSERT(jp2z_encode(px, 4, &bad, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "nonzero reserved byte refused");
+        bad = ok; bad.format = 2;
+        ASSERT(jp2z_encode(px, 4, &bad, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "unknown format refused");
+        bad = ok; bad.levels = 33;
+        ASSERT(jp2z_encode(px, 4, &bad, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "33 levels refused");
+        bad = ok; bad.precision = 3;
+        ASSERT(jp2z_encode(px, 4, &bad, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "sample 15 at precision 3 refused");
+        bad = ok; bad.precision = 17;
+        ASSERT(jp2z_encode(px, 4, &bad, &enc) == JP2Z_ERR_UNSUPPORTED_PRECISION, "precision 17 refused");
+        bad = ok; bad.width = 0;
+        ASSERT(jp2z_encode(px, 0, &bad, &enc) == JP2Z_ERR_INVALID_ARGUMENT, "zero width refused");
+        ASSERT(enc.data == NULL && enc.len == 0, "refusals leave the output zeroed");
+    }
+
+    /* ── Encode ownership and error contract (coordinator review) ── */
+    {
+        /* Status values are distinct: a duplicate makes these case labels
+         * collide and the build fails. */
+        jp2z_status_t probe = JP2Z_OK;
+        switch (probe) {
+        case JP2Z_OK: case JP2Z_ERR_NOT_IMPLEMENTED: case JP2Z_ERR_INVALID_MARKER:
+        case JP2Z_ERR_UNSUPPORTED_PRECISION: case JP2Z_ERR_TRUNCATED_STREAM:
+        case JP2Z_ERR_BACKEND: case JP2Z_ERR_INVALID_JP2_CODESTREAM:
+        case JP2Z_ERR_OUT_OF_MEMORY: case JP2Z_ERR_CALLBACK_ABORTED:
+        case JP2Z_ERR_INVALID_ARGUMENT: case JP2Z_ERR_ENCODE_FAILED:
+            break;
+        }
+        _Static_assert(JP2Z_ERR_INVALID_ARGUMENT == -10 && JP2Z_ERR_ENCODE_FAILED == -11, "encode statuses are -10 and -11");
+
+        /* Every failure zeroes `out`, whatever it held on entry. */
+        uint8_t px[4] = { 0, 1, 2, 3 };
+        jp2z_encode_params_t ep = {0};
+        ep.width = 2; ep.height = 2; ep.components = 1; ep.precision = 2;
+        ep.levels = JP2Z_LEVELS_DEFAULT; ep.format = JP2Z_FORMAT_J2K;
+        jp2z_buffer_t stale = { (uint8_t *)px, 99 };
+        ASSERT(jp2z_encode(px, 3, &ep, &stale) == JP2Z_ERR_INVALID_ARGUMENT, "short buffer refused");
+        ASSERT(stale.data == NULL && stale.len == 0, "failure zeroes an output that held a stale pointer");
+        stale.data = (uint8_t *)px; stale.len = 99;
+        ASSERT(jp2z_encode(px, 4, NULL, &stale) == JP2Z_ERR_INVALID_ARGUMENT && stale.data == NULL && stale.len == 0, "NULL params: output zeroed");
+
+        /* The byte count is computed with overflow checks before any sample
+         * is read: 2^32-1 x 2^32-1 x 16384 x 2 bytes does not fit size_t. */
+        jp2z_encode_params_t huge = {0};
+        huge.width = 0xFFFFFFFFu; huge.height = 0xFFFFFFFFu; huge.components = 16384; huge.precision = 16;
+        huge.levels = JP2Z_LEVELS_DEFAULT; huge.format = JP2Z_FORMAT_J2K;
+        ASSERT(jp2z_encode(px, sizeof px, &huge, &stale) == JP2Z_ERR_INVALID_ARGUMENT && stale.data == NULL, "size_t overflow in the sample count is refused");
+        ASSERT(contains((const unsigned char *)jp2z_last_error_message(), strlen(jp2z_last_error_message()), "overflow"), "overflow refusal says so");
+
+        /* Native uint16_t samples may sit at any address: encode from an odd
+         * offset and compare the decode against the same values. */
+        enum { W = 3, H = 2 };
+        uint16_t want[W * H] = { 0, 1, 1023, 2048, 4000, 4095 };
+        uint8_t raw[sizeof want + 1];
+        memcpy(raw + 1, want, sizeof want);
+        jp2z_encode_params_t ep16 = {0};
+        ep16.width = W; ep16.height = H; ep16.components = 1; ep16.precision = 12;
+        ep16.levels = JP2Z_LEVELS_DEFAULT; ep16.format = JP2Z_FORMAT_J2K;
+        jp2z_buffer_t enc = {0};
+        ASSERT(jp2z_encode(raw + 1, sizeof want, &ep16, &enc) == JP2Z_OK, "unaligned 16-bit samples encode");
+        jp2z_image_t back = {0};
+        ASSERT(jp2z_decode(enc.data, enc.len, &back) == JP2Z_OK, "unaligned-input encode decodes");
+        ASSERT(back.pixels_len == sizeof want && memcmp(back.pixels, want, sizeof want) == 0, "unaligned 16-bit samples round-trip");
+        jp2z_image_free(&back);
+        jp2z_buffer_free(&enc);
+
+        /* Interleaving order: pixel-major, component-minor. Two components
+         * with distinct constant planes come back in the same order. */
+        uint8_t ia[2 * 2 * 2] = { 10, 200, 10, 200, 10, 200, 10, 200 };
+        jp2z_encode_params_t ei = ep;
+        ei.components = 2; ei.precision = 8;
+        ASSERT(jp2z_encode(ia, sizeof ia, &ei, &enc) == JP2Z_OK, "two-component interleaved encode");
+        ASSERT(jp2z_decode(enc.data, enc.len, &back) == JP2Z_OK && back.channels == 2 && memcmp(back.pixels, ia, sizeof ia) == 0, "component order is preserved");
+        jp2z_image_free(&back);
+        jp2z_buffer_free(&enc);
+    }
+
+    printf("PASS: jp2z C FFI smoke (version + decode + findings_sink + deep_validate + missing-EOC + over-read cap + c145-WARN invariant + POC + tile-QCD + PTERM + code-registry + anchored-diagnostics + encode round trip, refusals and ownership contract)\n");
     return 0;
 }

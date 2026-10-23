@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# ./run ARGS... — build the host target (through ./build, so the product is
+# current) and execute exactly bin/<host PF>/jp2z with ARGS unchanged and
+# its exit status. JP2Z_BUILD_BACKEND=direct uses the direct zig backend
+# (faster for a development loop); the default is nix, as for ./build.
+# Build output goes to stderr; a failed build runs nothing.
+set -u
+root=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$root/tools/sh/platform.bash"
+host=$(jp2z_pf_host) || { echo "run: this host ($(uname -s) $(uname -m)) is outside the supported matrix" >&2; exit 2; }
+"$root/build" --backend="${JP2Z_BUILD_BACKEND:-nix}" >&2 || { echo "run: build failed; nothing was run" >&2; exit 1; }
+exec "$root/bin/$host/jp2z$(jp2z_pf_exe_suffix "$host")" "$@"

@@ -2,11 +2,12 @@
 
 [![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Fjp2z.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/mechatron-prime/)
 
-A from-scratch, integer-only JPEG 2000 (T.800) decoder in pure Zig with a
-C FFI surface. openjpeg (BSD-2) is used only as a build-time differential
-oracle and the Phase-1 backend — never a shipped runtime dependency. See
-PROJECT_OVERVIEW.md for why we reimplement (cross-platform integer
-determinism, rich validation diagnostics, WASM, Zig-fleet embeddability).
+A from-scratch, integer-only JPEG 2000 (T.800) decoder, validator and
+lossless encoder in pure Zig with a C FFI surface. openjpeg (BSD-2) is
+used only as a build-time differential oracle and the Phase-1 backend,
+never a shipped runtime dependency. See PROJECT_OVERVIEW.md for why we
+reimplement (cross-platform integer determinism, rich validation
+diagnostics, WASM, Zig-fleet embeddability).
 
 Sister project to [`jpegz`](https://github.com/pmarreck/jpegz) — same
 architecture (Zig core + C FFI + C CLI dogfooding the boundary, Nix
@@ -77,15 +78,57 @@ JPEG 2000 Part 1 (T.800) core patents have all expired (filed
 patented but licensed RF for the standard. Part 2 / JPX extensions
 have murkier IP — **jp2z targets Part 1 only**.
 
+## Command line
+
+The `jp2z` executable is written in C and reaches the Zig core only through
+the public C header (`include/jp2z_core.h`), so every verb exercises the C
+ABI that other consumers link against.
+
+```bash
+jp2z decode -o out.ppm in.jp2         # or: jp2z in.jp2 > out.ppm
+jp2z encode -o out.jp2 in.ppm         # lossless; --j2k for a raw codestream, --levels N
+jp2z verify in.jp2                    # strict validation; same as `jp2z validate`
+jp2z encode - < in.pgm | jp2z decode - > back.pgm   # stdin/stdout throughout
+```
+
+`decode` writes binary PNM: P5 for one component, P6 for three, P7 (PAM)
+otherwise, with MAXVAL 2^precision - 1 and big-endian 16-bit samples above
+8 bits. `encode` reads the same binary formats (P5, P6, P7) and codes a
+MAXVAL m at the number of bits m needs, so PNM written by `decode` round
+trips byte for byte. The encoder is a first cut: the reversible 5/3
+wavelet, the RCT for three or more components, one tile, one quality
+layer, LRCP order and 64x64 code-blocks. Its tests decode every encoded
+image with both jp2z and OpenJPEG, require exact equality and require
+strict validation to report nothing above INFO. From C, the entry point is
+`jp2z_encode`, which takes samples in the layout `jp2z_decode` returns and
+hands back a buffer released with `jp2z_buffer_free`.
+
+Exit codes: 0 success, 1 decode failure or validation FAIL, 2 validation
+WARN, 64 usage error, 65 malformed input image, 70 internal error, 74 I/O
+error.
+
 ## Build
 
 ```bash
-./build       # nix build, copies to zig-out/bin/jp2z
-./test        # full test suite (Zig unit + C CLI)
-./build_all   # native + cross for all 5 supported platforms
+./build                      # host platform, Nix backend, ReleaseFast; publishes bin/<PF>/jp2z
+./build --all                # the whole matrix: linux-amd64, linux-arm64, macos-arm64, mswin-amd64, mswin-arm64
+./build --backend=direct     # zig on PATH instead of Nix; also --debug, --test (ReleaseSafe)
+./build --plan --all         # print what would be built, build nothing
+./run validate file.jp2      # build the host target, then run exactly that CLI
+./test                       # full test suite (Zig unit + C CLI + script tests)
 ```
 
-## Corruption coverage
+Platform names follow the fleet convention: PF is `<OS>-<ARCH>` with OS in
+linux, macos, mswin and ARCH in amd64, arm64. Products live in
+`zig-out/<PF>/[musl|gnu]/<profile>/` (direct backend) or
+`.nix-out/<PF>/ReleaseFast/` (Nix backend); `bin/<PF>/jp2z` is published
+only after libmagic confirms the product's header, and a failed target
+keeps its previous entrypoint. Linux products are static musl binaries,
+Windows products use the MinGW ABI. Cross-compiled products are compile
+evidence; only the host platform is exercised at runtime. The equivalent of
+`./build --backend=direct` by hand is
+`zig build install -Dtarget=x86_64-linux-musl -Doptimize=ReleaseFast --prefix zig-out/linux-amd64/musl/ReleaseFast`.
+The former `build_all` script is now `./build --all`.
 
 `./corruption-coverage` measures how much corruption the strict validator
 catches, using the sibling project corruption_reader as an oracle this

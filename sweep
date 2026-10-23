@@ -30,7 +30,9 @@ conf_dir="$OPENJPEG_DATA/input/conformance"
 out_dir="$root/conformance"
 ndjson="$out_dir/sweep.ndjson"
 scorecard="$out_dir/SCORECARD.md"
-bin="$root/zig-out/bin/jp2z-sweep-one"
+. "$root/tools/sh/platform.bash"
+dev_prefix=$(jp2z_dev_prefix ReleaseFast) || { echo "sweep: host outside the supported matrix" >&2; exit 1; }
+bin="$root/$dev_prefix/bin/jp2z-sweep-one"
 timeout_secs="${SWEEP_TIMEOUT:-60}"
 # Portable timeout: coreutils `timeout` (flake devShell) or macOS `gtimeout`.
 timeout_bin="$(command -v timeout || command -v gtimeout || echo '')"
@@ -38,7 +40,7 @@ timeout_bin="$(command -v timeout || command -v gtimeout || echo '')"
 mkdir -p "$out_dir"
 
 echo "==> building conformance-sweep worker"
-if ! MUTE_DEBUG_STATUS=1 zig build sweep-one \
+if ! MUTE_DEBUG_STATUS=1 zig build sweep-one -Doptimize=ReleaseFast --prefix "$dev_prefix" \
 		-Dopenjpeg-include="$OPENJPEG_INCLUDE" \
 		-Dopenjpeg-lib="$OPENJPEG_LIB" >/dev/null 2>&1; then
 	echo "    FAIL: could not build jp2z-sweep-one" >&2

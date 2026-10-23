@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# jp2z CLI test: the encode, decode and verify verbs, driven by build.zig as
+#   codec_cli <path-to-jp2z> <fixtures-dir>
+# Prints only failures and a final count line; exit status is the count.
+# No `set -e`: non-zero exits from the command under test are asserted.
+set -u
+cli="$1"; fx="$2"
+fails=0
+fail() { printf '  FAIL %s\n' "$1"; fails=$((fails+1)); }
+check_rc() { [ "$2" = "$3" ] || fail "$1 (expected rc=$2, got rc=$3)"; }
+check_same() { cmp -s "$2" "$3" || fail "$1 ($2 and $3 differ)"; }
+check_empty() { [ ! -s "$2" ] || fail "$1 (stderr: $(head -c 200 "$2"))"; }
+head_hex() { od -An -tx1 -N"$2" "$1" | tr -d ' \n'; }
+tmp="${TMPDIR:-/tmp}/jp2z-codec-cli.$$"
+mkdir -p "$tmp/dir with space"
+trap 'rm -rf "$tmp"' EXIT
+
+# Deterministic inputs, written the way `decode` writes them so a lossless
+# round trip is byte-identical, header included.
+{ printf 'P5\n7 5\n255\n'; for i in $(seq 0 34); do printf "\\$(printf '%03o' $(( (i * 53 + 7) % 256 )))"; done; } > "$tmp/grey.pgm"
+{ printf 'P6\n4 3\n255\n'; for i in $(seq 0 35); do printf "\\$(printf '%03o' $(( (i * 29 + i / 5) % 256 )))"; done; } > "$tmp/rgb.ppm"
+{ printf 'P5\n3 2\n4095\n'; for v in 0 1 255 256 4094 4095; do printf "\\$(printf '%03o' $((v >> 8)))\\$(printf '%03o' $((v & 255)))"; done; } > "$tmp/deep.pgm"
+{ printf 'P7\nWIDTH 3\nHEIGHT 2\nDEPTH 2\nMAXVAL 255\nTUPLTYPE MULTICHANNEL\nENDHDR\n'; for i in $(seq 0 11); do printf "\\$(printf '%03o' $(( i * 21 )))"; done; } > "$tmp/two.pam"
+
+# 1. grey PGM file -> JP2 on stdout (the default format), clean stderr; decodes back identically
+"$cli" encode "$tmp/grey.pgm" > "$tmp/grey.jp2" 2> "$tmp/err"; rc=$?
+check_rc "encode PGM to stdout" 0 "$rc"
+check_empty "encode is silent on success" "$tmp/err"
+[ "$(head_hex "$tmp/grey.jp2" 12)" = "0000000c6a5020200d0a870a" ] || fail "default output is JP2 (signature box)"
+"$cli" decode "$tmp/grey.jp2" > "$tmp/grey.back.pgm" 2>/dev/null; rc=$?
+check_rc "decode the encoded PGM" 0 "$rc"
+check_same "grey PGM round trip is byte-identical" "$tmp/grey.pgm" "$tmp/grey.back.pgm"
+
+# 2. RGB PPM on stdin ("-") -> raw codestream via --j2k and -o
+"$cli" encode --j2k -o "$tmp/rgb.j2k" - < "$tmp/rgb.ppm" 2>/dev/null; rc=$?
+check_rc "encode PPM from stdin with -o" 0 "$rc"
+[ "$(head_hex "$tmp/rgb.j2k" 4)" = "ff4fff51" ] || fail "--j2k writes a raw codestream (SOC SIZ)"
+"$cli" decode "$tmp/rgb.j2k" > "$tmp/rgb.back.ppm" 2>/dev/null
+check_same "RGB PPM round trip is byte-identical" "$tmp/rgb.ppm" "$tmp/rgb.back.ppm"
+
+# 3. @stdin and @stdout aliases, and -o - as stdout
+"$cli" encode -o @stdout @stdin < "$tmp/rgb.ppm" > "$tmp/rgb2.jp2" 2>/dev/null; rc=$?
+check_rc "encode @stdin to -o @stdout" 0 "$rc"
+"$cli" encode -o - "$tmp/rgb.ppm" > "$tmp/rgb3.jp2" 2>/dev/null
+check_same "-o - and -o @stdout produce the same bytes" "$tmp/rgb2.jp2" "$tmp/rgb3.jp2"
+
+# 4. later format flag wins
+"$cli" encode --j2k --jp2 "$tmp/grey.pgm" > "$tmp/late.jp2" 2>/dev/null
+[ "$(head_hex "$tmp/late.jp2" 4)" = "0000000c" ] || fail "later flag wins (--j2k --jp2 gives JP2)"
+"$cli" encode --jp2 --j2k "$tmp/grey.pgm" > "$tmp/late.j2k" 2>/dev/null
+[ "$(head_hex "$tmp/late.j2k" 4)" = "ff4fff51" ] || fail "later flag wins (--jp2 --j2k gives J2K)"
+
+# 5. 12-bit PGM (big-endian samples, maxval 4095) round trips; decode writes 16-bit PNM
+"$cli" encode "$tmp/deep.pgm" > "$tmp/deep.jp2" 2>/dev/null; rc=$?
+check_rc "encode 12-bit PGM" 0 "$rc"
+"$cli" decode "$tmp/deep.jp2" > "$tmp/deep.back.pgm" 2>/dev/null; rc=$?
+check_rc "decode 12-bit image to PGM" 0 "$rc"
+check_same "12-bit PGM round trip is byte-identical" "$tmp/deep.pgm" "$tmp/deep.back.pgm"
+
+# 6. a maxval that is not 2^p - 1 keeps every sample; decode reports maxval 2^p - 1
+{ printf 'P5\n2 1\n1000\n'; printf '\003\350\000\007'; } > "$tmp/odd.pgm"
+"$cli" encode "$tmp/odd.pgm" 2>/dev/null | "$cli" decode - > "$tmp/odd.back.pgm" 2>/dev/null
+{ printf 'P5\n2 1\n1023\n'; printf '\003\350\000\007'; } > "$tmp/odd.want.pgm"
+check_same "maxval 1000 is coded at 10 bits, samples unchanged" "$tmp/odd.want.pgm" "$tmp/odd.back.pgm"
+
+# 7. two-component PAM round trip
+"$cli" encode "$tmp/two.pam" 2>/dev/null | "$cli" decode - > "$tmp/two.back.pam" 2>/dev/null
+check_same "two-component PAM round trip is byte-identical" "$tmp/two.pam" "$tmp/two.back.pam"
+
+# 8. --levels: 0 and 5 both round trip; 33 and junk are usage errors
+for lv in 0 5; do
+	"$cli" encode --levels "$lv" "$tmp/grey.pgm" 2>/dev/null | "$cli" decode - > "$tmp/lv.pgm" 2>/dev/null
+	check_same "--levels $lv round trip" "$tmp/grey.pgm" "$tmp/lv.pgm"
+done
+"$cli" encode --levels 33 "$tmp/grey.pgm" > /dev/null 2>&1; rc=$?
+check_rc "--levels 33 is a usage error" 64 "$rc"
+"$cli" encode --levels x "$tmp/grey.pgm" > /dev/null 2>&1; rc=$?
+check_rc "--levels x is a usage error" 64 "$rc"
+
+# 9. paths with spaces, for input, -o output and decode -o
+cp "$tmp/grey.pgm" "$tmp/dir with space/in put.pgm"
+"$cli" encode -o "$tmp/dir with space/out put.jp2" "$tmp/dir with space/in put.pgm" 2>/dev/null; rc=$?
+check_rc "encode with spaces in both paths" 0 "$rc"
+"$cli" decode -o "$tmp/dir with space/back.pgm" "$tmp/dir with space/out put.jp2" 2>/dev/null; rc=$?
+check_rc "decode -o with spaces" 0 "$rc"
+check_same "decode -o writes the image" "$tmp/grey.pgm" "$tmp/dir with space/back.pgm"
+
+# 10. verify is validate under another name: same verdicts and exit codes
+"$cli" verify "$tmp/grey.jp2" > /dev/null 2>&1; rc=$?
+check_rc "verify an encoded file exits 0" 0 "$rc"
+"$cli" verify --json "$tmp/rgb.j2k" > "$tmp/v.json" 2>/dev/null
+case "$(cat "$tmp/v.json")" in '{"overall":"pass"'*|'{"overall":"info"'*) ;; *) fail "verify --json reports pass or info (got: $(head -c 80 "$tmp/v.json"))";; esac
+cp "$fx/c1_mono.j2c" "$tmp/zeroed.j2c"
+size=$(wc -c < "$tmp/zeroed.j2c")
+head -c 64 /dev/zero | dd of="$tmp/zeroed.j2c" bs=1 seek=$((size / 2)) conv=notrunc status=none
+"$cli" verify "$tmp/zeroed.j2c" > /dev/null 2>&1; rc=$?
+check_rc "verify a corrupted file exits 1 (strict fail)" 1 "$rc"
+
+# 11. refusals: no input 64, unknown option 64, missing file 74, bad image data 65
+"$cli" encode > /dev/null 2>&1; rc=$?
+check_rc "encode without input is a usage error" 64 "$rc"
+"$cli" encode --bogus "$tmp/grey.pgm" > /dev/null 2>&1; rc=$?
+check_rc "unknown encode option is a usage error" 64 "$rc"
+"$cli" encode "$tmp/nope.pgm" > /dev/null 2>&1; rc=$?
+check_rc "missing input file is an I/O error" 74 "$rc"
+printf 'P3\n1 1\n255\n0\n' > "$tmp/ascii.pgm"
+"$cli" encode "$tmp/ascii.pgm" > /dev/null 2> "$tmp/err"; rc=$?
+check_rc "plain (ASCII) PNM is refused as bad data" 65 "$rc"
+grep -q 'P3' "$tmp/err" || fail "the refusal names the unsupported format"
+{ printf 'P5\n4 4\n255\n'; printf 'abc'; } > "$tmp/short.pgm"
+"$cli" encode "$tmp/short.pgm" > /dev/null 2>&1; rc=$?
+check_rc "truncated PNM body is refused as bad data" 65 "$rc"
+"$cli" encode -o "$tmp/no such dir/x.jp2" "$tmp/grey.pgm" > /dev/null 2>&1; rc=$?
+check_rc "unwritable output is an I/O error" 74 "$rc"
+
+# 12. help lists the verbs
+help=$("$cli" --help 2>/dev/null)
+for verb in encode decode verify validate; do
+	case "$help" in *"$verb"*) ;; *) fail "--help lists $verb";; esac
+done
+
+printf '%s\n' "codec_cli: $fails failure(s)"
+exit "$fails"

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# CLI surface of ./build, through --plan (prints one line per target and
+# builds nothing): defaults, profiles, backends, scope flags and their
+# aliases, later-option-wins, and rejected usage. NEVER `set -e`.
+# Usage: build_test [PROJECT_ROOT]
+set -u
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+root=${1:-$here/../..}
+. "$root/tools/sh/platform.bash"
+build=$root/build
+failures=0
+fail() { printf 'FAIL (line %s): %s\n' "${BASH_LINENO[0]}" "$*" >&2; failures=$((failures+1)); }
+host=$(jp2z_pf_host) || { echo "build_test: host platform outside the matrix; nothing to test" >&2; exit 1; }
+plan() { "$build" --plan "$@" 2>/dev/null; }
+line() { # line PF BACKEND PROFILE PUBLISH : the exact plan line expected
+	local pf=$1 backend=$2 profile=$3 publish=$4 out
+	if [ "$backend" = nix ]; then out=".nix-out/$pf/$profile attr=jp2z-$pf"; else out=$(jp2z_prefix "$pf" "$profile"); fi
+	echo "plan pf=$pf triple=$(jp2z_pf_triple "$pf") backend=$backend profile=$profile out=$out publish=$publish"
+}
+
+# Default: Nix backend, host only, ReleaseFast, published.
+[ "$(plan)" = "$(line "$host" nix ReleaseFast yes)" ] || fail "default plan: $(plan)"
+# Direct backend and profiles; later options win.
+[ "$(plan --backend=direct)" = "$(line "$host" direct ReleaseFast yes)" ] || fail "direct: $(plan --backend=direct)"
+[ "$(plan --backend direct --debug)" = "$(line "$host" direct Debug yes)" ] || fail "--debug"
+[ "$(plan --backend=direct --test)" = "$(line "$host" direct ReleaseSafe yes)" ] || fail "--test"
+[ "$(plan --backend=direct --debug --test)" = "$(line "$host" direct ReleaseSafe yes)" ] || fail "later profile must win"
+[ "$(plan --backend=direct --debug --release)" = "$(line "$host" direct ReleaseFast yes)" ] || fail "--release resets"
+[ "$(plan --backend=direct --backend=nix)" = "$(line "$host" nix ReleaseFast yes)" ] || fail "later backend must win"
+[ "$(plan --no-publish)" = "$(line "$host" nix ReleaseFast no)" ] || fail "--no-publish"
+
+# Scope: every alias of all platforms gives the whole matrix, in order.
+want_all=""
+for pf in $(jp2z_pf_matrix); do want_all+="$(line "$pf" nix ReleaseFast yes)"$'\n'; done
+want_all=${want_all%$'\n'}
+for flag in --all-plats --all-platforms --all "--all-impls --all-plats" "--all-plats --all-plats"; do
+	# shellcheck disable=SC2086
+	[ "$(plan $flag)" = "$want_all" ] || fail "scope $flag did not give the whole matrix"
+done
+# One implementation: --all-impls alone is the host build.
+[ "$(plan --all-impls)" = "$(line "$host" nix ReleaseFast yes)" ] || fail "--all-impls alone"
+
+# Rejected usage: status 2, nothing on stdout.
+for args in "--backend=cmake" "--debug" "--test" "--frobnicate" "canonize zig" "--backend"; do
+	# --debug and --test are rejected only because the Nix backend builds ReleaseFast.
+	# shellcheck disable=SC2086
+	out=$("$build" --plan $args 2>/dev/null); rc=$?
+	[ "$rc" -eq 2 ] && [ -z "$out" ] || fail "'$args' should be a usage error (rc $rc, out '$out')"
+done
+
+# Help works and names the scope flags.
+help=$("$build" --help 2>&1); rc=$?
+[ "$rc" -eq 0 ] || fail "--help rc $rc"
+for word in --all-platforms --backend=direct --debug --test --plan ./run; do
+	case "$help" in *"$word"*) ;; *) fail "--help does not mention $word" ;; esac
+done
+
+[ "$failures" -eq 0 ] && echo "build_test: 0 failure(s)" || { echo "build_test: $failures failure(s)" >&2; exit 1; }

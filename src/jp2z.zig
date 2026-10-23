@@ -38,6 +38,10 @@ pub const FindingsSink = @import("decode/findings.zig").FindingsSink;
 
 pub const version: [:0]const u8 = "0.0.1";
 
+/// Encoder (scope added 2026-10-23): component planes to a lossless J2K
+/// codestream or JP2 file. See src/encode/codestream.zig.
+pub const encode = @import("encode.zig");
+
 const last_error = @import("core/last_error.zig");
 
 pub fn lastErrorMessage() []const u8 {
@@ -281,6 +285,9 @@ pub const internal = struct {
     /// round-trip it against a spec-written encoder and measure what it
     /// leaves unconsumed.
     pub const mq = @import("decode/mq_coder.zig");
+    /// The encoder's MQ coder (T.800 Annex C), shared by the termination
+    /// tests in tests/unit/validate.zig.
+    pub const mq_encoder = @import("encode/mq_encoder.zig");
 
     pub const CleanroomImage = @import("decode/reconstruct.zig").Image;
 
@@ -316,6 +323,7 @@ pub const internal = struct {
 // ─────────────────────────────────────────────────────────────────────
 
 test {
+    _ = @import("encode.zig");
     _ = @import("decode/bit_reader.zig");
     _ = @import("decode/cblk_dispatch.zig");
     _ = @import("decode/cblk_extract.zig");

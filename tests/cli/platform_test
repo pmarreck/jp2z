@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Classifier tests for tools/sh/platform.bash, over SETS of inputs:
+# every supported uname pair maps to its PF, every alias normalizes, every
+# unsupported pair is rejected (never silently defaulted), and every PF
+# translates to the compiler triple, variant and namespaced prefix the build
+# uses. NEVER `set -e`: rejected inputs exit non-zero by design.
+set -u
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=../../tools/sh/platform.bash
+. "$here/../../tools/sh/platform.bash"
+failures=0
+fail() { printf 'FAIL (line %s): %s\n' "${BASH_LINENO[0]}" "$*" >&2; failures=$((failures+1)); }
+expect() { # expect WANT CMD... : stdout of CMD equals WANT and status is 0
+	local want=$1; shift; local got rc
+	got=$("$@" 2>/dev/null); rc=$?
+	[ "$rc" -eq 0 ] && [ "$got" = "$want" ] || fail "$* → '$got' (rc $rc), wanted '$want'"
+}
+reject() { # reject CMD... : non-zero status and nothing on stdout
+	local got rc
+	got=$("$@" 2>/dev/null); rc=$?
+	[ "$rc" -ne 0 ] && [ -z "$got" ] || fail "$* should be rejected, got '$got' (rc $rc)"
+}
+
+# Host normalization: (uname -s, uname -m) → PF, as a set.
+while read -r os arch want; do
+	expect "$want" jp2z_pf_from_uname "$os" "$arch"
+done <<'SET'
+Linux x86_64 linux-amd64
+Linux amd64 linux-amd64
+Linux aarch64 linux-arm64
+Linux arm64 linux-arm64
+Darwin arm64 macos-arm64
+Darwin aarch64 macos-arm64
+MINGW64_NT-10.0-26100 x86_64 mswin-amd64
+MSYS_NT-10.0-26100 x86_64 mswin-amd64
+CYGWIN_NT-10.0 x86_64 mswin-amd64
+Windows_NT AMD64 mswin-amd64
+MINGW64_NT-10.0-26100 aarch64 mswin-arm64
+Windows_NT ARM64 mswin-arm64
+SET
+# Rejected: outside the supported matrix, or unknown. Never a default.
+while read -r os arch; do
+	reject jp2z_pf_from_uname "$os" "$arch"
+done <<'SET'
+Darwin x86_64
+Linux i686
+Linux armv7l
+Linux riscv64
+FreeBSD amd64
+SunOS i86pc
+Plan9 x86_64
+SET
+reject jp2z_pf_from_uname "" ""
+
+# PF → compiler triple, variant, executable suffix: the whole matrix.
+while read -r pf triple variant exe; do
+	expect "$triple" jp2z_pf_triple "$pf"
+	expect "$variant" jp2z_pf_variant "$pf"
+	[ "$exe" = "-" ] && exe=""
+	expect "$exe" jp2z_pf_exe_suffix "$pf"
+done <<'SET'
+linux-amd64 x86_64-linux-musl musl -
+linux-arm64 aarch64-linux-musl musl -
+macos-arm64 aarch64-macos none -
+mswin-amd64 x86_64-windows-gnu gnu .exe
+mswin-arm64 aarch64-windows-gnu gnu .exe
+SET
+for pf in macos-amd64 linux-386 mswin-x86 linux linux-amd64-musl ""; do
+	reject jp2z_pf_triple "$pf"
+done
+
+# Header expectations, as a classifier: each PF's pattern accepts that PF's
+# libmagic line and rejects every other PF's line and a dynamic Linux build.
+declare -A magic_line=(
+	[linux-amd64]="ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped"
+	[linux-arm64]="ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped"
+	[macos-arm64]="Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>"
+	[mswin-amd64]="PE32+ executable (console) x86-64, for MS Windows, 7 sections"
+	[mswin-arm64]="PE32+ executable (console) Aarch64, for MS Windows, 7 sections"
+)
+for pf in $(jp2z_pf_matrix); do
+	re=$(jp2z_pf_magic "$pf") || { fail "no header pattern for $pf"; continue; }
+	for other in $(jp2z_pf_matrix); do
+		if [ "$other" = "$pf" ]; then
+			echo "${magic_line[$other]}" | grep -Eq "$re" || fail "$pf pattern rejects its own header"
+		else
+			echo "${magic_line[$other]}" | grep -Eq "$re" && fail "$pf pattern accepts the $other header"
+		fi
+	done
+done
+echo "ELF 64-bit LSB pie executable, x86-64, dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2" | grep -Eq "$(jp2z_pf_magic linux-amd64)" && fail "linux-amd64 pattern accepts a dynamically linked build"
+reject jp2z_pf_magic macos-amd64
+
+# flake.nix keeps its own copy of the triple and header tables for the
+# per-target derivations; both copies must agree entry for entry.
+flake=$here/../../flake.nix
+for pf in $(jp2z_pf_matrix); do
+	triple=$(jp2z_pf_triple "$pf")
+	grep -Fq "\"$pf\" = \"$triple\";" "$flake" || fail "flake.nix triple for $pf disagrees with platform.bash ($triple)"
+	re=$(jp2z_pf_magic "$pf"); nix_re=${re//\\/\\\\}
+	grep -Fq "\"$pf\" = \"$nix_re\";" "$flake" || fail "flake.nix header pattern for $pf disagrees with platform.bash ($re)"
+done
+
+# The declared matrix, in order, and nothing else.
+expect "linux-amd64 linux-arm64 macos-arm64 mswin-amd64 mswin-arm64" jp2z_pf_matrix
+
+# Namespaced prefixes: variant appears only where it applies; never "none".
+expect "zig-out/linux-amd64/musl/ReleaseFast" jp2z_prefix linux-amd64 ReleaseFast
+expect "zig-out/mswin-arm64/gnu/Debug" jp2z_prefix mswin-arm64 Debug
+expect "zig-out/macos-arm64/ReleaseSafe" jp2z_prefix macos-arm64 ReleaseSafe
+expect "zig-out/$(jp2z_pf_host)/native/ReleaseSafe" jp2z_dev_prefix ReleaseSafe
+reject jp2z_dev_prefix Fast
+reject jp2z_prefix linux-amd64 Fastest
+reject jp2z_prefix macos-amd64 ReleaseFast
+
+[ "$failures" -eq 0 ] && echo "platform_test: 0 failure(s)" || { echo "platform_test: $failures failure(s)" >&2; exit 1; }

@@ -49,3 +49,28 @@ Part 1 and the cheapest to prove correct.
   alias of `jp2z validate`.
 - The CLI is C and links only the static archive through
   `include/jp2z_core.h`; it must never import the Zig module.
+
+## As built (2026-10-23)
+
+The first cut landed with these differences from the plan above:
+
+- Output format: JP2 by default, `--j2k` for a raw codestream, later flag
+  wins. The output name does not select the format.
+- C ABI: `jp2z_encode(samples, samples_len, params, jp2z_buffer_t *out)`
+  with `jp2z_buffer_free`. The params struct is 20 bytes with seven
+  reserved bytes that must be zero. Signedness is not exposed yet: the C
+  path is unsigned only, though `encode.Params.signed` exists in the core.
+  New statuses: -10 invalid argument, -11 encode failed.
+- Input: binary P5, P6 and P7 (PAM). P7 covers every component count, so
+  PNM written by `decode` round trips byte for byte. A MAXVAL that is not
+  2^p - 1 is coded at the bits it needs, and `decode` then reports
+  2^p - 1. Samples above MAXVAL, trailing bytes and ASCII PNM are refused
+  with exit 65.
+- `decode` now writes 16-bit PNM above 8 bits (it previously refused) and
+  accepts `-o`.
+- Core refusals: levels above 32 (A.6.1), more than 16384 components
+  (A.5.1) and samples outside the precision's range.
+- Quantization exponents are precision + subband gain with two guard bits,
+  so the RCT's chroma growth fits; a block whose bit-planes would exceed
+  Mb returns CoefficientOverflow rather than writing a wrong zero
+  bit-plane count.

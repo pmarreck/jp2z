@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Tests for tools/sh/publish.bash: bin/<PF>/ entrypoints are published only
+# after the product's header matches its PF, atomically, without touching
+# other PFs, as relative links (copies with .exe for mswin), and a failed
+# check leaves the previous entrypoint working. The header oracle is
+# injected (JP2Z_MAGIC_CMD) so fixtures stand in for real cross binaries.
+# NEVER `set -e`: failure paths are what is under test.
+set -u
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$here/../../tools/sh/platform.bash"
+. "$here/../../tools/sh/publish.bash"
+failures=0
+fail() { printf 'FAIL (line %s): %s\n' "${BASH_LINENO[0]}" "$*" >&2; failures=$((failures+1)); }
+root=$(mktemp -d "${TMPDIR:-/tmp}/jp2z-publish.XXXXXX") || exit 1
+trap 'rm -rf -- "$root"' EXIT
+
+# Fake header oracle: the "header" is the file's first line.
+fake_magic() { head -1 "$1"; }
+export -f fake_magic
+export JP2Z_MAGIC_CMD=fake_magic
+
+product() { # product PF PROFILE HEADER : make a fake installed product, print its path
+	local pf=$1 profile=$2 header=$3 dir exe
+	dir=$root/$(jp2z_prefix "$pf" "$profile")/bin
+	exe=jp2z$(jp2z_pf_exe_suffix "$pf")
+	mkdir -p "$dir"
+	printf '%s\nbody-%s-%s\n' "$header" "$pf" "$profile" > "$dir/$exe"
+	chmod +x "$dir/$exe"
+	echo "$dir/$exe"
+}
+elf_amd64="ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, stripped"
+elf_arm64="ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped"
+pe_amd64="PE32+ executable (console) x86-64, for MS Windows"
+
+# 1. Success: a relative link resolving to the product, body readable through it.
+p=$(product linux-amd64 ReleaseFast "$elf_amd64")
+jp2z_publish "$root" linux-amd64 "$p" >/dev/null 2>&1 || fail "publish of a matching product failed"
+link=$root/bin/linux-amd64/jp2z
+[ -L "$link" ] || fail "linux entrypoint is not a symlink"
+case "$(readlink "$link")" in /*) fail "link is absolute: $(readlink "$link")" ;; esac
+[ "$(sed -n 2p "$link")" = "body-linux-amd64-ReleaseFast" ] || fail "link does not reach the product"
+
+# 2. Header mismatch: refused, non-zero, previous entrypoint unchanged.
+bad=$(product linux-amd64 Debug "$elf_arm64")
+jp2z_publish "$root" linux-amd64 "$bad" >/dev/null 2>&1 && fail "a wrong-architecture product was published"
+[ "$(sed -n 2p "$link")" = "body-linux-amd64-ReleaseFast" ] || fail "failed publish disturbed the previous entrypoint"
+
+# 3. Missing product: refused, previous entrypoint unchanged.
+jp2z_publish "$root" linux-amd64 "$root/nope/jp2z" >/dev/null 2>&1 && fail "a missing product was published"
+[ "$(sed -n 2p "$link")" = "body-linux-amd64-ReleaseFast" ] || fail "missing-product publish disturbed the entrypoint"
+
+# 4. mswin: a regular .exe copy (no symlink privileges needed), host entry untouched.
+w=$(product mswin-amd64 ReleaseFast "$pe_amd64")
+jp2z_publish "$root" mswin-amd64 "$w" >/dev/null 2>&1 || fail "mswin publish failed"
+wexe=$root/bin/mswin-amd64/jp2z.exe
+[ -f "$wexe" ] && [ ! -L "$wexe" ] || fail "mswin entrypoint is not a regular file"
+cmp -s "$w" "$wexe" || fail "mswin entrypoint differs from the product"
+[ "$(sed -n 2p "$link")" = "body-linux-amd64-ReleaseFast" ] || fail "foreign publish retargeted the linux entrypoint"
+
+# 5. Re-publishing a different profile swaps the target.
+p2=$(product linux-amd64 ReleaseSafe "$elf_amd64")
+jp2z_publish "$root" linux-amd64 "$p2" >/dev/null 2>&1 || fail "republish failed"
+[ "$(sed -n 2p "$link")" = "body-linux-amd64-ReleaseSafe" ] || fail "republish did not swap the target"
+
+# 6. Unknown PF refused.
+jp2z_publish "$root" macos-amd64 "$p" >/dev/null 2>&1 && fail "an unsupported PF was published"
+[ -e "$root/bin/macos-amd64" ] && fail "an unsupported PF directory was created"
+
+# 7. Competing publications: run 16 at once, alternating two products; the
+#    result is one of them, readable, and no temporary entries remain.
+for i in $(seq 1 16); do
+	if [ $((i % 2)) -eq 0 ]; then jp2z_publish "$root" linux-amd64 "$p" >/dev/null 2>&1 &
+	else jp2z_publish "$root" linux-amd64 "$p2" >/dev/null 2>&1 & fi
+done
+wait
+body=$(sed -n 2p "$link")
+case "$body" in body-linux-amd64-ReleaseFast|body-linux-amd64-ReleaseSafe) ;; *) fail "entrypoint unreadable after concurrent publishes: '$body'" ;; esac
+left=$(find "$root/bin/linux-amd64" -mindepth 1 ! -name jp2z | wc -l | tr -d ' ')
+[ "$left" = 0 ] || fail "$left temporary entries left in bin/linux-amd64"
+
+# 8. Nothing outside bin/<PF>/ is written; generic bin/ holds only PF directories.
+extra=$(find "$root/bin" -mindepth 1 -maxdepth 1 ! -type d | wc -l | tr -d ' ')
+[ "$extra" = 0 ] || fail "publish wrote $extra file(s) directly into bin/"
+
+[ "$failures" -eq 0 ] && echo "publish_test: 0 failure(s)" || { echo "publish_test: $failures failure(s)" >&2; exit 1; }

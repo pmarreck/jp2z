@@ -7,6 +7,17 @@ zig-cache/
 result
 result-*
 
+# Cross-platform build layout (./build): published entrypoints, retained
+# Nix output links, intermediates and release archives are all generated.
+/bin/linux-amd64/
+/bin/linux-arm64/
+/bin/macos-arm64/
+/bin/mswin-amd64/
+/bin/mswin-arm64/
+/.nix-out/
+/.build-work/
+/dist/
+
 # macOS
 .DS_Store
 

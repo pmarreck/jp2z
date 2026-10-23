@@ -49,6 +49,51 @@
           openjpegLib
         ];
 
+        # The declared five-target matrix (PF names per the fleet build
+        # convention; tools/sh/platform.bash holds the same table for the
+        # scripts and tests/cli/platform_test checks it).
+        platformTriples = {
+          "linux-amd64" = "x86_64-linux-musl";
+          "linux-arm64" = "aarch64-linux-musl";
+          "macos-arm64" = "aarch64-macos";
+          "mswin-amd64" = "x86_64-windows-gnu";
+          "mswin-arm64" = "aarch64-windows-gnu";
+        };
+        # One cross-compiled runtime product (CLI + static archive + header)
+        # per PF, with build metadata in share/jp2z/build.json and the
+        # product's header checked by libmagic at build time, so a mislabelled
+        # target fails the derivation instead of shipping.
+        expectedMagic = {
+          "linux-amd64" = "ELF 64-bit LSB executable, x86-64.*statically linked";
+          "linux-arm64" = "ELF 64-bit LSB executable, ARM aarch64.*statically linked";
+          "macos-arm64" = "Mach-O 64-bit arm64 executable";
+          "mswin-amd64" = "PE32\\+ executable.*x86-64";
+          "mswin-arm64" = "PE32\\+ executable.*Aarch64";
+        };
+        mkTarget = pf: let
+          triple = platformTriples.${pf};
+          exe = if pkgs.lib.hasPrefix "mswin" pf then "jp2z.exe" else "jp2z";
+        in pkgs.stdenv.mkDerivation {
+          pname = "${pname}-${pf}";
+          inherit version;
+          src = ./.;
+          nativeBuildInputs = [ zigPkg pkgs.file ];
+          dontConfigure = true;
+          dontFixup = true;
+          buildPhase = ''
+            export HOME=$TMPDIR
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+            zig build -Doptimize=ReleaseFast -Dtarget=${triple} --prefix $out
+            magic=$(file -b $out/bin/${exe})
+            echo "$magic" | grep -Eq '${expectedMagic.${pf}}' \
+              || { echo "header check failed for ${pf}: $magic"; exit 1; }
+            mkdir -p $out/share/jp2z
+            printf '{"pf":"%s","triple":"%s","profile":"ReleaseFast","zig":"%s","file":"%s"}\n' \
+              '${pf}' '${triple}' '${zigPkg.version}' "$magic" > $out/share/jp2z/build.json
+          '';
+          dontInstall = true;
+        };
+
         zigBuildFlags = [
           "-Dopenjpeg-include=${openjpegDev}/include/openjpeg-2.5"
           "-Dopenjpeg-lib=${openjpegLib}/lib"
@@ -59,19 +104,25 @@
         # package neither depends on it nor passes its paths; the oracle
         # stays confined to the test check and the dev shell (sweep-one,
         # tile-hist, internal.openjpegDecode).
-        packages.default = pkgs.stdenv.mkDerivation {
-          inherit pname version;
-          src = ./.;
-          nativeBuildInputs = [ zigPkg ];
-          dontConfigure = true;
-          dontFixup = true;
-          buildPhase = ''
-            export HOME=$TMPDIR
-            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
-            zig build -Doptimize=ReleaseFast --prefix $out
-          '';
-          dontInstall = true;
-        };
+        packages = {
+          default = pkgs.stdenv.mkDerivation {
+            inherit pname version;
+            src = ./.;
+            nativeBuildInputs = [ zigPkg ];
+            dontConfigure = true;
+            dontFixup = true;
+            buildPhase = ''
+              export HOME=$TMPDIR
+              ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS"}
+              zig build -Doptimize=ReleaseFast --prefix $out
+            '';
+            dontInstall = true;
+          };
+          # The full matrix, cross-compiled by Zig from any host. A cross
+          # product is compile evidence for its platform, not a runtime test.
+          all-platforms = pkgs.linkFarm "${pname}-all-platforms"
+            (map (pf: { name = pf; path = mkTarget pf; }) (builtins.attrNames platformTriples));
+        } // builtins.listToAttrs (map (pf: { name = "${pname}-${pf}"; value = mkTarget pf; }) (builtins.attrNames platformTriples));
 
         checks = {
           build = self.packages.${system}.default;
@@ -83,6 +134,11 @@
             buildInputs = commonBuildInputs;
             dontConfigure = true;
             dontFixup = true;
+            # The script tests execute ./build, ./run and their stand-ins
+            # directly, and the sandbox has no /usr/bin/env.
+            postPatch = ''
+              patchShebangs build run tests/cli tools/sh
+            '';
             buildPhase = ''
               export HOME=$TMPDIR
               export OPENJPEG_DATA=${openjpeg-data}

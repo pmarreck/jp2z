@@ -207,6 +207,20 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(smoke_tests).step);
 
+    // (2b) Encoder round trips: jp2z's decoder, OpenJPEG's decoder and
+    //      strict validation are the oracles (tests/unit/encode.zig).
+    const encode_mod = b.createModule(.{
+        .root_source_file = b.path("tests/unit/encode.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    encode_mod.addImport("jp2z", jp2z_mod);
+    const encode_tests = b.addTest(.{ .name = "encode", .root_module = encode_mod });
+    const run_encode_tests = b.addRunArtifact(encode_tests);
+    test_step.dependOn(&run_encode_tests.step);
+    b.step("encode-test", "Encoder round trips through jp2z and OpenJPEG").dependOn(&run_encode_tests.step);
+
     // (3) Decode test suite.
     const decode_mod = b.createModule(.{
         .root_source_file = b.path("tests/unit/decode.zig"),
@@ -292,6 +306,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_test = b.addRunArtifact(cli_test);
     test_step.dependOn(&run_cli_test.step);
+    b.step("ffi-smoke", "Run the C ABI smoke test alone").dependOn(&run_cli_test.step);
 
     // (6) End-to-end CLI test — spawns the actual `jp2z` binary
     //     against vendored conformance fixtures, validates the
@@ -333,4 +348,43 @@ pub fn build(b: *std.Build) void {
     run_validate_cli.addArtifactArg(cli);
     run_validate_cli.addDirectoryArg(b.path("tests/unit/fixtures/conformance"));
     test_step.dependOn(&run_validate_cli.step);
+
+    // (7b) Bash-driven CLI test for encode / decode / verify: byte-identical
+    //      PNM round trips (8, 12 and 10-bit-maxval, 1/2/3 components),
+    //      stdin/stdout aliases, paths with spaces, exit codes.
+    const run_codec_cli = b.addSystemCommand(&.{"bash"});
+    run_codec_cli.addFileArg(b.path("tests/cli/codec_cli"));
+    run_codec_cli.addArtifactArg(cli);
+    run_codec_cli.addDirectoryArg(b.path("tests/unit/fixtures/conformance"));
+    run_codec_cli.expectStdOutEqual("codec_cli: 0 failure(s)\n");
+    test_step.dependOn(&run_codec_cli.step);
+    b.step("codec-cli", "Run the encode/decode/verify CLI test alone").dependOn(&run_codec_cli.step);
+
+    // (8) Platform vocabulary classifier (tools/sh/platform.bash): host
+    //     normalization, PF → triple/variant/prefix, rejection of every
+    //     pair outside the declared matrix.
+    const run_platform_test = b.addSystemCommand(&.{"bash"});
+    run_platform_test.addFileArg(b.path("tests/cli/platform_test"));
+    run_platform_test.expectStdOutEqual("platform_test: 0 failure(s)\n");
+    test_step.dependOn(&run_platform_test.step);
+
+    // (9) bin/<PF>/ publication (tools/sh/publish.bash): header-checked,
+    //     atomic, previous entrypoint kept on failure, concurrent-safe.
+    const run_publish_test = b.addSystemCommand(&.{"bash"});
+    run_publish_test.addFileArg(b.path("tests/cli/publish_test"));
+    run_publish_test.expectStdOutEqual("publish_test: 0 failure(s)\n");
+    test_step.dependOn(&run_publish_test.step);
+
+    // (10) ./build option surface (through --plan, builds nothing) and
+    //      ./run argument/exit-status passing (stand-in build).
+    const run_build_test = b.addSystemCommand(&.{"bash"});
+    run_build_test.addFileArg(b.path("tests/cli/build_test"));
+    run_build_test.addDirectoryArg(b.path("."));
+    run_build_test.expectStdOutEqual("build_test: 0 failure(s)\n");
+    test_step.dependOn(&run_build_test.step);
+    const run_run_test = b.addSystemCommand(&.{"bash"});
+    run_run_test.addFileArg(b.path("tests/cli/run_test"));
+    run_run_test.addDirectoryArg(b.path("."));
+    run_run_test.expectStdOutEqual("run_test: 0 failure(s)\n");
+    test_step.dependOn(&run_run_test.step);
 }

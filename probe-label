@@ -12,7 +12,9 @@ if [ -z "${OPENJPEG_INCLUDE:-}" ]; then
 	exec nix develop -c "$0" "$@"
 fi
 echo "==> building probe labeller" >&2
-zig build probe-label -Doptimize=ReleaseSafe "-Dopenjpeg-include=$OPENJPEG_INCLUDE" "-Dopenjpeg-lib=$OPENJPEG_LIB" || { echo "    FAIL: could not build jp2z-probe-label" >&2; exit 1; }
+. tools/sh/platform.bash
+dev_prefix=$(jp2z_dev_prefix ReleaseSafe) || { echo "probe-label: host outside the supported matrix" >&2; exit 1; }
+zig build probe-label -Doptimize=ReleaseSafe --prefix "$dev_prefix" "-Dopenjpeg-include=$OPENJPEG_INCLUDE" "-Dopenjpeg-lib=$OPENJPEG_LIB" || { echo "    FAIL: could not build jp2z-probe-label" >&2; exit 1; }
 printf '| Fixture | Accepted (sniper+bolter) | Inert | Changed (false negatives) | Wrapper refuses | Unreplayable (legacy shotgun, dense window) |\n|---|---:|---:|---:|---:|---:|\n'
 fails=0
 for fixture in $(fd -e j2k -e jp2 -e j2c -e jpx . tests/unit/fixtures | sort); do
@@ -20,7 +22,7 @@ for fixture in $(fd -e j2k -e jp2 -e j2c -e jpx . tests/unit/fixtures | sort); d
 	dir="conformance/probe/$name"
 	[ -f "$dir/events.ndjson" ] || continue
 	errfile="${TMPDIR:-/tmp}/jp2z-probe-label-$$-$name.err"
-	PROBE_FIXTURE="$PWD/$fixture" PROBE_EVENTS="$PWD/$dir/events.ndjson" zig-out/bin/jp2z-probe-label > "$dir/labels.ndjson" 2> "$errfile"
+	PROBE_FIXTURE="$PWD/$fixture" PROBE_EVENTS="$PWD/$dir/events.ndjson" "$dev_prefix/bin/jp2z-probe-label" > "$dir/labels.ndjson" 2> "$errfile"
 	rc=$?
 	# Keep the labeller's stderr beside the labels only when it said something.
 	[ -s "$errfile" ] && cp "$errfile" "$dir/labels.err"

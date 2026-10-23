@@ -1,9 +1,11 @@
-//! Test-only MQ arithmetic ENCODER, written from the T.800 Annex C flowcharts
-//! (CODELPS, CODEMPS, RENORME, BYTEOUT, FLUSH with SETBITS; the same coder
-//! as T.88). It exists so tests can produce genuine coder output, including
-//! the full FLUSH tail, without borrowing anything from the decoder under
-//! test: the Qe table is typed here from Table C-2, so a round-trip failure
-//! points at whichever side disagrees with the standard.
+//! MQ arithmetic ENCODER (the production coder since 2026-10-23), written
+//! from the T.800 Annex C flowcharts (CODELPS, CODEMPS, RENORME, BYTEOUT,
+//! FLUSH with SETBITS; the same coder as T.88). It shares nothing with the
+//! decoder in decode/mq_coder.zig: the Qe table is typed here from Table
+//! C-2, so a round-trip failure points at whichever side disagrees with the
+//! standard. It began as a test-only encoder for the termination tests
+//! (tests/unit/validate.zig, through jp2z.internal.mq_encoder), which
+//! still use it.
 //!
 //! Byte output follows the flowcharts literally: `B` is the pending byte at
 //! `BP`, "BP = BP + 1; B = x" appends, and the byte before the first output

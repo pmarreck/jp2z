@@ -1523,12 +1523,12 @@ test "deepValidate: clean a1_mono has no entropy over-read finding (no false pos
 // strict validation on the entropy_under_read threshold while OpenJPEG
 // decoded it, leaving 3 unconsumed bytes per code-block. Before touching the
 // threshold, the two terminations T.800 Annex C and D.4.2 define are
-// exercised with a spec-written encoder (tests/unit/mq_encoder.zig): the
+// exercised with a spec-written encoder (src/encode/mq_encoder.zig): the
 // standard FLUSH (SETBITS + two BYTEOUTs) and the predictable termination
 // used under cblksty PTERM. Both tests below pin what jp2z's decoder leaves
 // unconsumed on genuine coder output, so the allowance in
 // reconstruct.underReadCap rests on the coder, not on a corpus.
-const mq_enc = @import("mq_encoder.zig");
+const mq_enc = jp2z.internal.mq_encoder;
 
 
 fn decoderContexts() [19]jp2z.internal.mq.Context {

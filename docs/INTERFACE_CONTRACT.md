@@ -1,7 +1,7 @@
 ---
 purpose: Frozen public interface of jp2z (Zig surface + C ABI + finding-code registry) that consumers pin against; decouples interface stability from decode coverage.
 audience: both
-status: FROZEN v1 — Einstein-approved 2026-08-04; changes require Einstein cross-board sign-off
+status: FROZEN v1.1 — v1 approved by the fleet interface coordinator 2026-08-04; v1.1 additive encode surface approved by the same coordinator 2026-10-23; changes require coordinator cross-board sign-off
 maintained_by: einstein-signoff
 frozen_as_of: yolo@0db0c51
 ---
@@ -27,7 +27,10 @@ consistency, this frozen contract, and the finding-code registry). Routine
 jp2z work that does NOT touch this surface (decode internals, fixtures, bug
 fixes) proceeds through jp2z-reviewer as normal.
 
-Frozen as of `yolo@0db0c51`. Interface version **v1**.
+Frozen as of `yolo@0db0c51`. Interface version **v1.1** since 2026-10-23:
+v1.1 adds the encode surface (Zig `encode`, C `jp2z_encode`,
+`jp2z_buffer_free`, three types and statuses -10 and -11) and changes
+nothing that v1 froze. Every v1 symbol, layout and value is retained.
 
 ## What is frozen vs. what is not
 
@@ -78,6 +81,32 @@ pub fn deepValidate(allocator: Allocator, data: []const u8, strict: bool) error{
 full entropy decode to the structural walk using only jp2z's Zig code. The
 public-module import gate executes it without OpenJPEG headers or libraries.
 Unsupported-but-valid features stay warnings even when `strict` is true.
+
+### Encode (v1.1)
+```zig
+pub const encode = struct {
+    pub fn encodeJ2k(allocator: Allocator, planes: []const []const i32, p: Params) EncodeError![]u8;
+    pub fn encodeJp2(allocator: Allocator, planes: []const []const i32, p: Params) EncodeError![]u8;
+    pub const Params = struct {
+        width: u32, height: u32,
+        components: u16,            // 1..16384
+        precision: u8,              // 1..16
+        signed: bool = false,
+        levels: ?u8 = null,         // 0..32; null = min(5, floor(log2(max(w, h))))
+    };
+    pub const EncodeError = error{
+        InvalidDimensions, InvalidComponents, UnsupportedPrecision, PlaneSizeMismatch,
+        InvalidLevels, SampleOutOfRange, CoefficientOverflow, CarryIntoSentinel,
+    } || Allocator.Error;
+};
+```
+
+One row-major plane per component. Output is lossless: reversible 5/3
+wavelet, RCT for three or more components, one tile, one quality layer,
+LRCP order. The caller owns the returned bytes. `encode.transform`,
+`encode.tier1`, `encode.tier2`, `encode.codestream` and `encode.mq_encoder`
+are implementation modules reachable through the namespace. They are not
+part of the frozen surface.
 
 ### Types
 ```zig
@@ -162,6 +191,42 @@ int                   jp2z_deep_validate(const uint8_t *data, size_t len,
                                          int strict, jp2z_findings_sink_t *sink);
 ```
 
+### Encode (v1.1)
+
+```c
+typedef enum { JP2Z_FORMAT_J2K = 0, JP2Z_FORMAT_JP2 = 1 } jp2z_format_t;
+#define JP2Z_LEVELS_DEFAULT 0xFF
+typedef struct {                /* 20 bytes; reserved must be zero */
+    uint32_t width, height;
+    uint16_t components;        /* 1..16384 */
+    uint8_t  precision;         /* 1..16 */
+    uint8_t  levels;            /* 0..32 or JP2Z_LEVELS_DEFAULT */
+    uint8_t  format;            /* jp2z_format_t */
+    uint8_t  reserved[7];
+} jp2z_encode_params_t;
+typedef struct { uint8_t *data; size_t len; } jp2z_buffer_t;
+
+void          jp2z_buffer_free(jp2z_buffer_t *buffer);
+jp2z_status_t jp2z_encode(const uint8_t *samples, size_t samples_len,
+                          const jp2z_encode_params_t *params, jp2z_buffer_t *out);
+```
+
+The ownership and error contract is the comment above each declaration in
+the header, which is authoritative. In summary:
+
+- **Sample layout.** Samples use the `jp2z_image_t.pixels` layout:
+  pixel-major and component-minor, one byte per sample at precision <= 8,
+  else a host-native uint16_t with no alignment requirement. Each sample is
+  below 2^precision.
+- **Length.** `samples_len` must equal the overflow-checked product of the
+  dimensions, component count and bytes per sample.
+- **Output storage.** `out` must be valid, writable storage that overlaps
+  neither `samples` nor `params`. Its entry contents are ignored, never
+  freed. It is zeroed on every failure and owned by the caller on success.
+- **Freeing.** `jp2z_buffer_free` frees and zeroes the struct it is given,
+  so a repeat call on that struct is a no-op. Copies of the struct are not
+  protected.
+
 - **Structs:** `jp2z_image_t`, `jp2z_decode_options_t`, `jp2z_finding_t`.
 - **Enums:** `jp2z_status_t`, `jp2z_color_space_t`, `jp2z_pixel_layout_t`,
   `jp2z_severity_t`.
@@ -182,6 +247,8 @@ int                   jp2z_deep_validate(const uint8_t *data, size_t len,
 | `InvalidJp2Codestream`| `JP2Z_ERR_INVALID_JP2_CODESTREAM`|  -7   |
 | `OutOfMemory`         | `JP2Z_ERR_OUT_OF_MEMORY`         |  -8   |
 | `CallbackAborted`     | `JP2Z_ERR_CALLBACK_ABORTED`      |  -9   |
+| (encode, v1.1)        | `JP2Z_ERR_INVALID_ARGUMENT`      | -10   |
+| (encode, v1.1)        | `JP2Z_ERR_ENCODE_FAILED`         | -11   |
 
 ## Shared finding-code registry (Einstein-owned)
 
