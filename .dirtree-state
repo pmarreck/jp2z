@@ -25,6 +25,7 @@ annotate=[
 	docs/mktp-research/jpeg2000-verdict-census-2026-10-12.txt = Strict verdict census, pre-change vs 2026-10-12 build, over 283 corpus files: 252/261 details per file (research record 4.6)
 	docs/mktp-research/jpeg2000-verdict-census-2026-10-14.txt = Strict verdict census after the 2026-10-14 jp2h/colr/MCT/marker-placement checks: hits per corpus and the four verdict flips
 	docs/mktp-research/jpeg2000.md = MKTP research record for JPEG 2000: scope and pins, invariant inventory vs T.800, research trail, indexed experiments, residuals, next actions
+	docs/plan_context/cross_platform_build_arch.md = Gap analysis and acceptance scenarios for conforming jp2z's build/output layout to the cross-platform-project-build-arch skill (PF naming, namespaced prefixes, bin/<PF> entrypoints, ./build scopes)
 	docs/plan_context/entropy_tail_discriminator.md = Context for the open entropy-tail discriminator item (why a tail of 3 cannot be flagged by length alone)
 	docs/plan_context/legacy_plan_sections.md = Preambles of the retired PLAN.md sections (2026-06 to 2026-09), moved verbatim when the plan became one-line items
 	docs/plan_context/mktp_t800_followups.md = Context for the MKTP follow-ups that waited on T.800 text (jp2h order, RCT inputs, marker placement)
